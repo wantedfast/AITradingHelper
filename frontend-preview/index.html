@@ -1,0 +1,909 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AI Trading for Beginners</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #050505;
+      --text: #f4f0e8;
+      --muted: #a29d93;
+      --line: rgba(255, 255, 255, 0.14);
+      --gold: #C9A646;
+      --gold-dark: #8A6A2A;
+      --gold-light: #F5D77A;
+      --gold-pale: #FFF1B8;
+      --gold-shadow: #3A2A0A;
+      --gold-2: #F5D77A;
+      --green: #6ee7a8;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+    }
+
+    a { color: inherit; text-decoration: none; }
+
+    .site-page {
+      position: relative;
+      min-height: 100vh;
+      overflow-x: hidden;
+      background:
+        radial-gradient(circle at 76% 39%, rgba(201, 166, 70, 0.16), transparent 24%),
+        radial-gradient(circle at 51% 82%, rgba(201, 166, 70, 0.08), transparent 28%),
+        linear-gradient(112deg, #030303 0%, #070707 48%, #171717 100%);
+    }
+
+    .site-page::before {
+      content: "";
+      position: absolute;
+      inset: auto -10% -15% -10%;
+      height: 38%;
+      background:
+        radial-gradient(ellipse at center, rgba(245, 215, 122, 0.16), transparent 63%),
+        linear-gradient(90deg, transparent, rgba(201, 166, 70, 0.12), transparent);
+      filter: blur(24px);
+      opacity: 0.58;
+      transform: rotate(-4deg);
+    }
+
+    .noise-layer {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      opacity: 0.2;
+      background-image:
+        linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+      background-size: 52px 52px;
+      mask-image: radial-gradient(circle at 70% 42%, black, transparent 72%);
+    }
+
+    .site-shell {
+      position: relative;
+      z-index: 1;
+      width: min(1180px, calc(100% - 48px));
+      min-height: 100vh;
+      margin: 0 auto;
+    }
+
+    .nav {
+      height: 84px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
+      color: var(--text);
+      font-weight: 800;
+    }
+
+    .brand img {
+      width: 42px;
+      height: 42px;
+      border-radius: 50%;
+      object-fit: contain;
+    }
+
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 28px;
+      color: rgba(244, 240, 232, 0.72);
+      font-size: 14px;
+    }
+
+    .login {
+      min-width: 82px;
+      height: 38px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--text);
+      background: rgba(255, 255, 255, 0.06);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.11);
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1.04fr) minmax(360px, 0.96fr);
+      align-items: center;
+      gap: 42px;
+      min-height: calc(100vh - 84px);
+      padding: 34px 0 72px;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      min-height: 36px;
+      padding: 8px 15px;
+      border: 1px solid rgba(201, 166, 70, 0.5);
+      border-radius: 999px;
+      color: rgba(244, 240, 232, 0.9);
+      background: rgba(255, 255, 255, 0.045);
+      box-shadow: 0 0 24px rgba(201, 166, 70, 0.08);
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    .eyebrow::before {
+      content: "";
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 18px rgba(110, 231, 168, 0.85);
+    }
+
+    h1 {
+      max-width: 760px;
+      margin: 42px 0 0;
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: clamp(64px, 7vw, 104px);
+      line-height: 0.96;
+      font-weight: 500;
+      letter-spacing: 0;
+      color: var(--text);
+    }
+
+    .headline-sub {
+      max-width: 720px;
+      margin: 28px 0 0;
+      color: rgba(244, 240, 232, 0.92);
+      font-size: clamp(25px, 2.6vw, 39px);
+      line-height: 1.18;
+      font-family: Georgia, "Times New Roman", serif;
+      font-weight: 500;
+    }
+
+    .cn-slogan {
+      margin: 18px 0 0;
+      background: linear-gradient(135deg, #8A6A2A 0%, #C9A646 28%, #F5D77A 50%, #B88A2E 72%, #FFF1B8 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      color: var(--gold-light);
+      font-size: clamp(22px, 2vw, 30px);
+      font-weight: 800;
+    }
+
+    .description {
+      max-width: 620px;
+      margin: 18px 0 0;
+      color: var(--muted);
+      font-size: 18px;
+      line-height: 1.68;
+      font-weight: 500;
+    }
+
+    .actions {
+      display: flex;
+      align-items: center;
+      gap: 22px;
+      margin-top: 40px;
+      flex-wrap: wrap;
+    }
+
+    .primary,
+    .secondary {
+      min-height: 56px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      text-decoration: none;
+      font-size: 17px;
+      font-weight: 800;
+      border-radius: 18px;
+    }
+
+    .primary {
+      min-width: 178px;
+      padding: 0 22px;
+      color: #15110a;
+      background: linear-gradient(135deg, #0B0B0B, #1A1406);
+      border: 1px solid var(--gold);
+      color: var(--gold-light);
+      box-shadow:
+        0 0 12px rgba(201, 166, 70, 0.35),
+        inset 0 0 8px rgba(245, 215, 122, 0.15);
+    }
+
+    .secondary {
+      color: rgba(244, 240, 232, 0.78);
+      padding: 0 4px;
+    }
+
+
+
+    .gold-picker {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-top: 22px;
+      color: rgba(244, 240, 232, 0.6);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .gold-swatches {
+      display: flex;
+      gap: 9px;
+      flex-wrap: wrap;
+    }
+
+    .gold-swatch {
+      width: 28px;
+      height: 28px;
+      border: 1px solid rgba(255, 255, 255, 0.22);
+      border-radius: 999px;
+      background: var(--swatch);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.36), 0 0 16px color-mix(in srgb, var(--swatch), transparent 64%);
+      cursor: pointer;
+    }
+
+    .gold-swatch.active {
+      outline: 2px solid rgba(255, 255, 255, 0.72);
+      outline-offset: 3px;
+    }
+
+    .visual {
+      position: relative;
+      min-height: 560px;
+      display: grid;
+      place-items: center;
+      perspective: 1200px;
+    }
+
+    .orb {
+      position: absolute;
+      width: min(42vw, 620px);
+      aspect-ratio: 1;
+      border-radius: 50%;
+      background:
+        radial-gradient(circle at 50% 50%, rgba(0, 0, 0, 0.42), transparent 62%);
+      filter: blur(34px);
+      opacity: 0.42;
+    }
+
+    .cube-stage {
+      position: relative;
+      z-index: 1;
+      width: min(42vw, 560px);
+      aspect-ratio: 1.12;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .cube-stage::before {
+      content: none;
+      display: none;
+    }
+
+    #cube-canvas {
+      position: relative;
+      z-index: 1;
+      width: 100%;
+      height: 100%;
+      min-height: 420px;
+      filter: drop-shadow(0 42px 62px rgba(0, 0, 0, 0.72));
+    }
+
+    .features {
+      position: relative;
+      padding: 16px 0 118px;
+    }
+
+    .section-heading {
+      max-width: 760px;
+      margin: 0 auto 48px;
+      text-align: center;
+    }
+
+    .section-heading p {
+      margin: 0 0 14px;
+      color: var(--gold);
+      font-size: 14px;
+      font-weight: 900;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .section-heading h2 {
+      margin: 0;
+      color: rgba(244, 240, 232, 0.86);
+      font-size: clamp(30px, 3.2vw, 48px);
+      line-height: 1.08;
+      font-weight: 900;
+    }
+
+    .feature-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(320px, 1fr));
+      gap: 34px;
+    }
+
+    .feature-card {
+      display: block;
+      min-width: 0;
+      color: inherit;
+    }
+
+    .feature-preview {
+      position: relative;
+      min-height: 260px;
+      overflow: hidden;
+      border: 1px solid rgba(255, 255, 255, 0.09);
+      border-radius: 24px;
+      background:
+        radial-gradient(circle at 68% 36%, rgba(201, 166, 70, 0.12), transparent 30%),
+        linear-gradient(145deg, #050505, #0c0c0c 58%, #111 100%);
+      box-shadow: 0 36px 90px rgba(0, 0, 0, 0.42);
+    }
+
+    .feature-card:hover .feature-preview {
+      border-color: rgba(245, 215, 122, 0.28);
+      box-shadow: 0 44px 110px rgba(0, 0, 0, 0.52), 0 0 34px rgba(201, 166, 70, 0.12);
+    }
+
+    .review-preview::before {
+      content: "";
+      position: absolute;
+      inset: 26px;
+      border-radius: 18px;
+      background:
+        linear-gradient(90deg, rgba(255,255,255,0.04) 1px, transparent 1px),
+        linear-gradient(rgba(255,255,255,0.04) 1px, transparent 1px);
+      background-size: 42px 42px;
+      opacity: 0.65;
+      mask-image: radial-gradient(circle at 48% 54%, black, transparent 76%);
+    }
+
+    .chart-line {
+      position: absolute;
+      left: 34px;
+      right: 34px;
+      bottom: 66px;
+      height: 92px;
+    }
+
+    .chart-line svg {
+      width: 100%;
+      height: 100%;
+      overflow: visible;
+      filter: drop-shadow(0 0 18px rgba(245, 215, 122, 0.22));
+    }
+
+    .trade-dot {
+      position: absolute;
+      width: 13px;
+      height: 13px;
+      border: 2px solid #050505;
+      border-radius: 50%;
+      background: var(--gold-light);
+      box-shadow: 0 0 24px rgba(245, 215, 122, 0.55);
+    }
+
+    .dot-buy { left: 24%; bottom: 96px; }
+    .dot-sell { left: 68%; bottom: 150px; }
+
+    .watch-preview {
+      background:
+        radial-gradient(circle at 50% 46%, rgba(245, 215, 122, 0.10), transparent 34%),
+        radial-gradient(circle at 68% 28%, rgba(255, 255, 255, 0.06), transparent 20%),
+        linear-gradient(145deg, #050505, #101010 56%, #090806 100%);
+    }
+
+    .watch-orbit {
+      position: absolute;
+      inset: 32px;
+      display: grid;
+      place-items: center;
+    }
+
+    .watch-ring {
+      position: absolute;
+      border: 1px solid rgba(245, 215, 122, 0.16);
+      border-radius: 50%;
+      animation: slowSpin 18s linear infinite;
+    }
+
+    .ring-a { width: 210px; height: 210px; }
+    .ring-b { width: 150px; height: 150px; animation-duration: 13s; animation-direction: reverse; }
+    .ring-c { width: 84px; height: 84px; border-color: rgba(245, 215, 122, 0.32); }
+
+    .watch-core {
+      width: 48px;
+      height: 48px;
+      border-radius: 50%;
+      background: radial-gradient(circle at 36% 28%, #fff1b8, #c9a646 48%, #3a2a0a 100%);
+      box-shadow: 0 0 34px rgba(201, 166, 70, 0.38);
+    }
+
+    .watch-pulse {
+      position: absolute;
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: var(--gold-light);
+      box-shadow: 0 0 18px rgba(245, 215, 122, 0.52);
+    }
+
+    .pulse-a { transform: translate(104px, -40px); }
+    .pulse-b { transform: translate(-96px, 58px); opacity: 0.72; }
+    .pulse-c { transform: translate(36px, 106px); opacity: 0.54; }
+
+    @keyframes slowSpin {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+
+    .feature-meta {
+      display: grid;
+      grid-template-columns: 54px minmax(0, 1fr);
+      gap: 16px;
+      align-items: start;
+      padding: 18px 4px 0;
+    }
+
+    .feature-icon {
+      width: 48px;
+      height: 48px;
+      display: grid;
+      place-items: center;
+      border-radius: 50%;
+      color: var(--gold-light);
+      background: #1b1b1b;
+      border: 1px solid rgba(245, 215, 122, 0.15);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.08);
+      font-size: 22px;
+    }
+
+    .feature-kicker {
+      margin: 0 0 5px;
+      color: rgba(244, 240, 232, 0.44);
+      font-size: 13px;
+      font-weight: 900;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .feature-card h3 {
+      margin: 0;
+      color: var(--text);
+      font-size: 24px;
+      line-height: 1.18;
+      font-weight: 900;
+    }
+
+    .feature-card p {
+      margin: 10px 0 0;
+      max-width: 560px;
+      color: rgba(244, 240, 232, 0.56);
+      font-size: 15px;
+      line-height: 1.65;
+    }
+
+    .flow-card {
+      margin-top: 20px;
+      min-height: 72px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 18px;
+      flex-wrap: wrap;
+      border: 1px solid rgba(245, 215, 122, 0.14);
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.035);
+      color: rgba(244, 240, 232, 0.76);
+      font-weight: 800;
+    }
+
+    .flow-card i {
+      width: 42px;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, rgba(201, 166, 70, 0.8), transparent);
+    }
+
+    @media (max-width: 980px) {
+      .site-shell { width: min(100% - 32px, 720px); }
+      .nav-links { display: none; }
+      .hero {
+        grid-template-columns: 1fr;
+        gap: 18px;
+        padding: 28px 0 64px;
+      }
+      .visual {
+        min-height: 390px;
+        order: -1;
+      }
+      .cube-stage { width: min(78vw, 430px); }
+      #cube-canvas { min-height: 340px; }
+      h1 {
+        margin-top: 34px;
+        font-size: 58px;
+        line-height: 0.98;
+      }
+      .headline-sub { font-size: 25px; }
+      .description { font-size: 17px; }
+      .feature-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main class="site-page">
+    <div class="noise-layer"></div>
+    <div class="site-shell">
+      <header class="nav">
+        <a class="brand" href="#">
+          <img src="/frontend/public/brand-logo.png" alt="AI Trading logo" />
+          <span>AI Trading</span>
+        </a>
+        <nav class="nav-links" aria-label="Main navigation">
+          <a href="#features">Features</a>
+          <a href="/v2/">Dashboard</a>
+          <a href="/">Classic Report</a>
+          <a class="login" href="/v2/">Start</a>
+        </nav>
+      </header>
+
+      <section class="hero">
+        <div class="hero-copy">
+          <div class="eyebrow">AI Trade Review Agent</div>
+          <h1>AI Trading for Beginners</h1>
+          <p class="headline-sub">Stop Guessing. Start Trading With Your Best Strategy.</p>
+          <p class="cn-slogan">摆脱盲从，依托优策。</p>
+          <p class="description">
+            从交割单开始，AI 自动还原你的交易现场：市场情绪、板块方向、个股强度、产业链位置和最佳执行方案。
+          </p>
+          <div class="actions">
+            <a class="primary" href="/v2/">Upload Trades</a>
+            <a class="secondary" href="#features">Explore Features</a>
+          </div>
+          <div class="gold-picker">
+            <span>Gold tone</span>
+            <div class="gold-swatches" aria-label="Choose gold color">
+              <button class="gold-swatch active" style="--swatch:#C9A646" data-gold="#C9A646" data-bright="#F5D77A" aria-label="Premium gold"></button>
+              <button class="gold-swatch" style="--swatch:#8A6A2A" data-gold="#8A6A2A" data-bright="#C9A646" aria-label="Dark gold"></button>
+              <button class="gold-swatch" style="--swatch:#F5D77A" data-gold="#C9A646" data-bright="#FFF1B8" aria-label="Champagne gold"></button>
+              <button class="gold-swatch" style="--swatch:#B88A2E" data-gold="#B88A2E" data-bright="#F5D77A" aria-label="Deep gold"></button>
+            </div>
+          </div>
+
+        </div>
+
+        <div class="visual" aria-hidden="true">
+          <div class="orb"></div>
+          <div class="cube-stage">
+            <div id="cube-canvas"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="features" class="features">
+        <div class="section-heading">
+          <p>Two Core Modules</p>
+          <h2>Build your trading workflow from review to watch.</h2>
+        </div>
+
+        <div class="feature-grid">
+          <a class="feature-card" href="review.html">
+            <div class="feature-preview review-preview">
+              <div class="chart-line">
+                <svg viewBox="0 0 420 120" preserveAspectRatio="none" aria-hidden="true">
+                  <path d="M6 98 C62 86 78 40 128 58 C180 78 196 16 246 30 C304 46 320 88 414 22" fill="none" stroke="url(#reviewGold)" stroke-width="5" stroke-linecap="round"/>
+                  <defs><linearGradient id="reviewGold" x1="0" x2="1"><stop stop-color="#8A6A2A"/><stop offset=".52" stop-color="#F5D77A"/><stop offset="1" stop-color="#C9A646"/></linearGradient></defs>
+                </svg>
+              </div>
+              <span class="trade-dot dot-buy"></span>
+              <span class="trade-dot dot-sell"></span>
+            </div>
+            <div class="feature-meta">
+              <div class="feature-icon">↗</div>
+              <div>
+                <div class="feature-kicker">Trade Review</div>
+                <h3>AI 复盘</h3>
+                <p>上传交割单，自动还原买卖点、市场环境、板块共振和产业链定位。</p>
+              </div>
+            </div>
+          </a>
+
+          <a class="feature-card" href="watch.html">
+            <div class="feature-preview watch-preview">
+              <div class="watch-orbit">
+                <span class="watch-ring ring-a"></span>
+                <span class="watch-ring ring-b"></span>
+                <span class="watch-ring ring-c"></span>
+                <span class="watch-core"></span>
+                <span class="watch-pulse pulse-a"></span>
+                <span class="watch-pulse pulse-b"></span>
+                <span class="watch-pulse pulse-c"></span>
+              </div>
+            </div>
+            <div class="feature-meta">
+              <div class="feature-icon">◎</div>
+              <div>
+                <div class="feature-kicker">Trading Watch</div>
+                <h3>AI 盯盘</h3>
+                <p>把复盘结论变成盘中预案，价格、量能和指数环境触发后提醒执行。</p>
+              </div>
+            </div>
+          </a>
+        </div>
+
+        <div class="flow-card">
+          <span>Upload trades</span><i></i>
+          <span>AI review</span><i></i>
+          <span>Build strategy</span><i></i>
+          <span>Watch & execute</span>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <script type="module">
+    import * as THREE from "https://unpkg.com/three@0.165.0/build/three.module.js";
+
+    const mount = document.getElementById("cube-canvas");
+    const cubeletSize = 0.92;
+    const spacing = cubeletSize + 0.12;
+    const axisIndex = { x: 0, y: 1, z: 2 };
+    const easeInOut = (t) => t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(36, 1, 0.1, 100);
+    camera.position.set(5.3, 4.2, 6.2);
+    camera.lookAt(0, 0, 0);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    mount.appendChild(renderer.domElement);
+
+    const root = new THREE.Group();
+    root.rotation.set(-0.34, 0.58, -0.12);
+    scene.add(root);
+
+    function makeNoiseTexture() {
+      const canvas = document.createElement("canvas");
+      canvas.width = 96;
+      canvas.height = 96;
+      const ctx = canvas.getContext("2d");
+      const image = ctx.createImageData(canvas.width, canvas.height);
+      for (let i = 0; i < image.data.length; i += 4) {
+        const value = 110 + Math.random() * 54;
+        image.data[i] = value;
+        image.data[i + 1] = value;
+        image.data[i + 2] = value;
+        image.data[i + 3] = 255;
+      }
+      ctx.putImageData(image, 0, 0);
+      const texture = new THREE.CanvasTexture(canvas);
+      texture.wrapS = THREE.RepeatWrapping;
+      texture.wrapT = THREE.RepeatWrapping;
+      texture.repeat.set(4, 4);
+      return texture;
+    }
+
+    const frostNoise = makeNoiseTexture();
+
+    function createMaterials() {
+      const gold = new THREE.Color("#C9A646");
+      const options = {
+        metalness: 0.56,
+        roughness: 0.78,
+        clearcoat: 0.22,
+        clearcoatRoughness: 0.86,
+        roughnessMap: frostNoise,
+        bumpMap: frostNoise,
+        bumpScale: 0.025
+      };
+      const materials = [
+        new THREE.MeshPhysicalMaterial({ ...options, color: "#C9A646", emissive: gold, emissiveIntensity: 0.025 }),
+        new THREE.MeshPhysicalMaterial({ ...options, color: "#080706" }),
+        new THREE.MeshPhysicalMaterial({ ...options, color: "#F5D77A", emissive: gold, emissiveIntensity: 0.035 }),
+        new THREE.MeshPhysicalMaterial({ ...options, color: "#12100b" }),
+        new THREE.MeshPhysicalMaterial({ ...options, color: "#17130b" }),
+        new THREE.MeshPhysicalMaterial({ ...options, color: "#050505" })
+      ];
+      materials[0].userData.tone = "gold";
+      materials[2].userData.tone = "bright";
+      return materials;
+    }
+
+    const cubelets = [];
+    const geometry = new THREE.BoxGeometry(cubeletSize, cubeletSize, cubeletSize);
+    const edgeMaterial = new THREE.LineBasicMaterial({ color: "#F5D77A", transparent: true, opacity: 0.18 });
+
+    for (let x = -1; x <= 1; x += 1) {
+      for (let y = -1; y <= 1; y += 1) {
+        for (let z = -1; z <= 1; z += 1) {
+          const mesh = new THREE.Mesh(geometry, createMaterials());
+          mesh.position.set(x * spacing, y * spacing, z * spacing);
+          mesh.castShadow = true;
+          mesh.receiveShadow = true;
+          mesh.userData.grid = new THREE.Vector3(x, y, z);
+          mesh.add(new THREE.LineSegments(new THREE.EdgesGeometry(geometry), edgeMaterial));
+          root.add(mesh);
+          cubelets.push(mesh);
+        }
+      }
+    }
+
+    scene.add(new THREE.AmbientLight("#F5D77A", 0.62));
+    scene.add(new THREE.HemisphereLight("#FFF1B8", "#050505", 1.15));
+
+    const key = new THREE.DirectionalLight("#F5D77A", 3.2);
+    key.position.set(4.8, 7.2, 5.4);
+    key.castShadow = true;
+    scene.add(key);
+
+    const softTop = new THREE.SpotLight("#FFF1B8", 16, 20, Math.PI / 5, 0.65, 1.5);
+    softTop.position.set(-1.6, 6.4, 3.2);
+    softTop.target.position.set(0, 0, 0);
+    scene.add(softTop);
+    scene.add(softTop.target);
+
+    const rim = new THREE.PointLight("#F5D77A", 18, 18);
+    rim.position.set(-4.6, 1.2, 5.2);
+    scene.add(rim);
+
+    const coolEdge = new THREE.PointLight("#ffffff", 3.5, 12);
+    coolEdge.position.set(3.8, -1.6, -3.2);
+    scene.add(coolEdge);
+
+    const glow = new THREE.Mesh(
+      new THREE.CircleGeometry(4.6, 96),
+      new THREE.MeshBasicMaterial({ color: "#C9A646", transparent: true, opacity: 0.018, depthWrite: false })
+    );
+    glow.rotation.x = -Math.PI / 2;
+    glow.position.y = -2.25;
+    // No floor glow: keep the cube background pure black, without the fan-shaped stage wash.
+
+    const scratchGroup = new THREE.Group();
+    root.add(scratchGroup);
+    const layerPlan = [
+      { axis: "y", layer: 1, dir: 1 },
+      { axis: "x", layer: -1, dir: -1 },
+      { axis: "z", layer: 1, dir: 1 },
+      { axis: "y", layer: -1, dir: -1 }
+    ];
+
+    let twistStart = performance.now();
+    let activeLayer = 0;
+    let layerAxis = "y";
+    let lastAngle = 0;
+    let twisting = false;
+
+    function selectedCubelets(axis, layer) {
+      return cubelets.filter((cubelet) => Math.round(cubelet.userData.grid.getComponent(axisIndex[axis])) === layer);
+    }
+
+    function startTwist(now) {
+      const plan = layerPlan[activeLayer % layerPlan.length];
+      layerAxis = plan.axis;
+      lastAngle = 0;
+      twisting = true;
+      twistStart = now;
+      scratchGroup.rotation.set(0, 0, 0);
+      selectedCubelets(plan.axis, plan.layer).forEach((cubelet) => scratchGroup.attach(cubelet));
+    }
+
+    function rotateGrid(grid, axis, dir) {
+      const next = grid.clone();
+      if (axis === "x") {
+        next.y = -dir * grid.z;
+        next.z = dir * grid.y;
+      } else if (axis === "y") {
+        next.x = dir * grid.z;
+        next.z = -dir * grid.x;
+      } else {
+        next.x = -dir * grid.y;
+        next.y = dir * grid.x;
+      }
+      next.x = Math.round(next.x);
+      next.y = Math.round(next.y);
+      next.z = Math.round(next.z);
+      return next;
+    }
+
+    function finishTwist() {
+      const plan = layerPlan[activeLayer % layerPlan.length];
+      selectedCubelets(plan.axis, plan.layer).forEach((cubelet) => {
+        const nextGrid = rotateGrid(cubelet.userData.grid, plan.axis, plan.dir);
+        root.attach(cubelet);
+        cubelet.userData.grid = nextGrid;
+        cubelet.position.set(nextGrid.x * spacing, nextGrid.y * spacing, nextGrid.z * spacing);
+      });
+      scratchGroup.rotation.set(0, 0, 0);
+      activeLayer += 1;
+      twisting = false;
+      twistStart = performance.now();
+    }
+
+
+
+    function applyGold(goldHex, brightHex) {
+      const goldColor = new THREE.Color(goldHex);
+      const brightColor = new THREE.Color(brightHex);
+      document.documentElement.style.setProperty("--gold", goldHex);
+      document.documentElement.style.setProperty("--gold-2", brightHex);
+      edgeMaterial.color.set(brightHex);
+      key.color.set(brightHex);
+      softTop.color.set(brightHex);
+      rim.color.set(brightHex);
+      cubelets.forEach((cubelet) => {
+        cubelet.material.forEach((material) => {
+          if (material.userData.tone === "gold") {
+            material.color.copy(goldColor);
+            material.emissive.copy(goldColor);
+          }
+          if (material.userData.tone === "bright") {
+            material.color.copy(brightColor);
+            material.emissive.copy(goldColor);
+          }
+        });
+      });
+    }
+
+    document.querySelectorAll(".gold-swatch").forEach((button) => {
+      button.addEventListener("click", () => {
+        document.querySelectorAll(".gold-swatch").forEach((item) => item.classList.remove("active"));
+        button.classList.add("active");
+        applyGold(button.dataset.gold, button.dataset.bright);
+      });
+    });
+
+    function resize() {
+      const rect = mount.getBoundingClientRect();
+      const width = Math.max(1, rect.width);
+      const height = Math.max(1, rect.height);
+      renderer.setSize(width, height, false);
+      camera.aspect = width / height;
+      camera.updateProjectionMatrix();
+    }
+
+    function animate(now) {
+      requestAnimationFrame(animate);
+      root.rotation.y += 0.0032;
+      root.rotation.x = -0.34 + Math.sin(now * 0.00055) * 0.055;
+
+      if (!twisting && now - twistStart > 2300) startTwist(now);
+
+      if (twisting) {
+        const plan = layerPlan[activeLayer % layerPlan.length];
+        const progress = Math.min(1, (now - twistStart) / 1300);
+        const angle = easeInOut(progress) * (Math.PI / 2) * plan.dir;
+        const delta = angle - lastAngle;
+        scratchGroup.rotation[layerAxis] += delta;
+        lastAngle = angle;
+        if (progress >= 1) finishTwist();
+      }
+
+      renderer.render(scene, camera);
+    }
+
+    resize();
+    window.addEventListener("resize", resize);
+    requestAnimationFrame(animate);
+  </script>
+</body>
+</html>
+

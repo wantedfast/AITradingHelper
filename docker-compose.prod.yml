@@ -1,0 +1,48 @@
+version: "3.3"
+
+services:
+  trade-review-api:
+    build: .
+    container_name: trade-review-api
+    restart: unless-stopped
+    command: ["python", "-m", "trade_review_agent.simple_api"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8600/api/health', timeout=5).read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    ports:
+      - "127.0.0.1:8600:8600"
+    volumes:
+      - ./work:/app/work
+      - ./outputs:/app/outputs
+    env_file:
+      - .env
+    environment:
+      - TZ=Asia/Shanghai
+      - HTTP_PROXY=http://172.18.0.1:7890
+      - HTTPS_PROXY=http://172.18.0.1:7890
+      - ALL_PROXY=http://172.18.0.1:7890
+      - http_proxy=http://172.18.0.1:7890
+      - https_proxy=http://172.18.0.1:7890
+      - all_proxy=http://172.18.0.1:7890
+      - NO_PROXY=127.0.0.1,localhost,trade-review-api,trade-review-frontend
+      - no_proxy=127.0.0.1,localhost,trade-review-api,trade-review-frontend
+
+  trade-review-frontend:
+    build:
+      context: ./frontend
+      args:
+        INTERNAL_API_BASE: http://trade-review-api:8600
+    container_name: trade-review-frontend
+    restart: unless-stopped
+    depends_on:
+      - trade-review-api
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      - TZ=Asia/Shanghai
+      - INTERNAL_API_BASE=http://trade-review-api:8600
+      - NEXT_PUBLIC_API_BASE=

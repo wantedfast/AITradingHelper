@@ -1,0 +1,672 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <script>
+    window.location.replace("http://127.0.0.1:3000/review");
+  </script>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AI 复盘分析</title>
+  <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #050505;
+      --panel: rgba(255, 255, 255, 0.045);
+      --panel-2: rgba(255, 255, 255, 0.032);
+      --line: rgba(255, 255, 255, 0.12);
+      --gold-dark: #8A6A2A;
+      --gold-main: #C9A646;
+      --gold-light: #F5D77A;
+      --gold-pale: #FFF1B8;
+      --text: #f4f0e8;
+      --muted: #9f9a90;
+      --green: #72df8e;
+      --warn: #f5c85c;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 79% 5%, rgba(201, 166, 70, .11), transparent 32%),
+        radial-gradient(circle at 48% 52%, rgba(245, 215, 122, .045), transparent 35%),
+        #050505;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      opacity: .32;
+      background-image:
+        linear-gradient(rgba(245, 215, 122, .035) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(245, 215, 122, .024) 1px, transparent 1px);
+      background-size: 58px 58px;
+      mask-image: radial-gradient(circle at 63% 22%, black, transparent 70%);
+    }
+
+    body::after {
+      content: "";
+      position: fixed;
+      right: 120px;
+      top: 0;
+      width: 460px;
+      height: 260px;
+      pointer-events: none;
+      opacity: .18;
+      background:
+        linear-gradient(30deg, transparent 20%, rgba(201,166,70,.22) 21%, transparent 22%),
+        linear-gradient(150deg, transparent 36%, rgba(201,166,70,.18) 37%, transparent 38%);
+      filter: blur(.2px);
+    }
+
+    a { color: inherit; text-decoration: none; }
+    button, input { font: inherit; }
+
+    .app {
+      position: relative;
+      z-index: 1;
+      display: grid;
+      grid-template-columns: 232px 1fr;
+      min-height: 100vh;
+    }
+
+    .sidebar {
+      min-height: 100vh;
+      padding: 28px 20px;
+      border-right: 1px solid rgba(255,255,255,.12);
+      background: linear-gradient(180deg, rgba(255,255,255,.035), rgba(255,255,255,.012));
+      display: grid;
+      grid-template-rows: auto auto 1fr;
+      gap: 26px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 20px;
+      font-weight: 900;
+    }
+
+    .brand-mark {
+      width: 34px;
+      height: 34px;
+      display: grid;
+      place-items: center;
+      color: var(--gold-light);
+    }
+
+    .pro {
+      padding: 3px 6px;
+      border-radius: 6px;
+      color: #1b1303;
+      background: linear-gradient(135deg, var(--gold-light), var(--gold-main));
+      font-size: 11px;
+      font-weight: 900;
+    }
+
+    .menu {
+      display: grid;
+      gap: 8px;
+    }
+
+    .menu a {
+      min-height: 54px;
+      padding: 0 14px;
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      color: rgba(244,240,232,.68);
+      font-weight: 700;
+      border: 1px solid transparent;
+    }
+
+    .menu a.active {
+      color: var(--gold-light);
+      border-color: rgba(245,215,122,.42);
+      background:
+        radial-gradient(circle at 22% 30%, rgba(245,215,122,.2), transparent 38%),
+        linear-gradient(135deg, rgba(201,166,70,.22), rgba(255,255,255,.035));
+      box-shadow: inset 0 0 16px rgba(201,166,70,.12), 0 0 20px rgba(201,166,70,.12);
+    }
+
+    .side-hint {
+      align-self: end;
+      padding: 14px;
+      border: 1px solid rgba(245,215,122,.16);
+      border-radius: 14px;
+      color: rgba(244,240,232,.54);
+      background: rgba(255,255,255,.025);
+      font-size: 12px;
+      line-height: 1.7;
+    }
+
+    .main {
+      width: min(100%, 1560px);
+      justify-self: center;
+      padding: 28px 38px 34px;
+    }
+
+    .topbar {
+      display: flex;
+      justify-content: flex-end;
+      align-items: center;
+      gap: 18px;
+      min-height: 38px;
+    }
+
+    .icon-btn {
+      width: 36px;
+      height: 36px;
+      border: 0;
+      color: rgba(244,240,232,.9);
+      background: transparent;
+      cursor: pointer;
+    }
+
+    .upgrade {
+      min-height: 38px;
+      padding: 0 18px;
+      border: 0;
+      border-radius: 9px;
+      color: #1d1302;
+      background: linear-gradient(135deg, #FFF1B8, #F5D77A 50%, #C9A646);
+      font-weight: 900;
+      cursor: pointer;
+    }
+
+    .hero {
+      margin-top: 12px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 44px;
+      letter-spacing: 0;
+      line-height: 1.1;
+      background: linear-gradient(135deg, #FFF1B8, #F5D77A 48%, #C9A646 72%, #8A6A2A);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .hero p {
+      margin: 12px 0 0;
+      color: rgba(244,240,232,.72);
+      font-size: 16px;
+    }
+
+    .content {
+      margin-top: 42px;
+      display: grid;
+      grid-template-columns: minmax(520px, 1fr) 438px;
+      gap: 28px;
+      align-items: start;
+    }
+
+    .panel {
+      border: 1px solid rgba(255,255,255,.12);
+      border-radius: 16px;
+      background:
+        radial-gradient(circle at 30% 20%, rgba(245,215,122,.08), transparent 28%),
+        linear-gradient(145deg, rgba(255,255,255,.055), rgba(255,255,255,.018));
+      box-shadow: 0 28px 90px rgba(0,0,0,.28);
+    }
+
+    .upload-panel {
+      padding: 24px;
+      display: grid;
+      place-items: center;
+    }
+
+    .upload-zone {
+      width: min(760px, 100%);
+      min-height: 364px;
+      margin: 0 auto;
+      border: 1px dashed rgba(201,166,70,.75);
+      border-radius: 14px;
+      display: grid;
+      place-items: center;
+      text-align: center;
+      background:
+        radial-gradient(circle at center, rgba(245,215,122,.08), transparent 36%),
+        rgba(0,0,0,.16);
+      cursor: pointer;
+    }
+
+    .upload-inner {
+      max-width: 420px;
+    }
+
+    .file-icon {
+      width: 82px;
+      height: 82px;
+      margin: 0 auto 24px;
+      display: grid;
+      place-items: center;
+      color: var(--gold-light);
+      filter: drop-shadow(0 0 22px rgba(245,215,122,.34));
+    }
+
+    .upload-zone h2 {
+      margin: 0;
+      font-size: 24px;
+    }
+
+    .upload-zone p {
+      margin: 10px 0 20px;
+      color: rgba(244,240,232,.62);
+      font-size: 14px;
+    }
+
+    .upload-action {
+      width: 210px;
+      min-height: 50px;
+      border: 0;
+      border-radius: 10px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      color: #1d1302;
+      background: linear-gradient(135deg, #FFF1B8, #F5D77A 52%, #C9A646);
+      font-weight: 900;
+      cursor: pointer;
+    }
+
+    .upload-note {
+      margin-top: 18px;
+      color: rgba(244,240,232,.56);
+      font-size: 13px;
+      line-height: 1.8;
+    }
+
+    .privacy {
+      margin-top: 14px;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 8px;
+      color: rgba(244,240,232,.62);
+      font-size: 13px;
+    }
+
+    .right-stack {
+      display: grid;
+      gap: 18px;
+    }
+
+    .info-card {
+      padding: 26px;
+      min-height: 300px;
+    }
+
+    .info-card h2 {
+      margin: 0 0 22px;
+      font-size: 20px;
+    }
+
+    .steps {
+      display: grid;
+      gap: 28px;
+      position: relative;
+    }
+
+    .steps::before {
+      content: "";
+      position: absolute;
+      left: 15px;
+      top: 28px;
+      bottom: 28px;
+      width: 1px;
+      background: linear-gradient(var(--gold-main), rgba(201,166,70,.1));
+    }
+
+    .step {
+      position: relative;
+      display: grid;
+      grid-template-columns: 32px 1fr;
+      gap: 18px;
+      align-items: start;
+    }
+
+    .step-num {
+      width: 32px;
+      height: 32px;
+      border: 1px solid var(--gold-main);
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      color: var(--gold-light);
+      background: #0a0906;
+      font-weight: 900;
+      z-index: 1;
+    }
+
+    .step b { display: block; margin-bottom: 5px; }
+    .step span { color: rgba(244,240,232,.56); font-size: 13px; line-height: 1.55; }
+
+    .include-card {
+      min-height: 398px;
+      padding: 26px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .include-card::after {
+      content: "";
+      position: absolute;
+      right: 18px;
+      bottom: 14px;
+      width: 156px;
+      height: 210px;
+      opacity: .28;
+      background:
+        linear-gradient(90deg, transparent 0 18%, rgba(245,215,122,.28) 18% 22%, transparent 22% 34%, rgba(245,215,122,.5) 34% 39%, transparent 39% 52%, rgba(245,215,122,.8) 52% 59%, transparent 59%),
+        linear-gradient(160deg, transparent 45%, rgba(245,215,122,.36) 46%, transparent 48%);
+      mask-image: linear-gradient(to top, black, transparent 95%);
+    }
+
+    .features {
+      position: relative;
+      z-index: 1;
+      display: grid;
+      gap: 18px;
+    }
+
+    .feature {
+      display: grid;
+      grid-template-columns: 34px 1fr;
+      gap: 12px;
+      align-items: start;
+    }
+
+    .feature-icon {
+      width: 34px;
+      height: 34px;
+      border-radius: 8px;
+      display: grid;
+      place-items: center;
+      color: var(--gold-light);
+      background: rgba(201,166,70,.12);
+    }
+
+    .feature b { display: block; margin-bottom: 4px; }
+    .feature span { color: rgba(244,240,232,.56); font-size: 13px; line-height: 1.55; }
+
+    .tip {
+      margin-top: 28px;
+      min-height: 54px;
+      padding: 0 24px;
+      border: 1px solid rgba(255,255,255,.1);
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      color: rgba(244,240,232,.72);
+      background: rgba(255,255,255,.025);
+    }
+
+    .toast {
+      position: fixed;
+      right: 28px;
+      bottom: 28px;
+      max-width: 360px;
+      padding: 15px 16px;
+      border: 1px solid rgba(245,215,122,.28);
+      border-radius: 14px;
+      color: rgba(244,240,232,.88);
+      background: rgba(8,8,8,.94);
+      opacity: 0;
+      transform: translateY(12px);
+      transition: .2s ease;
+      pointer-events: none;
+      z-index: 8;
+    }
+
+    .toast.show { opacity: 1; transform: translateY(0); }
+
+    @media (max-width: 1120px) {
+      .app { grid-template-columns: 1fr; }
+      .sidebar { display: none; }
+      .hero { margin-left: 0; }
+      .content { grid-template-columns: 1fr; }
+    }
+
+    @media (max-width: 680px) {
+      .main { padding: 22px 18px 30px; }
+      h1 { font-size: 34px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <aside class="sidebar">
+      <a class="brand" href="index.html">
+        <span class="brand-mark"><i data-lucide="triangle"></i></span>
+        <span>AI Trading</span>
+        <span class="pro">Pro</span>
+      </a>
+
+      <nav class="menu" aria-label="核心功能">
+        <a class="active" href="review.html"><i data-lucide="briefcase-business"></i><span>AI 复盘</span></a>
+        <a href="watch.html"><i data-lucide="radar"></i><span>AI 盯盘</span></a>
+      </nav>
+
+      <div class="side-hint">从这里切换核心功能：先复盘交易，再把结论变成盯盘预案。</div>
+    </aside>
+
+    <section class="main">
+      <header class="topbar">
+        <button class="icon-btn" data-action="help" aria-label="帮助"><i data-lucide="circle-help"></i></button>
+        <button class="icon-btn" data-action="notify" aria-label="通知"><i data-lucide="bell"></i></button>
+        <button class="upgrade" data-action="upgrade">升级会员</button>
+      </header>
+
+      <section class="hero">
+        <h1>AI 复盘分析</h1>
+        <p>上传您的交割单，AI将为您深度分析交易表现，发现优势与改进空间</p>
+      </section>
+
+      <section class="content">
+        <section class="panel upload-panel">
+          <input id="tradeFile" type="file" hidden accept=".pdf,.xls,.xlsx,.csv,.txt,image/*" />
+          <button class="upload-zone" id="uploadZone" type="button">
+            <div class="upload-inner">
+              <div class="file-icon"><i data-lucide="file-up"></i></div>
+              <h2 id="uploadTitle">上传交割单 / 交易记录</h2>
+              <p id="uploadHint">支持 Excel / CSV / PDF / 截图 OCR，AI将自动识别并生成复盘报告</p>
+              <span class="upload-action" id="uploadAction"><i data-lucide="upload"></i> 选择文件上传</span>
+              <div class="upload-note">支持格式：PDF、Excel（.xlsx / .xls）、CSV、截图图片 OCR<br />文件大小不超过 50MB</div>
+            </div>
+          </button>
+          <div class="privacy"><i data-lucide="lock-keyhole"></i><span>您的文件仅用于分析，不会被存储或泄露，请放心上传</span></div>
+        </section>
+
+        <aside class="right-stack">
+          <section class="panel info-card">
+            <h2>AI 如何帮您复盘?</h2>
+            <div class="steps">
+              <div class="step"><div class="step-num">1</div><div><b>上传交割单</b><span>支持PDF/Excel/CSV格式的交割单或交易记录</span></div></div>
+              <div class="step"><div class="step-num">2</div><div><b>AI 智能分析</b><span>AI识别交易数据，分析您的交易表现</span></div></div>
+              <div class="step"><div class="step-num">3</div><div><b>生成复盘报告</b><span>多维度分析报告，提供可执行的改进建议</span></div></div>
+            </div>
+          </section>
+
+          <section class="panel include-card">
+            <h2>报告将包含</h2>
+            <div class="features">
+              <div class="feature"><div class="feature-icon"><i data-lucide="bar-chart-3"></i></div><div><b>整体表现概览</b><span>收益率、胜率、盈亏比等关键指标</span></div></div>
+              <div class="feature"><div class="feature-icon"><i data-lucide="route"></i></div><div><b>交易行为分析</b><span>持仓时间、交易频率、品种偏好分析</span></div></div>
+              <div class="feature"><div class="feature-icon"><i data-lucide="shuffle"></i></div><div><b>盈亏原因分析</b><span>AI深度分析盈利和亏损的原因</span></div></div>
+              <div class="feature"><div class="feature-icon"><i data-lucide="list-checks"></i></div><div><b>改进建议</b><span>个性化的交易策略优化建议</span></div></div>
+              <div class="feature"><div class="feature-icon"><i data-lucide="circle-gauge"></i></div><div><b>对比分析</b><span>与历史数据或市场基准对比</span></div></div>
+            </div>
+          </section>
+        </aside>
+      </section>
+
+      <footer class="tip">
+        <i data-lucide="lightbulb"></i>
+        <span><b>小贴士：</b>为获得更准确的分析结果，建议上传包含完整交易记录的交割单（包含成交时间、品种、方向、价格、数量、手续费等信息）</span>
+      </footer>
+    </section>
+  </main>
+  <div class="toast" id="toast"></div>
+
+  <script>
+    lucide.createIcons({ attrs: { width: 20, height: 20, strokeWidth: 1.8 } });
+    const toast = document.getElementById("toast");
+    function showToast(text) {
+      toast.textContent = text;
+      toast.classList.add("show");
+      clearTimeout(window.__toastTimer);
+      window.__toastTimer = setTimeout(() => toast.classList.remove("show"), 2400);
+    }
+
+    const REPORT_URL = "/outputs/premium_report_latest/600584_20260529.html";
+    let fileReady = false;
+    let generating = false;
+    let reportGenerated = false;
+    const tradeFile = document.getElementById("tradeFile");
+    const uploadZone = document.getElementById("uploadZone");
+    const uploadAction = document.getElementById("uploadAction");
+
+    uploadZone.addEventListener("click", () => {
+      if (!fileReady) {
+        tradeFile.click();
+        return;
+      }
+      if (reportGenerated) {
+        window.location.href = REPORT_URL;
+        return;
+      }
+      if (generating) {
+        return;
+      }
+      generating = true;
+      document.getElementById("uploadTitle").textContent = "报告生成中";
+      document.getElementById("uploadHint").textContent = "AI 正在对齐行情、板块和买卖点，请稍等。";
+      uploadAction.innerHTML = '<i data-lucide="sparkles"></i> 正在生成报告';
+      lucide.createIcons({ attrs: { width: 20, height: 20, strokeWidth: 1.8 } });
+      showToast("正在生成复盘报告。");
+      setTimeout(() => {
+        generating = false;
+        reportGenerated = true;
+        document.getElementById("uploadTitle").textContent = "复盘报告已生成";
+        document.getElementById("uploadHint").textContent = "买点、卖点、市场环境和产业链定位已完成分析。";
+        uploadAction.innerHTML = '<i data-lucide="file-check-2"></i> 查看复盘报告';
+        lucide.createIcons({ attrs: { width: 20, height: 20, strokeWidth: 1.8 } });
+        showToast("复盘报告已生成。");
+      }, 900);
+    });
+
+    tradeFile.addEventListener("change", (event) => {
+      const file = event.target.files && event.target.files[0];
+      if (!file) return;
+      fileReady = true;
+      generating = false;
+      reportGenerated = false;
+      document.getElementById("uploadTitle").textContent = "文件已上传，准备生成报告";
+      document.getElementById("uploadHint").textContent = file.name + " 已进入结构化识别流程";
+      uploadAction.innerHTML = '<i data-lucide="sparkles"></i> 生成报告';
+      lucide.createIcons({ attrs: { width: 20, height: 20, strokeWidth: 1.8 } });
+      showToast("交割单已接收，可以生成复盘报告。");
+    });
+
+    // Real local workflow: replace the old mock upload button listener and call the API.
+    (() => {
+      const API_BASE = "http://127.0.0.1:8600";
+      let selectedFile = tradeFile.files && tradeFile.files[0] ? tradeFile.files[0] : null;
+      let reportUrl = "";
+      let isGenerating = false;
+      const oldZone = document.getElementById("uploadZone");
+      const realZone = oldZone.cloneNode(true);
+      oldZone.parentNode.replaceChild(realZone, oldZone);
+
+      function setAction(icon, text) {
+        const action = document.getElementById("uploadAction");
+        action.innerHTML = `<i data-lucide="${icon}"></i> ${text}`;
+        lucide.createIcons({ attrs: { width: 20, height: 20, strokeWidth: 1.8 } });
+      }
+
+      async function createReport() {
+        if (!selectedFile) {
+          tradeFile.click();
+          return;
+        }
+        if (isGenerating) return;
+        isGenerating = true;
+        document.getElementById("uploadTitle").textContent = "报告生成中";
+        document.getElementById("uploadHint").textContent = "正在上传交割单、结构化成交记录，并对齐行情数据库。";
+        setAction("sparkles", "正在生成报告");
+        showToast("正在调用本地后端生成真实复盘报告。");
+
+        try {
+          const formData = new FormData();
+          formData.append("file", selectedFile);
+          const response = await fetch(`${API_BASE}/api/reports`, { method: "POST", body: formData });
+          const payload = await response.json();
+          if (!response.ok) throw new Error(payload.error || payload.detail || "报告生成失败");
+          reportUrl = `${API_BASE}${payload.index_url}`;
+          isGenerating = false;
+          document.getElementById("uploadTitle").textContent = "复盘报告已生成";
+          document.getElementById("uploadHint").textContent = `已生成 ${payload.count || 1} 份真实报告，点击下方按钮查看。`;
+          setAction("file-check-2", "查看复盘报告");
+          showToast("真实复盘报告已生成。");
+        } catch (error) {
+          isGenerating = false;
+          reportUrl = "";
+          document.getElementById("uploadTitle").textContent = "报告生成失败";
+          document.getElementById("uploadHint").textContent = error.message || "请确认本地 API 服务已启动。";
+          setAction("rotate-cw", "重新生成报告");
+          showToast(error.message || "报告生成失败，请检查后端服务。");
+        }
+      }
+
+      realZone.addEventListener("click", () => {
+        if (reportUrl) {
+          window.location.href = reportUrl;
+          return;
+        }
+        if (!selectedFile) {
+          tradeFile.click();
+          return;
+        }
+        createReport();
+      });
+
+      tradeFile.addEventListener("change", (event) => {
+        const file = event.target.files && event.target.files[0];
+        if (!file) return;
+        selectedFile = file;
+        reportUrl = "";
+        isGenerating = false;
+        document.getElementById("uploadTitle").textContent = "文件已上传，准备生成报告";
+        document.getElementById("uploadHint").textContent = `${file.name} 已进入结构化识别流程`;
+        setAction("sparkles", "生成报告");
+      });
+    })();
+
+    document.querySelectorAll("[data-action]").forEach((node) => {
+      node.addEventListener("click", () => {
+        const action = node.dataset.action;
+        const copy = {
+          upgrade: "会员能力后续接入支付与权益系统。",
+          help: "帮助中心稍后接入。",
+          notify: "暂无新通知。",
+          view: "正在打开历史复盘报告。",
+          wait: "这份报告仍在分析中。",
+        }[action] || "功能已点击。";
+        showToast(copy);
+      });
+    });
+  </script>
+</body>
+</html>
