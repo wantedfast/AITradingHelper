@@ -3,18 +3,23 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from datetime import date
 from types import SimpleNamespace
 
+import pandas as pd
+
+from . import data_provider
 from . import industry_agent
 from . import workbench_agents
 from . import workbench_news
 from .ai_trade_parser import OpenAITradeParsingError
+from .data_provider import MarketDataProvider
 from .presenter_agent import _compact_presenter_payload, _memo_conclusion, _merge_presenter_data, _normalize_presenter_data, _presenter_json_schema, _presenter_user_prompt
 from .simple_api import _api_error_payload, _recover_report_manifest, _report_manifest, _report_status_payload, _write_report_status_payload
 from .workbench_agents import _loads_json_object, _research_model, research_model_metadata
 from .workbench_composer import compose_workbench_data
 from .workbench_news import build_market_catalyst_context
-from .workbench_schema import merge_default_workbench
+from .workbench_schema import WORKFLOW_TIMING_KEYS, merge_default_workbench
 
 
 def main() -> None:
@@ -40,6 +45,9 @@ def main() -> None:
     test_simple_api_manifest_urls()
     test_async_report_status_contract()
     test_openai_429_status_payload_contract()
+    test_market_data_tencent_success_contract()
+    test_market_data_akshare_fallback_contract()
+    test_market_data_existing_fallback_contract()
     print("workbench contract validation passed")
 
 
@@ -170,6 +178,10 @@ def test_presenter_structured_schema_contract() -> None:
     for key in ["one_sentence_conclusion", "hero", "profit_flow", "logic_tree", "expectation_gap", "next_action"]:
         assert key in root["required"]
         assert key in root["properties"]
+    timing = root["properties"]["workflow_timings_ms"]
+    assert timing["additionalProperties"] is False
+    assert timing["required"] == WORKFLOW_TIMING_KEYS
+    assert list(timing["properties"].keys()) == WORKFLOW_TIMING_KEYS
 
 
 def test_presenter_error_visible_contract() -> None:
@@ -573,6 +585,85 @@ def test_openai_429_status_payload_contract() -> None:
     assert payload["code"] == "openai_rate_limited"
     assert payload["retryable"] is True
     assert payload["retry_after"] == 2.0
+
+
+def test_market_data_tencent_success_contract() -> None:
+    original_tencent = data_provider._fetch_tencent_daily
+    original_ak = data_provider._fetch_akshare_stock_daily
+    handle = tempfile.NamedTemporaryFile(delete=False, suffix=".sqlite")
+    cache_db = handle.name
+    handle.close()
+    try:
+        data_provider._fetch_tencent_daily = lambda *args, **kwargs: _sample_daily_frame("600000")
+        data_provider._fetch_akshare_stock_daily = lambda *args, **kwargs: pd.DataFrame()
+        provider = MarketDataProvider(cache_db)
+        result = provider.stock_daily_with_status("600000", date(2026, 6, 1), date(2026, 6, 5))
+        assert not result.frame.empty
+        assert result.source == "tencent_finance"
+    finally:
+        data_provider._fetch_tencent_daily = original_tencent
+        data_provider._fetch_akshare_stock_daily = original_ak
+        try:
+            os.remove(cache_db)
+        except Exception:
+            pass
+
+
+def test_market_data_akshare_fallback_contract() -> None:
+    original_tencent = data_provider._fetch_tencent_daily
+    original_ak = data_provider._fetch_akshare_stock_daily
+    handle = tempfile.NamedTemporaryFile(delete=False, suffix=".sqlite")
+    cache_db = handle.name
+    handle.close()
+    try:
+        data_provider._fetch_tencent_daily = lambda *args, **kwargs: pd.DataFrame()
+        data_provider._fetch_akshare_stock_daily = lambda *args, **kwargs: _sample_daily_frame("600000")
+        provider = MarketDataProvider(cache_db)
+        result = provider.stock_daily_with_status("600000", date(2026, 6, 1), date(2026, 6, 5))
+        assert not result.frame.empty
+        assert result.source == "akshare"
+    finally:
+        data_provider._fetch_tencent_daily = original_tencent
+        data_provider._fetch_akshare_stock_daily = original_ak
+        try:
+            os.remove(cache_db)
+        except Exception:
+            pass
+
+
+def test_market_data_existing_fallback_contract() -> None:
+    original_tencent = data_provider._fetch_tencent_daily
+    original_ak = data_provider._fetch_akshare_stock_daily
+    handle = tempfile.NamedTemporaryFile(delete=False, suffix=".sqlite")
+    cache_db = handle.name
+    handle.close()
+    try:
+        provider = MarketDataProvider(cache_db)
+        provider._write_cache("stock_daily", _sample_daily_frame("600000"), source="fallback_existing")
+        data_provider._fetch_tencent_daily = lambda *args, **kwargs: pd.DataFrame()
+        data_provider._fetch_akshare_stock_daily = lambda *args, **kwargs: pd.DataFrame()
+        result = provider.stock_daily_with_status("600000", date(2026, 6, 1), date(2026, 6, 5))
+        assert not result.frame.empty
+        assert result.source == "fallback_existing"
+    finally:
+        data_provider._fetch_tencent_daily = original_tencent
+        data_provider._fetch_akshare_stock_daily = original_ak
+        try:
+            os.remove(cache_db)
+        except Exception:
+            pass
+
+
+def _sample_daily_frame(symbol: str) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {"symbol": symbol, "trade_date": date(2026, 6, 1), "open": 10.0, "close": 10.2, "high": 10.3, "low": 9.9, "volume": 1000.0, "amount": 10200.0, "pct_chg": 2.0, "turnover": 1.1},
+            {"symbol": symbol, "trade_date": date(2026, 6, 2), "open": 10.2, "close": 10.5, "high": 10.6, "low": 10.1, "volume": 1200.0, "amount": 12600.0, "pct_chg": 2.94, "turnover": 1.2},
+            {"symbol": symbol, "trade_date": date(2026, 6, 3), "open": 10.5, "close": 10.4, "high": 10.7, "low": 10.3, "volume": 900.0, "amount": 9360.0, "pct_chg": -0.95, "turnover": 1.0},
+            {"symbol": symbol, "trade_date": date(2026, 6, 4), "open": 10.4, "close": 10.8, "high": 10.9, "low": 10.4, "volume": 1500.0, "amount": 16200.0, "pct_chg": 3.85, "turnover": 1.5},
+            {"symbol": symbol, "trade_date": date(2026, 6, 5), "open": 10.8, "close": 10.9, "high": 11.0, "low": 10.7, "volume": 1300.0, "amount": 14170.0, "pct_chg": 0.93, "turnover": 1.3},
+        ]
+    )
 
 
 if __name__ == "__main__":

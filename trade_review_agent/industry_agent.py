@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -9,15 +10,15 @@ import pandas as pd
 
 from .config import load_env
 from .industry_profiles import IndustryProfile
+from .trade_rounds import TradeRound
 from .workbench_agents import normalize_research_model_tier, research_model_metadata, run_public_equity_workbench_agent, run_wang_workbench_agent
 from .workbench_composer import compose_workbench_data, profile_from_workbench
 from .workbench_context import build_stock_context
-from .trade_rounds import TradeRound
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 CACHE_PATH = BASE_DIR / "work" / "industry_profile_cache.json"
-PROFILE_CACHE_VERSION = "workbench-json-v2-catalyst"
+PROFILE_CACHE_VERSION = "workbench-json-v3-trading-context"
 
 
 SECTOR_PROXY_HINTS = {
@@ -47,12 +48,15 @@ def get_workbench_profile_data(
     sector: pd.DataFrame | None = None,
     benchmark: pd.DataFrame | None = None,
     research_model_tier: str = "standard",
+    market_catalyst: dict[str, Any] | None = None,
+    trading_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     load_env(BASE_DIR / ".env")
     code = _clean_code(code)
     name = str(name or code).strip()
     requested_research_model = research_model_metadata(research_model_tier)
     research_model = dict(requested_research_model)
+    trading_context = trading_context if isinstance(trading_context, dict) else {}
     context = build_stock_context(
         code=code,
         name=name,
@@ -61,10 +65,15 @@ def get_workbench_profile_data(
         stock=stock,
         sector=sector,
         benchmark=benchmark,
+        market_catalyst=market_catalyst,
+        trading_context=trading_context,
     )
     context["research_model_tier"] = research_model["tier"]
     context["research_model"] = research_model
     context["requested_research_model"] = requested_research_model
+    if trading_context:
+        context["workflow_timings_ms"] = dict(trading_context.get("workflow_timings_ms") or {})
+
     cache = _load_cache()
     key = f"{PROFILE_CACHE_VERSION}:{code}:{name}{_context_cache_suffix(context)}"
     if not _refresh_enabled():
@@ -73,21 +82,25 @@ def get_workbench_profile_data(
             return cached
 
     agent_errors: list[str] = []
-    wang, equity, first_errors = _run_research_agents(context)
+    trading_context_agent, wang, equity, first_errors = _run_research_agents(context, trading_context=trading_context)
     agent_errors.extend(first_errors)
     if agent_errors and research_model["tier"] == "better":
         agent_errors.append("better research model failed, retried standard")
         research_model = research_model_metadata("standard")
         context["research_model_tier"] = research_model["tier"]
         context["research_model"] = research_model
-        wang, equity, retry_errors = _run_research_agents(context)
+        trading_context_agent, wang, equity, retry_errors = _run_research_agents(context, trading_context=trading_context)
         agent_errors.extend(retry_errors)
         key = f"{PROFILE_CACHE_VERSION}:{code}:{name}{_context_cache_suffix(context)}"
-    workbench = compose_workbench_data(context, wang, equity)
+
+    workbench = compose_workbench_data(context, wang, equity, trading_context_agent)
     workbench["wang_agent"] = wang
     workbench["public_equity_agent"] = equity
+    workbench["trading_context_agent"] = trading_context_agent
     workbench["research_model"] = research_model
     workbench["requested_research_model"] = requested_research_model
+    timings = dict(trading_context_agent.get("workflow_timings_ms") or workbench.get("workflow_timings_ms") or {})
+    workbench["workflow_timings_ms"] = timings
     if agent_errors:
         workbench["agent_errors"] = agent_errors
 
@@ -98,37 +111,80 @@ def get_workbench_profile_data(
     return workbench
 
 
-def _run_research_agents(context: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+def _run_research_agents(
+    context: dict[str, Any],
+    *,
+    trading_context: dict[str, Any] | None,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], list[str]]:
     errors: list[str] = []
+    tier = normalize_research_model_tier(context.get("research_model_tier") if isinstance(context, dict) else "")
+    trading_context_agent: dict[str, Any] = {}
     wang: dict[str, Any] = {}
     equity: dict[str, Any] = {}
-    tier = normalize_research_model_tier(context.get("research_model_tier") if isinstance(context, dict) else "")
-    try:
-        candidate = run_wang_workbench_agent(context)
-        if isinstance(candidate, dict) and candidate.get("_agent_error"):
-            errors.append(f"WANG agent failed ({tier}): {candidate.get('_agent_error')}")
-        elif isinstance(candidate, dict) and _memo_text(candidate):
-            wang = candidate
-        elif isinstance(candidate, dict):
-            errors.append(f"WANG agent returned empty memo ({tier})")
-        else:
-            errors.append(f"WANG agent returned non-object data ({tier})")
-    except Exception as exc:
-        errors.append(f"WANG agent failed ({tier}): {exc}")
 
-    try:
-        candidate = run_public_equity_workbench_agent(_context_with_wang_pre_read(context, wang))
-        if isinstance(candidate, dict) and candidate.get("_agent_error"):
-            errors.append(f"Public Equity agent failed ({tier}): {candidate.get('_agent_error')}")
-        elif isinstance(candidate, dict) and _memo_text(candidate):
-            equity = candidate
-        elif isinstance(candidate, dict):
-            errors.append(f"Public Equity agent returned empty memo ({tier})")
-        else:
-            errors.append(f"Public Equity agent returned non-object data ({tier})")
-    except Exception as exc:
-        errors.append(f"Public Equity agent failed ({tier}): {exc}")
-    return wang, equity, errors
+    with ThreadPoolExecutor(max_workers=3, thread_name_prefix="research-agent") as executor:
+        future_map = {
+            "trading_context": executor.submit(_run_trading_context_agent, context, trading_context or {}),
+            "wang": executor.submit(run_wang_workbench_agent, context),
+            "public_equity": executor.submit(run_public_equity_workbench_agent, context),
+        }
+        for name, future in future_map.items():
+            try:
+                candidate = future.result()
+            except Exception as exc:
+                errors.append(f"{_agent_label(name)} failed ({tier}): {exc}")
+                continue
+            if name == "trading_context":
+                if isinstance(candidate, dict) and not candidate.get("_agent_error"):
+                    trading_context_agent = candidate
+                else:
+                    errors.append(f"Trading Context agent failed ({tier}): {candidate.get('_agent_error') if isinstance(candidate, dict) else 'non-object result'}")
+            elif name == "wang":
+                if isinstance(candidate, dict) and candidate.get("_agent_error"):
+                    errors.append(f"WANG agent failed ({tier}): {candidate.get('_agent_error')}")
+                elif isinstance(candidate, dict) and _memo_text(candidate):
+                    wang = candidate
+                elif isinstance(candidate, dict):
+                    errors.append(f"WANG agent returned empty memo ({tier})")
+                else:
+                    errors.append(f"WANG agent returned non-object data ({tier})")
+            else:
+                if isinstance(candidate, dict) and candidate.get("_agent_error"):
+                    errors.append(f"Public Equity agent failed ({tier}): {candidate.get('_agent_error')}")
+                elif isinstance(candidate, dict) and _memo_text(candidate):
+                    equity = candidate
+                elif isinstance(candidate, dict):
+                    errors.append(f"Public Equity agent returned empty memo ({tier})")
+                else:
+                    errors.append(f"Public Equity agent returned non-object data ({tier})")
+    return trading_context_agent, wang, equity, errors
+
+
+def _run_trading_context_agent(context: dict[str, Any], trading_context: dict[str, Any]) -> dict[str, Any]:
+    if trading_context:
+        result = dict(trading_context)
+    else:
+        result = {
+            "trade_timing": context.get("trade_timing", {}),
+            "peer_comparison": context.get("peer_comparison", {}),
+            "peer_candidates": context.get("peer_candidates", []),
+            "trade_execution_notes": context.get("trade_execution_notes", {}),
+            "data_source_status": context.get("data_source_status", {}),
+            "data_errors": context.get("data_errors", []),
+            "workflow_timings_ms": context.get("workflow_timings_ms", {}),
+        }
+    result["agent_type"] = "trading_context"
+    if not isinstance(result.get("trade_timing"), dict):
+        result["_agent_error"] = "missing trade_timing"
+    return result
+
+
+def _agent_label(name: str) -> str:
+    return {
+        "trading_context": "Trading Context agent",
+        "wang": "WANG agent",
+        "public_equity": "Public Equity agent",
+    }.get(name, name)
 
 
 def _memo_text(agent_data: dict[str, Any]) -> str:
@@ -142,6 +198,7 @@ def _memo_text(agent_data: dict[str, Any]) -> str:
 def _context_cache_suffix(context: dict[str, Any]) -> str:
     trade = context.get("trade") if isinstance(context, dict) else {}
     market = context.get("market") if isinstance(context, dict) else {}
+    timing = context.get("trade_timing") if isinstance(context, dict) else {}
     tier = normalize_research_model_tier(context.get("research_model_tier") if isinstance(context, dict) else "")
     if not isinstance(trade, dict) or not trade.get("trades"):
         return f":tier:{tier}"
@@ -153,6 +210,7 @@ def _context_cache_suffix(context: dict[str, Any]) -> str:
         str(trade.get("trade_score") or ""),
         str(market.get("stock_pct_on_buy_day") if isinstance(market, dict) else ""),
         str(market.get("sector_pct_on_buy_day") if isinstance(market, dict) else ""),
+        str((timing.get("buy_day") or {}).get("date") if isinstance(timing, dict) else ""),
     ]
     safe = "_".join(part.replace(":", "").replace("/", "").replace("\\", "") for part in parts)
     return f":trade:{safe}"
@@ -176,27 +234,6 @@ def _load_cache() -> dict[str, Any]:
     except Exception:
         return {}
     return data if isinstance(data, dict) else {}
-
-
-def _context_with_wang_pre_read(context: dict[str, Any], wang: dict[str, Any]) -> dict[str, Any]:
-    """Give Public Equity the current-market read without passing the full memo."""
-    enriched = dict(context if isinstance(context, dict) else {})
-    wang = wang if isinstance(wang, dict) else {}
-    enriched["wang_pre_read"] = {
-        "market_hype_reason": wang.get("market_hype_reason"),
-        "recent_catalysts": wang.get("recent_catalysts"),
-        "traded_business_line": wang.get("traded_business_line"),
-        "what_market_is_pricing": wang.get("what_market_is_pricing"),
-        "evidence_quality": wang.get("evidence_quality"),
-        "unknowns": wang.get("unknowns"),
-        "industry_rating": wang.get("industry_rating"),
-        "theme": wang.get("theme"),
-        "claims": wang.get("claims"),
-        "profit_flow": wang.get("profit_flow"),
-        "weakest_link": wang.get("weakest_link"),
-        "deep_memo_summary": _memo_text(wang)[:1200],
-    }
-    return enriched
 
 
 def _with_sector(profile: IndustryProfile, sector_symbol: str) -> IndustryProfile:

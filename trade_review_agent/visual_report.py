@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import timedelta
 from html import escape
 from pathlib import Path
 import shutil
+from time import perf_counter
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -18,6 +20,8 @@ from .schema import Trade
 from .sector_strength import build_sector_signal
 from .trade_rounds import TradeRound, split_trade_rounds
 from .presenter_agent import build_presenter_data
+from .trading_context import HS300_ETF_SYMBOL, build_trading_context_payload
+from .workbench_news import build_market_catalyst_context
 from .workbench_agents import research_model_metadata
 from .workbench_report_renderer import render_workbench_report
 from .workbench_composer import write_workbench_json
@@ -111,25 +115,52 @@ def build_round_html(
     start = trade_round.start_date - timedelta(days=25)
     end = max(trade_round.end_date + timedelta(days=15), start + timedelta(days=45))
     provider = MarketDataProvider(cache_db=cache_db, adjust="qfq")
-    stock = _with_ma(provider.stock_daily(trade_round.code, start, end))
+    stock_fetch = provider.stock_daily_with_status(trade_round.code, start, end)
+    stock = _with_ma(stock_fetch.frame)
     if stock.empty:
         raise ValueError(f"No stock daily data found for {trade_round.code}")
     sh_index = _relative_close(provider.index_daily("sh000001", start, end))
     benchmark = _relative_close(provider.index_daily(benchmark_symbol, start, end))
     growth_index = _relative_close(provider.index_daily("sz399006", start, end))
-    sector = _relative_close(_sector_daily(provider, profile.sector_symbol, start, end))
+    sector_fetch = _sector_daily_with_status(provider, profile.sector_symbol, start, end)
+    sector = _relative_close(sector_fetch.frame)
+    benchmark_etf_fetch = provider.index_daily_with_status(HS300_ETF_SYMBOL, start, end)
 
     trade_frame = pd.DataFrame([trade.__dict__ for trade in trade_round.trades])
     trade_frame["trade_date"] = pd.to_datetime(trade_frame["trade_date"])
     analysis = _analyze(trade_round, profile, stock, sector, benchmark)
-    workbench_data = _write_round_workbench_data(output, profile, analysis, trade_round, stock, sector, benchmark, research_model_tier)
+    presenter_started = perf_counter()
+    workbench_data = _write_round_workbench_data(
+        output,
+        profile,
+        analysis,
+        trade_round,
+        stock,
+        sector,
+        benchmark,
+        research_model_tier,
+        provider=provider,
+        stock_fetch=stock_fetch,
+        sector_fetch=sector_fetch,
+        benchmark_etf_fetch=benchmark_etf_fetch,
+        start=start,
+        end=end,
+    )
     presenter_data = build_presenter_data(
         workbench=workbench_data,
         profile=profile,
         analysis=analysis,
         trade_frame=trade_frame,
     )
+    presenter_ms = _elapsed_ms(presenter_started)
+    _append_workflow_timing(workbench_data, "presenter", presenter_ms)
+    _append_workflow_timing(workbench_data, "total", sum(workbench_data.get("workflow_timings_ms", {}).values()))
+    presenter_data["workflow_timings_ms"] = dict(workbench_data.get("workflow_timings_ms") or {})
+    presenter_data["data_source_status"] = dict(workbench_data.get("data_source_status") or {})
+    presenter_data["data_errors"] = list(workbench_data.get("data_errors") or [])
     write_workbench_json(Path(output).with_suffix(".presenter.json"), presenter_data)
+    write_workbench_json(Path(output).with_suffix(".workbench.json"), workbench_data)
+    write_workbench_json(Path(output).parent / "research_workbench_data.json", workbench_data)
     market_html = _premium_market_context_html(stock, sh_index, benchmark, growth_index, sector, analysis)
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -140,9 +171,12 @@ def build_round_html(
     requested_research_model = workbench_data.get("requested_research_model") if isinstance(workbench_data, dict) else {}
     if not isinstance(requested_research_model, dict):
         requested_research_model = research_model
+    report_company = presenter_data.get("company") if isinstance(presenter_data, dict) else {}
+    report_name = str(report_company.get("name") or profile.name or trade_round.name or trade_round.code)
+    report_code = str(report_company.get("code") or trade_round.code)
     return VisualReportResult(
         output=output,
-        title=f"{profile.name} {trade_round.code} {trade_round.start_date:%Y-%m-%d}",
+        title=f"{report_name} {report_code} {trade_round.start_date:%Y-%m-%d}",
         rating=str(analysis["rating"]),
         score=int(analysis["score"]),
         trade_type=str(analysis["trade_type"]),
@@ -162,11 +196,51 @@ def _write_round_workbench_data(
     sector: pd.DataFrame,
     benchmark: pd.DataFrame,
     research_model_tier: str = "standard",
+    *,
+    provider: MarketDataProvider,
+    stock_fetch,
+    sector_fetch,
+    benchmark_etf_fetch,
+    start,
+    end,
 ) -> dict:
     output = Path(output)
     agent_errors: list[str] = []
     requested_research_model = research_model_metadata(research_model_tier)
+    workflow_timings_ms: dict[str, int] = {}
+    trading_context: dict = {}
+    market_catalyst: dict = {}
+    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="report-prep") as executor:
+        trading_future = executor.submit(
+            _timed_call,
+            build_trading_context_payload,
+            provider=provider,
+            profile=profile,
+            trade_round=trade_round,
+            stock_fetch=stock_fetch,
+            sector_fetch=sector_fetch,
+            benchmark_fetch=benchmark_etf_fetch,
+            analysis=analysis,
+            start=start,
+            end=end,
+        )
+        catalyst_future = executor.submit(_timed_call, build_market_catalyst_context, profile.code, profile.name)
+        try:
+            trading_context, workflow_timings_ms["data_prep"] = trading_future.result()
+        except Exception as exc:
+            agent_errors.append(f"trading context preparation failed for {profile.code}: {exc}")
+            trading_context = {}
+            workflow_timings_ms["data_prep"] = 0
+        try:
+            market_catalyst, workflow_timings_ms["market_catalyst"] = catalyst_future.result()
+        except Exception as exc:
+            agent_errors.append(f"market catalyst preparation failed for {profile.code}: {exc}")
+            market_catalyst = {}
+            workflow_timings_ms["market_catalyst"] = 0
+    if trading_context:
+        trading_context["workflow_timings_ms"] = dict(workflow_timings_ms)
     try:
+        agent_started = perf_counter()
         data = get_workbench_profile_data(
             profile.code,
             profile.name,
@@ -176,7 +250,17 @@ def _write_round_workbench_data(
             sector=sector,
             benchmark=benchmark,
             research_model_tier=research_model_tier,
+            market_catalyst=market_catalyst,
+            trading_context=trading_context,
         )
+        agent_elapsed = _elapsed_ms(agent_started)
+        if isinstance(data, dict):
+            existing = dict(data.get("workflow_timings_ms") or {})
+            existing.setdefault("trading_context_agent", workflow_timings_ms.get("data_prep", 0))
+            existing.setdefault("wang_agent", agent_elapsed)
+            existing.setdefault("public_equity_agent", agent_elapsed)
+            existing.setdefault("research_agents", agent_elapsed)
+            data["workflow_timings_ms"] = existing
     except Exception as exc:
         message = f"workbench agents failed for {profile.code}: {exc}"
         print(f"[warn] {message}")
@@ -192,6 +276,12 @@ def _write_round_workbench_data(
     if not data.get("research_model"):
         fallback_tier = "standard" if agent_errors else research_model_tier
         data["research_model"] = research_model_metadata(fallback_tier)
+    if trading_context and not data.get("trade_timing"):
+        data.update({key: trading_context.get(key) for key in ["trade_timing", "peer_comparison", "peer_candidates", "trade_execution_notes", "data_source_status", "data_errors"]})
+    if workflow_timings_ms:
+        existing = dict(data.get("workflow_timings_ms") or {})
+        existing.update({key: value for key, value in workflow_timings_ms.items() if key not in existing})
+        data["workflow_timings_ms"] = existing
     data = merge_default_workbench(data, code=profile.code, name=profile.name)
     trade_review = data.setdefault("trade_review", {})
     optimal = analysis.get("optimal") or {}
@@ -204,6 +294,7 @@ def _write_round_workbench_data(
             "execution_lesson": str(optimal.get("sell_reason") or analysis.get("headline") or ""),
         }
     )
+    _append_workflow_timing(data, "trading_context_agent", data.get("workflow_timings_ms", {}).get("data_prep", 0))
     write_workbench_json(output.parent / "research_workbench_data.json", data)
     write_workbench_json(output.with_suffix(".workbench.json"), data)
     return data
@@ -276,6 +367,32 @@ def _sector_daily(provider: MarketDataProvider, symbol: str, start, end) -> pd.D
     if symbol.startswith(("sh", "sz")):
         return provider.index_daily(symbol, start, end)
     return provider.stock_daily(symbol or "sh000300", start, end)
+
+
+def _sector_daily_with_status(provider: MarketDataProvider, symbol: str, start, end):
+    symbol = str(symbol or "").strip()
+    if symbol.startswith(("sh", "sz")):
+        return provider.index_daily_with_status(symbol, start, end)
+    return provider.stock_daily_with_status(symbol or "sh000300", start, end)
+
+
+def _elapsed_ms(started: float) -> int:
+    return max(0, int(round((perf_counter() - started) * 1000)))
+
+
+def _append_workflow_timing(data: dict[str, object], key: str, value: int) -> None:
+    timings = data.get("workflow_timings_ms") if isinstance(data, dict) else {}
+    timings = dict(timings if isinstance(timings, dict) else {})
+    if key == "total":
+        timings[key] = max(0, int(value))
+    else:
+        timings[key] = max(0, int(value))
+    data["workflow_timings_ms"] = timings
+
+
+def _timed_call(func, *args, **kwargs):
+    started = perf_counter()
+    return func(*args, **kwargs), _elapsed_ms(started)
 
 
 def _analyze(trade_round: TradeRound, profile: IndustryProfile, stock: pd.DataFrame, sector: pd.DataFrame, benchmark: pd.DataFrame) -> dict:
