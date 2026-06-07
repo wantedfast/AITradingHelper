@@ -19,6 +19,9 @@ from .workbench_schema import merge_default_workbench
 
 def main() -> None:
     test_presenter_compact_payload()
+    test_presenter_fallback_full_chinese_schema()
+    test_presenter_failed_json_returns_full_schema()
+    test_presenter_deep_memos_retained_contract()
     test_presenter_bad_types_fallback()
     test_presenter_structured_schema_contract()
     test_presenter_error_visible_contract()
@@ -59,9 +62,82 @@ def test_presenter_compact_payload() -> None:
     prompt = _presenter_user_prompt(fallback, workbench, {"score": 70})
     assert "fallback_contract" not in prompt
     assert "research_workbench" not in prompt
-    assert len(payload["deep_memos_summary"]["wang"]) <= 903
-    assert len(payload["deep_memos_summary"]["public_equity"]) <= 903
-    assert len(prompt) < 9000
+    assert len(payload["deep_memos_summary"]["wang"]) <= 3003
+    assert len(payload["deep_memos_summary"]["public_equity"]) <= 3003
+    assert len(prompt) < 16000
+
+
+def test_presenter_fallback_full_chinese_schema() -> None:
+    fallback = _normalize_presenter_data(
+        {
+            "company": {"name": "测试公司", "code": "600000", "theme": "光通信", "node": "光模块"},
+            "hero": {"claims": ["公司受益于光通信景气，但收入贡献仍需验证"], "tags": ["光通信"]},
+            "profit_flow": {"items": [{"name": "光模块", "share_pct": 40, "highlight": True}]},
+            "expectation_gap": {"market_believes": ["市场认为主题弹性较强"], "analyst_view": ["研究认为收入兑现仍需验证"], "gap_score": 55},
+            "moat": {"summary": "壁垒待验证"},
+            "next_action": {"current_action": "观察", "recheck_conditions": ["复查订单"]},
+            "deep_memos": {"wang": "WANG memo 中文内容", "public_equity": "Public memo 中文内容"},
+        },
+        {},
+    )
+    for key in [
+        "hero",
+        "one_sentence_conclusion",
+        "newbie_summary",
+        "profit_flow",
+        "logic_tree",
+        "expectation_gap",
+        "moat",
+        "financial_validation",
+        "catalysts",
+        "disconfirming_signals",
+        "next_action",
+        "claim_cards",
+        "evidence_blocks",
+        "chart_annotations",
+        "visual_priority",
+        "presenter_copy",
+        "frontend_modules",
+        "deep_memos",
+        "agent_errors",
+    ]:
+        assert key in fallback
+    assert "summary" in fallback["profit_flow"]
+    assert "explanation" in fallback["logic_tree"][0]
+    assert "dimensions" in fallback["moat"]
+    assert "weakest_link" in fallback["moat"]
+    pollution = ["should be judged", "Profit Flow", "Conclusion pending", "pending verification", "Claim ", "Validation"]
+    text = json.dumps({key: fallback.get(key) for key in ["newbie_summary", "presenter_copy", "profit_flow", "claim_cards", "evidence_blocks"]}, ensure_ascii=False)
+    assert not any(term in text for term in pollution)
+
+
+def test_presenter_failed_json_returns_full_schema() -> None:
+    fallback = {
+        "company": {"name": "测试公司", "code": "600000", "theme": "光通信", "node": "光模块"},
+        "hero": {"claims": ["收入贡献仍需验证"], "tags": ["光通信"]},
+        "profit_flow": {"items": [{"name": "光模块", "share_pct": 30, "highlight": True}]},
+        "expectation_gap": {"market_believes": ["题材弹性"], "analyst_view": ["兑现待验证"], "gap_score": 45},
+        "moat": {"summary": "壁垒待验证", "items": ["客户认证"]},
+        "next_action": {"current_action": "观察", "recheck_conditions": ["复查收入"]},
+        "deep_memos": {"wang": "WANG memo", "public_equity": "Public memo"},
+        "agent_errors": [],
+    }
+    result = _merge_presenter_data(fallback, {"_agent_error": "Expecting ',' delimiter", "_raw_text": '{"bad": true'})
+    for key in ["profit_flow", "logic_tree", "expectation_gap", "moat", "financial_validation", "catalysts", "next_action"]:
+        assert key in result
+    assert any("presenter_agent_failed" in item for item in result["agent_errors"])
+    assert result["deep_memos"]["wang"] == "WANG memo"
+
+
+def test_presenter_deep_memos_retained_contract() -> None:
+    fallback = {
+        "company": {"name": "测试公司", "code": "600000"},
+        "hero": {"claims": ["结论待验证"]},
+        "deep_memos": {"wang": "WANG 原始 memo 内容", "public_equity": "Public Equity 原始 memo 内容"},
+    }
+    result = _normalize_presenter_data({"deep_memos": "bad type"}, fallback)
+    assert result["deep_memos"]["wang"] == "WANG 原始 memo 内容"
+    assert result["deep_memos"]["public_equity"] == "Public Equity 原始 memo 内容"
 
 
 def test_presenter_bad_types_fallback() -> None:
