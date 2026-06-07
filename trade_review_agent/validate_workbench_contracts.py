@@ -3,14 +3,23 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from datetime import date
 from types import SimpleNamespace
 
+import pandas as pd
+
 from . import industry_agent
+from . import trade_execution_data
 from . import workbench_agents
 from . import workbench_news
 from .ai_trade_parser import OpenAITradeParsingError
+from .data_provider import MarketDataProvider
+from .execution_structurer import structure_trade_execution_payload
 from .presenter_agent import _compact_presenter_payload, _memo_conclusion, _merge_presenter_data, _normalize_presenter_data, _presenter_json_schema, _presenter_user_prompt
+from .schema import Trade
 from .simple_api import _api_error_payload, _recover_report_manifest, _report_manifest, _report_status_payload, _write_report_status_payload
+from .trade_execution_agent import analyze_trade_execution
+from .trade_rounds import TradeRound
 from .workbench_agents import _loads_json_object, _research_model, research_model_metadata
 from .workbench_composer import compose_workbench_data
 from .workbench_news import build_market_catalyst_context
@@ -40,6 +49,11 @@ def main() -> None:
     test_simple_api_manifest_urls()
     test_async_report_status_contract()
     test_openai_429_status_payload_contract()
+    test_trade_execution_structurer_bad_types_contract()
+    test_trade_execution_agent_missing_data_contract()
+    test_trade_execution_tencent_success_contract()
+    test_trade_execution_akshare_fallback_contract()
+    test_trade_execution_existing_fallback_contract()
     print("workbench contract validation passed")
 
 
@@ -518,6 +532,8 @@ def test_simple_api_manifest_urls() -> None:
     assert report["html_url"].endswith(".html")
     assert report["workbench_url"].endswith(".workbench.json")
     assert report["presenter_url"].endswith(".presenter.json")
+    assert report["trade_execution_url"].endswith(".trade_execution.json")
+    assert manifest["trade_execution_url"].endswith(".trade_execution.json")
     assert manifest["requested_research_model_tier"] == "better"
     assert manifest["research_model_tier"] == "standard"
     assert manifest["actual_research_model_tier"] == "standard"
@@ -555,6 +571,7 @@ def test_async_report_status_contract() -> None:
         status = json.loads((run_dir / "report_status.json").read_text(encoding="utf-8"))
         assert status["status"] == "done"
         assert status["reports"][0]["presenter_url"].endswith(".presenter.json")
+        assert status["reports"][0]["trade_execution_url"].endswith(".trade_execution.json")
 
 
 def test_openai_429_status_payload_contract() -> None:
@@ -573,6 +590,136 @@ def test_openai_429_status_payload_contract() -> None:
     assert payload["code"] == "openai_rate_limited"
     assert payload["retryable"] is True
     assert payload["retry_after"] == 2.0
+
+
+def test_trade_execution_structurer_bad_types_contract() -> None:
+    payload = structure_trade_execution_payload(
+        trade_facts={"stock_name": "TestCo", "stock_code": "600000", "trades": "bad"},
+        execution_analysis={
+            "trade_timing": {"buy_points": "bad", "sell_points": None},
+            "relative_strength": {"stock_vs_benchmark": "bad"},
+            "peer_comparison": {"rows": "bad"},
+            "trade_execution_notes": {"buy_verdict": "bad"},
+        },
+        data_source_status={"fallback_used": "cache", "errors": "missing quotes"},
+    )
+    assert isinstance(payload["trade_timing"]["buy_points"], list)
+    assert isinstance(payload["trade_timing"]["sell_points"], list)
+    assert isinstance(payload["peer_comparison"]["rows"], list)
+    assert isinstance(payload["data_source_status"]["fallback_used"], list)
+    assert payload["relative_strength"]["stock_vs_benchmark"] == "unknown"
+    assert payload["trade_execution_notes"]["buy_verdict"] == "unknown"
+
+
+def test_trade_execution_agent_missing_data_contract() -> None:
+    output = analyze_trade_execution({"trade_facts": {"trades": [{"side": "buy", "date": "2026-06-03", "price": 10, "quantity": 100}]}, "market_data": {}})
+    assert isinstance(output["trade_timing"]["buy_points"], list)
+    assert output["trade_timing"]["buy_points"][0]["intraday_position"] == "unknown"
+    assert output["relative_strength"]["stock_vs_benchmark"] in {"similar", "unknown"}
+    assert isinstance(output["peer_comparison"]["rows"], list)
+    assert output["trade_execution_notes"]["buy_verdict"] == "unknown"
+
+
+def test_trade_execution_tencent_success_contract() -> None:
+    original_tencent = trade_execution_data._fetch_tencent_daily
+    original_stock = trade_execution_data._fetch_akshare_stock_daily
+    try:
+        trade_execution_data._fetch_tencent_daily = lambda *args, **kwargs: _sample_daily_frame(args[0] if args else "600000")
+        trade_execution_data._fetch_akshare_stock_daily = lambda *args, **kwargs: pd.DataFrame()
+        with tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False) as handle:
+            cache_db = handle.name
+        try:
+            provider = MarketDataProvider(cache_db)
+            fetch = trade_execution_data.fetch_daily_with_source(
+                provider=provider,
+                table="stock_daily",
+                symbol="600000",
+                start=date(2026, 6, 1),
+                end=date(2026, 6, 5),
+                kind="stock",
+            )
+            assert fetch.source == "tencent_finance"
+            assert fetch.status == "ok"
+        finally:
+            _remove_if_possible(cache_db)
+    finally:
+        trade_execution_data._fetch_tencent_daily = original_tencent
+        trade_execution_data._fetch_akshare_stock_daily = original_stock
+
+
+def test_trade_execution_akshare_fallback_contract() -> None:
+    original_tencent = trade_execution_data._fetch_tencent_daily
+    original_stock = trade_execution_data._fetch_akshare_stock_daily
+    try:
+        trade_execution_data._fetch_tencent_daily = lambda *args, **kwargs: pd.DataFrame()
+        trade_execution_data._fetch_akshare_stock_daily = lambda *args, **kwargs: _sample_daily_frame(args[0] if args else "600000")
+        with tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False) as handle:
+            cache_db = handle.name
+        try:
+            provider = MarketDataProvider(cache_db)
+            fetch = trade_execution_data.fetch_daily_with_source(
+                provider=provider,
+                table="stock_daily",
+                symbol="600000",
+                start=date(2026, 6, 1),
+                end=date(2026, 6, 5),
+                kind="stock",
+            )
+            assert fetch.source == "akshare"
+            assert fetch.status == "fallback"
+        finally:
+            _remove_if_possible(cache_db)
+    finally:
+        trade_execution_data._fetch_tencent_daily = original_tencent
+        trade_execution_data._fetch_akshare_stock_daily = original_stock
+
+
+def test_trade_execution_existing_fallback_contract() -> None:
+    original_tencent = trade_execution_data._fetch_tencent_daily
+    original_stock = trade_execution_data._fetch_akshare_stock_daily
+    try:
+        trade_execution_data._fetch_tencent_daily = lambda *args, **kwargs: pd.DataFrame()
+        trade_execution_data._fetch_akshare_stock_daily = lambda *args, **kwargs: pd.DataFrame()
+        with tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False) as handle:
+            cache_db = handle.name
+        try:
+            provider = MarketDataProvider(cache_db)
+            provider._write_cache("stock_daily", _sample_daily_frame("600000"))
+            fetch = trade_execution_data.fetch_daily_with_source(
+                provider=provider,
+                table="stock_daily",
+                symbol="600000",
+                start=date(2026, 6, 1),
+                end=date(2026, 6, 5),
+                kind="stock",
+            )
+            assert fetch.source == "fallback_existing"
+            assert fetch.status == "fallback"
+            assert not fetch.frame.empty
+        finally:
+            _remove_if_possible(cache_db)
+    finally:
+        trade_execution_data._fetch_tencent_daily = original_tencent
+        trade_execution_data._fetch_akshare_stock_daily = original_stock
+
+
+def _sample_daily_frame(symbol: str) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {"symbol": symbol, "trade_date": date(2026, 6, 1), "open": 10.0, "close": 10.2, "high": 10.3, "low": 9.9, "volume": 1000, "amount": 10000, "pct_chg": 2.0, "turnover": 1.0},
+            {"symbol": symbol, "trade_date": date(2026, 6, 2), "open": 10.2, "close": 10.5, "high": 10.8, "low": 10.1, "volume": 1100, "amount": 11000, "pct_chg": 2.94, "turnover": 1.1},
+            {"symbol": symbol, "trade_date": date(2026, 6, 3), "open": 10.5, "close": 10.1, "high": 10.7, "low": 10.0, "volume": 1200, "amount": 12000, "pct_chg": -3.81, "turnover": 1.2},
+            {"symbol": symbol, "trade_date": date(2026, 6, 4), "open": 10.1, "close": 10.4, "high": 10.6, "low": 10.0, "volume": 1300, "amount": 13000, "pct_chg": 2.97, "turnover": 1.3},
+            {"symbol": symbol, "trade_date": date(2026, 6, 5), "open": 10.4, "close": 10.3, "high": 10.5, "low": 10.2, "volume": 900, "amount": 9000, "pct_chg": -0.96, "turnover": 0.9},
+        ]
+    )
+
+
+def _remove_if_possible(path: str) -> None:
+    try:
+        os.remove(path)
+    except OSError:
+        pass
 
 
 if __name__ == "__main__":
