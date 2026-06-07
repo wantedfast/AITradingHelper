@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useRef, useState } from "react";
 import Link from "next/link";
@@ -34,10 +34,12 @@ type ReportPayload = {
   index_url?: string;
   workbench_url?: string;
   presenter_url?: string;
+  requested_research_model_tier?: string;
   research_model_tier?: string;
+  actual_research_model_tier?: string;
   wang_model?: string;
   public_equity_model?: string;
-  reports?: Array<{ url?: string; workbench_url?: string; presenter_url?: string; title?: string; score?: number; rating?: string }>;
+  reports?: Array<{ url?: string; workbench_url?: string; presenter_url?: string; title?: string; score?: number; rating?: string; requested_research_model_tier?: string; research_model_tier?: string; actual_research_model_tier?: string }>;
   error?: string;
   detail?: string;
   request_id?: string;
@@ -90,6 +92,9 @@ type WorkbenchData = {
 };
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "";
+const STANDARD_REPORT_LABEL = "\u6807\u51c6\u62a5\u544a";
+const BETTER_REPORT_LABEL = "\u66f4\u597d\u7684\u62a5\u544a";
+const BETTER_FALLBACK_LABEL = "\u66f4\u597d\u7684\u62a5\u544a\u5931\u8d25\uff0c\u5df2\u4f7f\u7528\u6807\u51c6\u62a5\u544a";
 
 const copy = {
   navLabel: "\u6838\u5fc3\u529f\u80fd",
@@ -201,7 +206,7 @@ export default function ReviewPage() {
   const [workbenchLoading, setWorkbenchLoading] = useState(false);
   const [reportCount, setReportCount] = useState(0);
   const [researchModelTier, setResearchModelTier] = useState<"standard" | "better">("standard");
-  const [researchModelLabel, setResearchModelLabel] = useState("Standard report");
+  const [researchModelLabel, setResearchModelLabel] = useState(STANDARD_REPORT_LABEL);
   const [errorText, setErrorText] = useState("");
   const [toast, setToast] = useState("");
   const [isDragging, setIsDragging] = useState(false);
@@ -238,7 +243,7 @@ export default function ReviewPage() {
     setWorkbenchUrl("");
     setWorkbenchData(null);
     setReportCount(0);
-    setResearchModelLabel(researchModelTier === "better" ? "Better report" : "Standard report");
+    setResearchModelLabel(selectedResearchModelLabel());
     setErrorText("");
     showToast(copy.accepted);
   }
@@ -257,6 +262,30 @@ export default function ReviewPage() {
     } catch {
       return { error: text };
     }
+  }
+
+  function selectedResearchModelLabel() {
+    return researchModelTier === "better" ? BETTER_REPORT_LABEL : STANDARD_REPORT_LABEL;
+  }
+
+  function normalizePayloadTier(value?: string) {
+    return value === "better" ? "better" : "standard";
+  }
+
+  function formatResearchModelLabel(payload: ReportPayload) {
+    const firstReport = payload.reports?.[0];
+    const requested = normalizePayloadTier(
+      payload.requested_research_model_tier || firstReport?.requested_research_model_tier || researchModelTier,
+    );
+    const actual = normalizePayloadTier(
+      payload.actual_research_model_tier ||
+        payload.research_model_tier ||
+        firstReport?.actual_research_model_tier ||
+        firstReport?.research_model_tier ||
+        requested,
+    );
+    if (requested === "better" && actual !== "better") return BETTER_FALLBACK_LABEL;
+    return actual === "better" ? BETTER_REPORT_LABEL : STANDARD_REPORT_LABEL;
   }
 
   function formatReportError(payload: ReportPayload, fallback: string) {
@@ -316,7 +345,7 @@ export default function ReviewPage() {
       setReportRoute(nextReportRoute);
       setWorkbenchUrl(structuredUrl ? `${API_BASE}${structuredUrl}` : "");
       setReportCount(payload.count || payload.reports?.length || 1);
-      setResearchModelLabel(payload.research_model_tier === "better" ? "Better report" : "Standard report");
+      setResearchModelLabel(formatResearchModelLabel(payload));
       if (structuredUrl) {
         setWorkbenchLoading(true);
         try {
@@ -348,7 +377,7 @@ export default function ReviewPage() {
     setWorkbenchUrl("");
     setWorkbenchData(null);
     setReportCount(0);
-    setResearchModelLabel(researchModelTier === "better" ? "Better report" : "Standard report");
+    setResearchModelLabel(selectedResearchModelLabel());
     setErrorText("");
     if (inputRef.current) inputRef.current.value = "";
     showToast(copy.reset);
@@ -547,7 +576,7 @@ export default function ReviewPage() {
               <div>
                 <span><CheckCircle2 /> {`\u5df2\u751f\u6210 ${reportCount || 1} \u4efd\u62a5\u544a`}</span>
                 <h2>{copy.reportTitle}</h2>
-                <p>{copy.reportDesc} Research mode: {researchModelLabel}.</p>
+                <p>{copy.reportDesc} \u7814\u7a76\u6a21\u578b\uff1a{researchModelLabel}</p>
               </div>
               <button type="button" onClick={openReportDetail}>
                 {copy.openNew} <ArrowRight />
