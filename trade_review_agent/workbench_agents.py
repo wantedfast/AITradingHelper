@@ -13,21 +13,25 @@ BETTER_RESEARCH_MODEL = "gpt-5.5"
 
 
 def run_wang_workbench_agent(context: dict[str, Any]) -> dict[str, Any]:
-    return _call_json_agent(
-        _wang_system_prompt(),
-        _wang_user_prompt(context),
-        model_override=_research_model(context),
+    model = _research_model(context)
+    memo = _call_text_agent(
+        _wang_memo_system_prompt(),
+        _wang_memo_user_prompt(context),
+        model_override=model,
         allow_web=False,
     )
+    return _memo_agent_payload("wang", memo, model=model, context=context)
 
 
 def run_public_equity_workbench_agent(context: dict[str, Any]) -> dict[str, Any]:
-    return _call_json_agent(
-        _public_system_prompt(),
-        _public_user_prompt(context),
-        model_override=_research_model(context),
+    model = _research_model(context)
+    memo = _call_text_agent(
+        _public_memo_system_prompt(),
+        _public_memo_user_prompt(context),
+        model_override=model,
         allow_web=False,
     )
+    return _memo_agent_payload("public_equity", memo, model=model, context=context)
 
 
 def _wang_system_prompt() -> str:
@@ -180,7 +184,48 @@ def _call_json_agent(
             )
         except Exception as exc:
             print(f"[warn] workbench responses agent failed, fallback to chat JSON: {exc}")
-    return _call_chat_json(api_key, system_prompt, user_prompt, model_override=model_override, max_output_tokens=max_output_tokens)
+    try:
+        return _call_chat_json(api_key, system_prompt, user_prompt, model_override=model_override, max_output_tokens=max_output_tokens)
+    except Exception as exc:
+        return {"_agent_error": f"workbench chat agent failed: {exc}"}
+
+
+def _call_text_agent(
+    system_prompt: str,
+    user_prompt: str,
+    *,
+    model_override: str | None = None,
+    max_output_tokens: int | None = None,
+    allow_web: bool = False,
+) -> str:
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if not api_key or "your-openai-api-key" in api_key:
+        raise RuntimeError("OPENAI_API_KEY is required for workbench memo agent")
+    if allow_web and _web_enabled():
+        try:
+            return _call_responses_text(
+                api_key,
+                system_prompt,
+                user_prompt,
+                model_override=model_override,
+                use_web_tool=True,
+                max_output_tokens=max_output_tokens,
+            )
+        except Exception as exc:
+            print(f"[warn] workbench memo web agent failed, fallback to chat text: {exc}")
+    else:
+        try:
+            return _call_responses_text(
+                api_key,
+                system_prompt,
+                user_prompt,
+                model_override=model_override,
+                use_web_tool=False,
+                max_output_tokens=max_output_tokens,
+            )
+        except Exception as exc:
+            print(f"[warn] workbench memo responses agent failed, fallback to chat text: {exc}")
+    return _call_chat_text(api_key, system_prompt, user_prompt, model_override=model_override, max_output_tokens=max_output_tokens)
 
 
 def _model(model_override: str | None = None) -> str:
@@ -250,7 +295,38 @@ def _call_responses_json(
     if max_output:
         body["max_output_tokens"] = max_output
     data = _post_json(f"{base_url}/responses", api_key, body, timeout=180)
-    return _loads_json_object(_extract_response_text(data))
+    return _loads_json_object(
+        _extract_response_text(data),
+        repair_api_key=api_key,
+        model_override=model_override,
+        schema_hint=system_prompt,
+    )
+
+
+def _call_responses_text(
+    api_key: str,
+    system_prompt: str,
+    user_prompt: str,
+    *,
+    model_override: str | None = None,
+    use_web_tool: bool = False,
+    max_output_tokens: int | None = None,
+) -> str:
+    base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").strip().rstrip("/")
+    body: dict[str, Any] = {
+        "model": _model(model_override),
+        "input": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+    }
+    if use_web_tool:
+        body["tools"] = [{"type": "web_search_preview"}]
+    max_output = max_output_tokens or _memo_max_output_tokens()
+    if max_output:
+        body["max_output_tokens"] = max_output
+    data = _post_json(f"{base_url}/responses", api_key, body, timeout=180)
+    return _extract_response_text(data).strip()
 
 
 def _call_chat_json(
@@ -274,7 +350,35 @@ def _call_chat_json(
     if max_output:
         body["max_tokens"] = max_output
     data = _post_json(f"{base_url}/chat/completions", api_key, body, timeout=140)
-    return _loads_json_object(data["choices"][0]["message"]["content"])
+    return _loads_json_object(
+        data["choices"][0]["message"]["content"],
+        repair_api_key=api_key,
+        model_override=model_override,
+        schema_hint=system_prompt,
+    )
+
+
+def _call_chat_text(
+    api_key: str,
+    system_prompt: str,
+    user_prompt: str,
+    *,
+    model_override: str | None = None,
+    max_output_tokens: int | None = None,
+) -> str:
+    base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").strip().rstrip("/")
+    body: dict[str, Any] = {
+        "model": _model(model_override),
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+    }
+    max_output = max_output_tokens or _memo_max_output_tokens()
+    if max_output:
+        body["max_tokens"] = max_output
+    data = _post_json(f"{base_url}/chat/completions", api_key, body, timeout=140)
+    return str(data["choices"][0]["message"]["content"] or "").strip()
 
 
 def _max_output_tokens() -> int | None:
@@ -282,6 +386,14 @@ def _max_output_tokens() -> int | None:
         value = int(os.getenv("WORKBENCH_MAX_OUTPUT_TOKENS", "").strip())
     except Exception:
         return None
+    return value if value > 0 else None
+
+
+def _memo_max_output_tokens() -> int | None:
+    try:
+        value = int(os.getenv("WORKBENCH_MEMO_MAX_OUTPUT_TOKENS", "2600").strip())
+    except Exception:
+        return 2600
     return value if value > 0 else None
 
 
@@ -320,7 +432,31 @@ def _extract_response_text(data: dict[str, Any]) -> str:
     raise RuntimeError("OpenAI response did not contain text")
 
 
-def _loads_json_object(text: str) -> dict[str, Any]:
+def _loads_json_object(
+    text: str,
+    *,
+    repair_api_key: str | None = None,
+    model_override: str | None = None,
+    schema_hint: str = "",
+) -> dict[str, Any]:
+    raw = str(text or "").strip()
+    try:
+        return _parse_json_object_text(raw)
+    except Exception as exc:
+        parse_error = exc
+    if repair_api_key and _json_repair_enabled():
+        repaired = _call_json_repair_agent(
+            repair_api_key,
+            raw,
+            schema_hint=schema_hint,
+            model_override=model_override,
+        )
+        if isinstance(repaired, dict) and not repaired.get("_agent_error"):
+            return repaired
+    return {"_agent_error": f"workbench agent returned invalid JSON: {parse_error}", "_raw_text": raw[:1000]}
+
+
+def _parse_json_object_text(text: str) -> dict[str, Any]:
     raw = str(text or "").strip()
     if raw.startswith("```"):
         raw = re.sub(r"^```(?:json)?\s*", "", raw)
@@ -335,6 +471,48 @@ def _loads_json_object(text: str) -> dict[str, Any]:
     if not isinstance(parsed, dict):
         raise RuntimeError("workbench agent returned non-object JSON")
     return parsed
+
+
+def _json_repair_enabled() -> bool:
+    value = os.getenv("WORKBENCH_JSON_REPAIR_ENABLED", "1").strip().lower()
+    return value not in {"0", "false", "no"}
+
+
+def _call_json_repair_agent(
+    api_key: str,
+    raw_text: str,
+    *,
+    schema_hint: str = "",
+    model_override: str | None = None,
+) -> dict[str, Any]:
+    base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").strip().rstrip("/")
+    repair_model = os.getenv("WORKBENCH_JSON_REPAIR_MODEL") or os.getenv("WORKBENCH_STANDARD_MODEL") or STANDARD_RESEARCH_MODEL
+    body: dict[str, Any] = {
+        "model": repair_model,
+        "messages": [
+            {
+                "role": "system",
+                "content": "Repair malformed JSON. Return one valid JSON object only. Do not add markdown or commentary.",
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "schema_hint": str(schema_hint or "")[:1200],
+                        "malformed_json": str(raw_text or "")[:6000],
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        ],
+        "response_format": {"type": "json_object"},
+        "max_tokens": 900,
+    }
+    try:
+        data = _post_json(f"{base_url}/chat/completions", api_key, body, timeout=80)
+        return _parse_json_object_text(data["choices"][0]["message"]["content"])
+    except Exception as exc:
+        return {"_agent_error": f"json repair failed: {exc}"}
 
 
 # Final prompt overrides for the research-workbench flow. These are defined at
@@ -482,3 +660,104 @@ def _public_user_prompt(context: dict[str, Any]) -> str:
     if note in prompt:
         return prompt
     return f"{note}\n{prompt}"
+
+
+# Memo-first research agents. Market Catalyst still uses _call_json_agent with web
+# search; WANG/Public only write research memo text and never use web tools.
+def run_wang_workbench_agent(context: dict[str, Any]) -> dict[str, Any]:
+    model = _research_model(context)
+    memo = _call_text_agent(
+        _wang_memo_system_prompt(),
+        _wang_memo_user_prompt(context),
+        model_override=model,
+        allow_web=False,
+    )
+    return _memo_agent_payload("wang", memo, model=model, context=context)
+
+
+def run_public_equity_workbench_agent(context: dict[str, Any]) -> dict[str, Any]:
+    model = _research_model(context)
+    memo = _call_text_agent(
+        _public_memo_system_prompt(),
+        _public_memo_user_prompt(context),
+        model_override=model,
+        allow_web=False,
+    )
+    return _memo_agent_payload("public_equity", memo, model=model, context=context)
+
+
+def _memo_agent_payload(agent_type: str, memo: object, *, model: str, context: dict[str, Any]) -> dict[str, Any]:
+    text = str(memo or "").strip()
+    if not text:
+        return {"agent_type": agent_type, "model": model, "_agent_error": f"{agent_type} memo is empty"}
+    return {
+        "agent_type": agent_type,
+        "model": model,
+        "research_model_tier": _research_model_tier(context),
+        "deep_memo": text,
+        "memo": text,
+        "raw_text": text,
+    }
+
+
+def _wang_memo_system_prompt() -> str:
+    return """
+你是 WANG-INVESTOR 风格的产业链研究 Agent。
+你只输出研究 memo 文本，不输出 JSON，不输出 Markdown 大表格，不上网。
+你只能使用 stock_context 里的交易事实、市场催化剂、evidence/news 和行情上下文。
+必须区分“题材叙事”和“已验证收入/利润贡献”；证据不足就写“待验证”。
+""".strip()
+
+
+def _public_memo_system_prompt() -> str:
+    return """
+你是 Public Equity Investing 风格的上市公司投资判断 Agent。
+你只输出研究 memo 文本，不输出 JSON，不输出 Markdown 大表格，不上网。
+你只能使用 stock_context、WANG memo 摘要、market_catalyst/evidence/news 和交易复盘上下文。
+必须区分公司长期质量、当前市场主题、财报验证、估值赔率和反证风险。
+""".strip()
+
+
+def _wang_memo_user_prompt(context: dict[str, Any]) -> str:
+    return f"""
+请写一份产业链研究 memo，结构用短标题和段落即可，不要 JSON。
+
+必须覆盖：
+1. 最近市场为什么炒这家公司：资金主线、对应业务线、证据质量、待验证点。
+2. 公司在产业链的位置：上游/中游/下游、利润池在哪里、利润为什么可能流向这里。
+3. 壁垒与瓶颈：技术、认证、良率、规模、客户、产能、供需。
+4. 竞争格局：同链公司对比，谁更可能吃到利润。
+5. 市场可能低估/误解了什么。
+6. 最弱逻辑链和需要下一步验证的事实。
+
+写作要求：
+- 500-1200 中文字。
+- 使用明确判断，但不要编造事实。
+- 如果 stock_context.market_catalyst/evidence 不足，必须写“最近炒作原因待验证”。
+
+stock_context:
+{json.dumps(context, ensure_ascii=False)}
+""".strip()
+
+
+def _public_memo_user_prompt(context: dict[str, Any]) -> str:
+    return f"""
+请写一份上市公司/投资判断 memo，结构用短标题和段落即可，不要 JSON。
+
+必须覆盖：
+1. 一句话投资判断：现在是否值得研究，为什么。
+2. 当前股价交易的是什么：业务线/主题/预期。
+3. 财务和经营验证：哪些已验证，哪些只是题材。
+4. 市场预期差：市场相信什么，研究判断认为哪里可能错。
+5. 估值赔率：当前是否透支，什么条件下赔率改善。
+6. 催化剂、反证点、下一步复查条件。
+7. 对本次交易复盘的含义：买点/卖点/持有难度。
+
+写作要求：
+- 500-1200 中文字。
+- 只能基于输入上下文，不上网，不编造财务数字。
+- 对未验证事项明确写“待验证”。
+
+stock_context:
+{json.dumps(context, ensure_ascii=False)}
+""".strip()

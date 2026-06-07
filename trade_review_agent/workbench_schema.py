@@ -73,6 +73,12 @@ def default_workbench_data(code: str = "", name: str = "") -> dict[str, Any]:
             "wang_model": "gpt-4.1",
             "public_equity_model": "gpt-4.1",
         },
+        "requested_research_model": {
+            "tier": "standard",
+            "model": "gpt-4.1",
+            "wang_model": "gpt-4.1",
+            "public_equity_model": "gpt-4.1",
+        },
         "agent_errors": [],
     }
 
@@ -106,6 +112,7 @@ def normalize_workbench_data(
         "wang_agent",
         "public_equity_agent",
         "research_model",
+        "requested_research_model",
     ]:
         if not isinstance(normalized.get(key), dict):
             normalized[key] = deepcopy(defaults.get(key, {}))
@@ -190,6 +197,7 @@ def normalize_workbench_data(
 
     normalized["agent_errors"] = _str_list(normalized.get("agent_errors"))
     normalized["research_model"] = _research_model_metadata(normalized.get("research_model"))
+    normalized["requested_research_model"] = _research_model_metadata(normalized.get("requested_research_model"))
     return normalized
 
 

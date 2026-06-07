@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+import json
+import os
+import tempfile
 from types import SimpleNamespace
 
-from .presenter_agent import _compact_presenter_payload, _normalize_presenter_data, _presenter_user_prompt
-from .simple_api import _report_manifest
-from .workbench_agents import _research_model, research_model_metadata
+from . import industry_agent
+from . import workbench_agents
+from . import workbench_news
+from .ai_trade_parser import OpenAITradeParsingError
+from .presenter_agent import _compact_presenter_payload, _memo_conclusion, _merge_presenter_data, _normalize_presenter_data, _presenter_json_schema, _presenter_user_prompt
+from .simple_api import _api_error_payload, _recover_report_manifest, _report_manifest, _report_status_payload, _write_report_status_payload
+from .workbench_agents import _loads_json_object, _research_model, research_model_metadata
 from .workbench_composer import compose_workbench_data
 from .workbench_news import build_market_catalyst_context
 from .workbench_schema import merge_default_workbench
@@ -13,11 +20,23 @@ from .workbench_schema import merge_default_workbench
 def main() -> None:
     test_presenter_compact_payload()
     test_presenter_bad_types_fallback()
+    test_presenter_structured_schema_contract()
+    test_presenter_error_visible_contract()
+    test_presenter_memo_conclusion_contract()
     test_market_catalyst_context_contract()
+    test_market_catalyst_model_isolated()
     test_workbench_market_hype_schema()
     test_research_model_tier_contract()
+    test_better_fallback_cache_key_contract()
+    test_memo_first_research_agents_contract()
+    test_memo_first_workbench_deep_memos_contract()
+    test_agent_failure_preserves_market_catalyst_context()
+    test_bad_json_agent_fallback_contract()
+    test_presenter_payload_carries_market_catalyst()
     test_composer_carries_market_hype_fields()
     test_simple_api_manifest_urls()
+    test_async_report_status_contract()
+    test_openai_429_status_payload_contract()
     print("workbench contract validation passed")
 
 
@@ -67,19 +86,101 @@ def test_presenter_bad_types_fallback() -> None:
     assert isinstance(normalized["claim_cards"], list)
 
 
+def test_presenter_structured_schema_contract() -> None:
+    schema = _presenter_json_schema()
+    assert schema["strict"] is True
+    root = schema["schema"]
+    assert root["additionalProperties"] is False
+    for key in ["one_sentence_conclusion", "hero", "profit_flow", "logic_tree", "expectation_gap", "next_action"]:
+        assert key in root["required"]
+        assert key in root["properties"]
+
+
+def test_presenter_error_visible_contract() -> None:
+    fallback = {
+        "company": {"name": "TestCo", "code": "600000"},
+        "hero": {"claims": ["real conclusion"], "tags": ["theme"]},
+        "one_sentence_conclusion": "real conclusion",
+        "profit_flow": {"items": [{"name": "segment", "share_pct": 30, "highlight": True}]},
+        "expectation_gap": {"market_believes": ["market"], "analyst_view": ["view"], "gap_score": 50},
+        "moat": {"summary": "moat", "items": ["item"]},
+        "next_action": {"current_action": "watch", "recheck_conditions": ["condition"]},
+        "deep_memos": {"wang": "WANG memo", "public_equity": "Public memo"},
+        "agent_errors": [],
+    }
+    result = _merge_presenter_data(fallback, {"_agent_error": "bad json", "_raw_text": "broken"})
+    assert result["one_sentence_conclusion"] == "real conclusion"
+    assert any("presenter_agent_failed" in item for item in result["agent_errors"])
+    assert result.get("_raw_text") == "broken"
+
+
+def test_presenter_memo_conclusion_contract() -> None:
+    memo = """
+通鼎互联（002491）投资判断 Memo
+
+一句话投资判断
+当前通鼎互联值得关注但交易需保持谨慎。其主要机会来自光纤光缆主业景气回暖和新能源转型弹性。
+"""
+    assert _memo_conclusion(memo).startswith("当前通鼎互联值得关注但交易需保持谨慎")
+
+
 def test_market_catalyst_context_contract() -> None:
-    context = build_market_catalyst_context("002484", "Jianghai")
-    for key in [
-        "market_hype_reason",
-        "recent_catalysts",
-        "traded_business_line",
-        "what_market_is_pricing",
-        "evidence_quality",
-        "unknowns",
-        "evidence",
-        "source_queries",
-    ]:
-        assert key in context
+    original = os.environ.get("WORKBENCH_NEWS_CONTEXT_ENABLED")
+    try:
+        os.environ["WORKBENCH_NEWS_CONTEXT_ENABLED"] = "0"
+        context = build_market_catalyst_context("002484", "Jianghai")
+        for key in [
+            "market_hype_reason",
+            "recent_catalysts",
+            "traded_business_line",
+            "what_market_is_pricing",
+            "evidence_quality",
+            "unknowns",
+            "evidence",
+            "source_queries",
+        ]:
+            assert key in context
+    finally:
+        if original is None:
+            os.environ.pop("WORKBENCH_NEWS_CONTEXT_ENABLED", None)
+        else:
+            os.environ["WORKBENCH_NEWS_CONTEXT_ENABLED"] = original
+
+
+def test_market_catalyst_model_isolated() -> None:
+    captured: dict[str, object] = {}
+    original_call = workbench_news._call_json_agent
+    original_env = {key: os.environ.get(key) for key in ["NEWS_CONTEXT_MODEL", "WORKBENCH_NEWS_CONTEXT_MODEL", "OPENAI_RESEARCH_MODEL", "OPENAI_MODEL"]}
+    try:
+        os.environ.pop("NEWS_CONTEXT_MODEL", None)
+        os.environ.pop("WORKBENCH_NEWS_CONTEXT_MODEL", None)
+        os.environ["OPENAI_RESEARCH_MODEL"] = "gpt-5.5"
+        os.environ["OPENAI_MODEL"] = "gpt-5.5"
+
+        def fake_call(*args, **kwargs):
+            captured.update(kwargs)
+            return {
+                "market_hype_reason": "reason",
+                "recent_catalysts": ["catalyst"],
+                "traded_business_line": "line",
+                "what_market_is_pricing": "pricing",
+                "evidence_quality": "medium",
+                "unknowns": [],
+                "evidence": [],
+            }
+
+        workbench_news._call_json_agent = fake_call
+        context = workbench_news.build_market_catalyst_context("600000", "TestCo")
+        assert context["market_hype_reason"] == "reason"
+        assert captured["model_override"] == "gpt-4.1"
+        assert captured["allow_web"] is True
+    finally:
+        workbench_news._call_json_agent = original_call
+        for key, value in original_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 
 def test_workbench_market_hype_schema() -> None:
@@ -105,6 +206,7 @@ def test_workbench_market_hype_schema() -> None:
     assert isinstance(data["recent_catalysts"], list)
     assert isinstance(data["unknowns"], list)
     assert data["research_model"]["tier"] == "better"
+    assert data["requested_research_model"]["tier"] == "standard"
     assert data["company"]["code"] == "600000"
 
 
@@ -115,6 +217,178 @@ def test_research_model_tier_contract() -> None:
     assert better["tier"] == "better"
     assert better["wang_model"] == "gpt-5.5"
     assert _research_model({"research_model": better}) == "gpt-5.5"
+
+
+def test_better_fallback_cache_key_contract() -> None:
+    original_cache_path = industry_agent.CACHE_PATH
+    original_refresh_enabled = industry_agent._refresh_enabled
+    original_build_context = industry_agent.build_stock_context
+    original_wang = industry_agent.run_wang_workbench_agent
+    original_equity = industry_agent.run_public_equity_workbench_agent
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            industry_agent.CACHE_PATH = original_cache_path.__class__(tmp) / "cache.json"
+            industry_agent._refresh_enabled = lambda: True
+            industry_agent.build_stock_context = lambda **kwargs: {
+                "company": {"code": kwargs.get("code"), "name": kwargs.get("name"), "market": "A-share"},
+                "trade": {},
+                "market": {},
+            }
+
+            def fake_wang(context):
+                if context.get("research_model_tier") == "better":
+                    raise RuntimeError("gpt-5.5 unavailable")
+                return {"profit_flow": {"items": []}, "deep_memo": "standard wang"}
+
+            def fake_equity(context):
+                assert context.get("research_model_tier") == "standard"
+                return {"expectation_gap": {"gap_score": 50}, "deep_memo": "standard equity"}
+
+            industry_agent.run_wang_workbench_agent = fake_wang
+            industry_agent.run_public_equity_workbench_agent = fake_equity
+            data = industry_agent.get_workbench_profile_data("600000", "TestCo", research_model_tier="better")
+            assert data["requested_research_model"]["tier"] == "better"
+            assert data["research_model"]["tier"] == "standard"
+            assert any("better research model failed" in item for item in data["agent_errors"])
+            cache = json.loads(industry_agent.CACHE_PATH.read_text(encoding="utf-8"))
+            assert any(":tier:standard" in key for key in cache)
+            assert not any(":tier:better" in key for key in cache)
+        finally:
+            industry_agent.CACHE_PATH = original_cache_path
+            industry_agent._refresh_enabled = original_refresh_enabled
+            industry_agent.build_stock_context = original_build_context
+            industry_agent.run_wang_workbench_agent = original_wang
+            industry_agent.run_public_equity_workbench_agent = original_equity
+
+
+def test_memo_first_research_agents_contract() -> None:
+    calls: list[dict[str, object]] = []
+    original_call = workbench_agents._call_text_agent
+    try:
+        def fake_text_agent(system_prompt, user_prompt, **kwargs):
+            calls.append(kwargs)
+            return "这是普通中文研究 memo，不是 JSON。包含产业链、利润流向、证据待验证和下一步。"
+
+        workbench_agents._call_text_agent = fake_text_agent
+        context = {
+            "company": {"code": "600000", "name": "TestCo", "market": "A-share"},
+            "research_model_tier": "standard",
+            "research_model": research_model_metadata("standard"),
+            "market_catalyst": {"market_hype_reason": "AI catalyst"},
+            "evidence": ["source A"],
+            "news": ["news A"],
+        }
+        wang = workbench_agents.run_wang_workbench_agent(context)
+        public = workbench_agents.run_public_equity_workbench_agent(context)
+        assert "deep_memo" in wang
+        assert "deep_memo" in public
+        assert wang["agent_type"] == "wang"
+        assert public["agent_type"] == "public_equity"
+        assert "_agent_error" not in wang
+        assert "_agent_error" not in public
+        assert calls and all(call.get("allow_web") is False for call in calls)
+    finally:
+        workbench_agents._call_text_agent = original_call
+
+
+def test_memo_first_workbench_deep_memos_contract() -> None:
+    context = {
+        "company": {"code": "600000", "name": "TestCo", "market": "A-share"},
+        "market_hype_reason": "AI catalyst",
+        "recent_catalysts": ["order rumor"],
+        "traded_business_line": "optical module",
+        "what_market_is_pricing": "AI capex demand",
+        "evidence_quality": "medium",
+        "unknowns": [],
+        "evidence": ["source A"],
+        "news": ["news A"],
+        "research_model": research_model_metadata("standard"),
+    }
+    wang = {"agent_type": "wang", "deep_memo": "WANG 普通 memo 文本"}
+    equity = {"agent_type": "public_equity", "deep_memo": "Public 普通 memo 文本"}
+    data = compose_workbench_data(context, wang, equity)
+    assert data["deep_memos"]["wang"] == "WANG 普通 memo 文本"
+    assert data["deep_memos"]["public_equity"] == "Public 普通 memo 文本"
+    assert data["market_hype_reason"] == "AI catalyst"
+    assert data["evidence_quality"] == "medium"
+    assert "source A" in data["evidence"]
+    assert "news A" in data["news"]
+
+
+def test_agent_failure_preserves_market_catalyst_context() -> None:
+    original_cache_path = industry_agent.CACHE_PATH
+    original_refresh_enabled = industry_agent._refresh_enabled
+    original_build_context = industry_agent.build_stock_context
+    original_wang = industry_agent.run_wang_workbench_agent
+    original_equity = industry_agent.run_public_equity_workbench_agent
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            industry_agent.CACHE_PATH = original_cache_path.__class__(tmp) / "cache.json"
+            industry_agent._refresh_enabled = lambda: True
+            industry_agent.build_stock_context = lambda **kwargs: {
+                "company": {"code": kwargs.get("code"), "name": kwargs.get("name"), "market": "A-share"},
+                "trade": {},
+                "market": {},
+                "market_catalyst": {"market_hype_reason": "AI catalyst", "recent_catalysts": ["order rumor"]},
+                "market_hype_reason": "AI catalyst",
+                "recent_catalysts": ["order rumor"],
+                "traded_business_line": "optical module",
+                "what_market_is_pricing": "AI capex demand",
+                "evidence_quality": "medium",
+                "unknowns": ["revenue contribution unknown"],
+                "evidence": ["source A"],
+                "news": ["news A"],
+            }
+            industry_agent.run_wang_workbench_agent = lambda context: {"_agent_error": "bad json"}
+            industry_agent.run_public_equity_workbench_agent = lambda context: (_ for _ in ()).throw(RuntimeError("bad json"))
+            data = industry_agent.get_workbench_profile_data("002491", "TestCo", research_model_tier="standard")
+            assert data["market_hype_reason"] == "AI catalyst"
+            assert "order rumor" in data["recent_catalysts"]
+            assert data["traded_business_line"] == "optical module"
+            assert data["what_market_is_pricing"] == "AI capex demand"
+            assert data["evidence_quality"] == "medium"
+            assert "source A" in data["evidence"]
+            assert "news A" in data["news"]
+            assert data["wang_agent"] == {}
+            assert data["public_equity_agent"] == {}
+            assert any("WANG agent failed" in item for item in data["agent_errors"])
+            assert any("Public Equity agent failed" in item for item in data["agent_errors"])
+        finally:
+            industry_agent.CACHE_PATH = original_cache_path
+            industry_agent._refresh_enabled = original_refresh_enabled
+            industry_agent.build_stock_context = original_build_context
+            industry_agent.run_wang_workbench_agent = original_wang
+            industry_agent.run_public_equity_workbench_agent = original_equity
+
+
+def test_bad_json_agent_fallback_contract() -> None:
+    extracted = _loads_json_object('```json\n{"ok": true}\n```')
+    assert extracted["ok"] is True
+    bad = _loads_json_object('{"profit_flow": {"items": []} "missing_comma": true}', repair_api_key=None)
+    assert isinstance(bad, dict)
+    assert "_agent_error" in bad
+    assert "invalid JSON" in bad["_agent_error"]
+
+
+def test_presenter_payload_carries_market_catalyst() -> None:
+    fallback = {"company": {"name": "TestCo", "code": "600000"}}
+    workbench = {
+        "company": {"name": "TestCo", "code": "600000"},
+        "market_catalyst": {"market_hype_reason": "AI catalyst", "evidence_quality": "medium"},
+        "market_hype_reason": "AI catalyst",
+        "recent_catalysts": ["order rumor"],
+        "traded_business_line": "optical module",
+        "what_market_is_pricing": "AI capex demand",
+        "evidence_quality": "medium",
+        "evidence": ["source A"],
+        "news": ["news A"],
+        "deep_memos": {"wang": "WANG memo", "public_equity": "Public memo"},
+    }
+    payload = _compact_presenter_payload(fallback, workbench, {"score": 70})
+    assert payload["market_catalyst"]["market_hype_reason"] == "AI catalyst"
+    assert "source A" in payload["evidence"]
+    assert "news A" in payload["news"]
+    assert payload["deep_memos_summary"]["wang"] == "WANG memo"
 
 
 def test_composer_carries_market_hype_fields() -> None:
@@ -159,17 +433,70 @@ def test_simple_api_manifest_urls() -> None:
         score=70,
         trade_type="buy",
         requested_research_model_tier="better",
-        research_model_tier="better",
-        wang_model="gpt-5.5",
-        public_equity_model="gpt-5.5",
+        research_model_tier="standard",
+        wang_model="gpt-4.1",
+        public_equity_model="gpt-4.1",
     )
     manifest = _report_manifest("run123", [result])
     report = manifest["reports"][0]
     assert report["html_url"].endswith(".html")
     assert report["workbench_url"].endswith(".workbench.json")
     assert report["presenter_url"].endswith(".presenter.json")
-    assert manifest["research_model_tier"] == "better"
-    assert report["wang_model"] == "gpt-5.5"
+    assert manifest["requested_research_model_tier"] == "better"
+    assert manifest["research_model_tier"] == "standard"
+    assert manifest["actual_research_model_tier"] == "standard"
+    assert report["requested_research_model_tier"] == "better"
+    assert report["actual_research_model_tier"] == "standard"
+    assert report["wang_model"] == "gpt-4.1"
+
+
+def test_async_report_status_contract() -> None:
+    queued = _report_status_payload("run123", status="queued", stage="queued", request_id="req123")
+    assert queued["status"] == "queued"
+    assert queued["status_url"].endswith("/api/reports/run123/status")
+    assert queued["manifest_url"].endswith("/api/reports/run123/report_manifest.json")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        run_dir = industry_agent.CACHE_PATH.__class__(tmp)
+        (run_dir / "600000_20260601_r1.html").write_text("<html></html>", encoding="utf-8")
+        (run_dir / "600000_20260601_r1.presenter.json").write_text("{}", encoding="utf-8")
+        (run_dir / "600000_20260601_r1.workbench.json").write_text(
+            json.dumps(
+                {
+                    "requested_research_model": {"tier": "better", "model": "gpt-5.5"},
+                    "research_model": {"tier": "standard", "model": "gpt-4.1"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        recovered = _recover_report_manifest("run123", run_dir)
+        assert recovered is not None
+        assert recovered["research_model_tier"] == "standard"
+        assert recovered["requested_research_model_tier"] == "better"
+        done = dict(recovered)
+        done["status"] = "done"
+        _write_report_status_payload(run_dir, done)
+        status = json.loads((run_dir / "report_status.json").read_text(encoding="utf-8"))
+        assert status["status"] == "done"
+        assert status["reports"][0]["presenter_url"].endswith(".presenter.json")
+
+
+def test_openai_429_status_payload_contract() -> None:
+    exc = OpenAITradeParsingError(
+        "OpenAI trade parsing rate limited",
+        status_code=429,
+        retryable=True,
+        retry_after=2.0,
+        code="openai_rate_limited",
+        user_message="OpenAI 请求过于频繁，请稍后重试。",
+    )
+    payload = _api_error_payload(exc, request_id="req123", run_id="run123", stage="ocr_trade_file")
+    payload["status"] = "error"
+    assert payload["status"] == "error"
+    assert payload["stage"] == "ocr_trade_file"
+    assert payload["code"] == "openai_rate_limited"
+    assert payload["retryable"] is True
+    assert payload["retry_after"] == 2.0
 
 
 if __name__ == "__main__":

@@ -5,6 +5,7 @@ import mimetypes
 import os
 import re
 import socket
+import threading
 import traceback
 from dataclasses import asdict
 from datetime import datetime
@@ -38,6 +39,7 @@ CN_TZ = ZoneInfo("Asia/Shanghai")
 ALLOWED_SUFFIXES = {".xls", ".xlsx", ".csv", ".txt", ".png", ".jpg", ".jpeg", ".webp"}
 MAX_SEEN_EVENTS = 2048
 REPORT_MANIFEST_NAME = "report_manifest.json"
+REPORT_STATUS_NAME = "report_status.json"
 RESEARCH_PRESENTER_NAME = "research_presenter_data.json"
 RESEARCH_WORKBENCH_NAME = "research_workbench_data.json"
 
@@ -116,43 +118,6 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
 
     def _create_reports(self) -> None:
         self._create_reports_resilient()
-        return
-        content_type = self.headers.get("content-type", "")
-        if "multipart/form-data" not in content_type:
-            self._json({"error": "expected multipart/form-data"}, status=400)
-            return
-
-        filename, data, fields = self._read_multipart_form(content_type)
-        if not filename or data is None:
-            self._json({"error": "missing file"}, status=400)
-            return
-        research_model_tier = normalize_research_model_tier(fields.get("research_model_tier") or fields.get("better_report"))
-
-        filename = Path(filename or "upload.csv").name
-        suffix = Path(filename).suffix.lower()
-        if suffix not in ALLOWED_SUFFIXES:
-            self._json({"error": "只支持 xls/xlsx/csv/txt 或成交截图图片"}, status=400)
-            return
-
-        run_id = uuid4().hex
-        run_dir = REPORT_DIR / run_id
-        upload_path = UPLOAD_DIR / f"{run_id}{suffix}"
-        UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-        run_dir.mkdir(parents=True, exist_ok=True)
-        upload_path.write_bytes(data)
-
-        trades_path = run_dir / "ai_trades.csv"
-        trade_file_to_trade_csv(upload_path, trades_path)
-        results = build_all_reports(
-            trades_path=trades_path,
-            output_dir=run_dir,
-            cache_db=CACHE_DB,
-            research_model_tier=research_model_tier,
-        )
-        _ensure_report_aliases(run_dir)
-        manifest = _report_manifest(run_id, results)
-        (run_dir / REPORT_MANIFEST_NAME).write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-        self._json(manifest)
 
     def _create_reports_resilient(self) -> None:
         run_id = ""
@@ -185,23 +150,16 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             run_dir.mkdir(parents=True, exist_ok=True)
             upload_path.write_bytes(data)
 
-            self._set_stage("ocr_trade_file", run_id=run_id)
-            trades_path = run_dir / "ai_trades.csv"
-            trade_file_to_trade_csv(upload_path, trades_path)
-            self._set_stage("build_reports", run_id=run_id)
-            results = build_all_reports(
-                trades_path=trades_path,
-                output_dir=run_dir,
-                cache_db=CACHE_DB,
+            self._set_stage("queued", run_id=run_id)
+            _write_report_status(run_id, run_dir, status="queued", stage="queued", request_id=self._request_id)
+            _start_report_generation_task(
+                run_id=run_id,
+                run_dir=run_dir,
+                upload_path=upload_path,
                 research_model_tier=research_model_tier,
+                request_id=self._request_id,
             )
-            self._set_stage("write_aliases", run_id=run_id)
-            _ensure_report_aliases(run_dir)
-            self._set_stage("write_manifest", run_id=run_id)
-            manifest = _report_manifest(run_id, results)
-            (run_dir / REPORT_MANIFEST_NAME).write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-            self._set_stage("respond_manifest", run_id=run_id)
-            self._json(manifest)
+            self._json(_report_status_payload(run_id, status="queued", stage="queued"), status=202)
         except Exception as exc:
             recovered = _recover_report_manifest(run_id, run_dir) if run_id and run_dir else None
             if recovered:
@@ -391,11 +349,33 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
         run_id = parts[3]
         filename = Path(unquote(parts[4])).name
         run_dir = REPORT_DIR / run_id
+        if filename == "status":
+            self._serve_report_status(run_id, run_dir)
+            return
         report_path = _resolve_report_file(run_id, run_dir, filename)
         if not report_path.exists() or not report_path.is_file():
             self._json({"error": "report not found"}, status=404)
             return
         self._serve_file(report_path)
+
+    def _serve_report_status(self, run_id: str, run_dir: Path) -> None:
+        recovered = _recover_report_manifest(run_id, run_dir)
+        if recovered:
+            recovered["status"] = "done"
+            recovered["stage"] = "done"
+            recovered["status_url"] = f"/api/reports/{run_id}/status"
+            self._json(recovered)
+            return
+        status_path = run_dir / REPORT_STATUS_NAME
+        if not status_path.exists():
+            self._json(_report_status_payload(run_id, status="queued", stage="queued"))
+            return
+        try:
+            payload = json.loads(status_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            self._json(_api_error_payload(exc, request_id=getattr(self, "_request_id", ""), run_id=run_id, stage="read_status"), status=500)
+            return
+        self._json(payload)
 
     def _serve_watch_audio(self, path: str) -> None:
         parts = path.split("/")
@@ -468,6 +448,113 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
 
 def _plan_payload(plan: AlertPlan) -> dict:
     return asdict(plan)
+
+
+def _start_report_generation_task(
+    *,
+    run_id: str,
+    run_dir: Path,
+    upload_path: Path,
+    research_model_tier: str,
+    request_id: str,
+) -> None:
+    thread = threading.Thread(
+        target=_run_report_generation_task,
+        kwargs={
+            "run_id": run_id,
+            "run_dir": run_dir,
+            "upload_path": upload_path,
+            "research_model_tier": research_model_tier,
+            "request_id": request_id,
+        },
+        daemon=True,
+        name=f"report-{run_id[:8]}",
+    )
+    thread.start()
+
+
+def _run_report_generation_task(
+    *,
+    run_id: str,
+    run_dir: Path,
+    upload_path: Path,
+    research_model_tier: str,
+    request_id: str,
+) -> None:
+    stage = "queued"
+    try:
+        stage = "ocr_trade_file"
+        _write_report_status(run_id, run_dir, status="running", stage=stage, request_id=request_id)
+        trades_path = run_dir / "ai_trades.csv"
+        trade_file_to_trade_csv(upload_path, trades_path)
+
+        stage = "build_reports"
+        _write_report_status(run_id, run_dir, status="running", stage=stage, request_id=request_id)
+        results = build_all_reports(
+            trades_path=trades_path,
+            output_dir=run_dir,
+            cache_db=CACHE_DB,
+            research_model_tier=research_model_tier,
+        )
+
+        stage = "write_aliases"
+        _write_report_status(run_id, run_dir, status="running", stage=stage, request_id=request_id)
+        _ensure_report_aliases(run_dir)
+
+        stage = "write_manifest"
+        _write_report_status(run_id, run_dir, status="running", stage=stage, request_id=request_id)
+        manifest = _report_manifest(run_id, results)
+        (run_dir / REPORT_MANIFEST_NAME).write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        done = dict(manifest)
+        done["status"] = "done"
+        done["stage"] = "done"
+        done["status_url"] = f"/api/reports/{run_id}/status"
+        _write_report_status_payload(run_dir, done)
+    except Exception as exc:
+        recovered = _recover_report_manifest(run_id, run_dir)
+        if recovered:
+            recovered["status"] = "done"
+            recovered["stage"] = "done"
+            recovered["status_url"] = f"/api/reports/{run_id}/status"
+            recovered["warning"] = "report generation recovered from completed artifacts"
+            _write_report_status_payload(run_dir, recovered)
+            return
+        payload = _report_status_payload(run_id, status="error", stage=stage, request_id=request_id)
+        payload.update(_api_error_payload(exc, request_id=request_id, run_id=run_id, stage=stage))
+        payload["status"] = "error"
+        _write_report_status_payload(run_dir, payload)
+        _write_api_error(
+            request_id=request_id,
+            method="BACKGROUND",
+            path=f"/api/reports/{run_id}",
+            run_id=run_id,
+            stage=stage,
+            exc=exc,
+            recovered=False,
+        )
+
+
+def _report_status_payload(run_id: str, *, status: str, stage: str, request_id: str = "") -> dict:
+    return {
+        "run_id": run_id,
+        "status": status,
+        "stage": stage,
+        "status_url": f"/api/reports/{run_id}/status",
+        "manifest_url": f"/api/reports/{run_id}/{REPORT_MANIFEST_NAME}",
+        "research_workbench_url": f"/api/reports/{run_id}/{RESEARCH_WORKBENCH_NAME}",
+        "research_presenter_url": f"/api/reports/{run_id}/{RESEARCH_PRESENTER_NAME}",
+        "request_id": request_id,
+    }
+
+
+def _write_report_status(run_id: str, run_dir: Path, *, status: str, stage: str, request_id: str = "") -> None:
+    _write_report_status_payload(run_dir, _report_status_payload(run_id, status=status, stage=stage, request_id=request_id))
+
+
+def _write_report_status_payload(run_dir: Path, payload: dict) -> None:
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / REPORT_STATUS_NAME).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _recover_report_manifest(run_id: str, run_dir: Path | None) -> dict | None:

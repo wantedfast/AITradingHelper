@@ -53,6 +53,9 @@ def compose_workbench_data(context: dict[str, Any], wang: dict[str, Any], equity
             context.get("evidence_quality"),
             "low",
         ),
+        "market_catalyst": context.get("market_catalyst") if isinstance(context.get("market_catalyst"), dict) else {},
+        "evidence": _list(context.get("evidence"), []),
+        "news": _list(context.get("news"), []),
         "unknowns": _dedupe_list(
             _list(wang.get("unknowns"), [])
             + _list(equity.get("unknowns"), [])

@@ -73,18 +73,15 @@ def get_workbench_profile_data(
             return cached
 
     agent_errors: list[str] = []
-    try:
-        wang = run_wang_workbench_agent(context)
-        equity = run_public_equity_workbench_agent(_context_with_wang_pre_read(context, wang))
-    except Exception as exc:
-        if research_model["tier"] != "better":
-            raise
-        agent_errors.append(f"better research model failed, retried standard: {exc}")
+    wang, equity, first_errors = _run_research_agents(context)
+    agent_errors.extend(first_errors)
+    if agent_errors and research_model["tier"] == "better":
+        agent_errors.append("better research model failed, retried standard")
         research_model = research_model_metadata("standard")
         context["research_model_tier"] = research_model["tier"]
         context["research_model"] = research_model
-        wang = run_wang_workbench_agent(context)
-        equity = run_public_equity_workbench_agent(_context_with_wang_pre_read(context, wang))
+        wang, equity, retry_errors = _run_research_agents(context)
+        agent_errors.extend(retry_errors)
         key = f"{PROFILE_CACHE_VERSION}:{code}:{name}{_context_cache_suffix(context)}"
     workbench = compose_workbench_data(context, wang, equity)
     workbench["wang_agent"] = wang
@@ -99,6 +96,47 @@ def get_workbench_profile_data(
     CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
     CACHE_PATH.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
     return workbench
+
+
+def _run_research_agents(context: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+    errors: list[str] = []
+    wang: dict[str, Any] = {}
+    equity: dict[str, Any] = {}
+    tier = normalize_research_model_tier(context.get("research_model_tier") if isinstance(context, dict) else "")
+    try:
+        candidate = run_wang_workbench_agent(context)
+        if isinstance(candidate, dict) and candidate.get("_agent_error"):
+            errors.append(f"WANG agent failed ({tier}): {candidate.get('_agent_error')}")
+        elif isinstance(candidate, dict) and _memo_text(candidate):
+            wang = candidate
+        elif isinstance(candidate, dict):
+            errors.append(f"WANG agent returned empty memo ({tier})")
+        else:
+            errors.append(f"WANG agent returned non-object data ({tier})")
+    except Exception as exc:
+        errors.append(f"WANG agent failed ({tier}): {exc}")
+
+    try:
+        candidate = run_public_equity_workbench_agent(_context_with_wang_pre_read(context, wang))
+        if isinstance(candidate, dict) and candidate.get("_agent_error"):
+            errors.append(f"Public Equity agent failed ({tier}): {candidate.get('_agent_error')}")
+        elif isinstance(candidate, dict) and _memo_text(candidate):
+            equity = candidate
+        elif isinstance(candidate, dict):
+            errors.append(f"Public Equity agent returned empty memo ({tier})")
+        else:
+            errors.append(f"Public Equity agent returned non-object data ({tier})")
+    except Exception as exc:
+        errors.append(f"Public Equity agent failed ({tier}): {exc}")
+    return wang, equity, errors
+
+
+def _memo_text(agent_data: dict[str, Any]) -> str:
+    for key in ("deep_memo", "memo", "raw_text"):
+        value = agent_data.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
 
 
 def _context_cache_suffix(context: dict[str, Any]) -> str:
@@ -156,6 +194,7 @@ def _context_with_wang_pre_read(context: dict[str, Any], wang: dict[str, Any]) -
         "claims": wang.get("claims"),
         "profit_flow": wang.get("profit_flow"),
         "weakest_link": wang.get("weakest_link"),
+        "deep_memo_summary": _memo_text(wang)[:1200],
     }
     return enriched
 

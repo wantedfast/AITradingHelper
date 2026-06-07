@@ -30,6 +30,8 @@ import {
 
 type ReportPayload = {
   run_id?: string;
+  status?: "queued" | "running" | "done" | "error";
+  status_url?: string;
   count?: number;
   index_url?: string;
   workbench_url?: string;
@@ -44,6 +46,8 @@ type ReportPayload = {
   detail?: string;
   request_id?: string;
   stage?: string;
+  code?: string;
+  retryable?: boolean;
 };
 
 type WorkbenchData = {
@@ -292,6 +296,7 @@ export default function ReviewPage() {
     const lines = [payload.error || fallback];
     if (payload.detail && payload.detail !== payload.error) lines.push(payload.detail);
     const meta = [
+      payload.code ? `code: ${payload.code}` : "",
       payload.stage ? `stage: ${payload.stage}` : "",
       payload.request_id ? `request: ${payload.request_id}` : "",
       payload.run_id ? `run: ${payload.run_id}` : "",
@@ -300,6 +305,23 @@ export default function ReviewPage() {
       .join(" | ");
     if (meta) lines.push(meta);
     return lines.join("\n");
+  }
+
+  function isPendingReport(payload: ReportPayload) {
+    return payload.status === "queued" || payload.status === "running";
+  }
+
+  async function pollReportStatus(statusUrl: string): Promise<ReportPayload> {
+    const target = statusUrl.startsWith("http") ? statusUrl : `${API_BASE}${statusUrl}`;
+    for (let attempt = 0; attempt < 240; attempt += 1) {
+      const response = await fetch(target, { cache: "no-store" });
+      const payload = await parseJsonResponse(response);
+      if (!response.ok) throw new Error(formatReportError(payload, copy.errorTitle));
+      if (payload.status === "done") return payload;
+      if (payload.status === "error") throw new Error(formatReportError(payload, copy.errorTitle));
+      await new Promise((resolve) => window.setTimeout(resolve, 1500));
+    }
+    throw new Error("\u62a5\u544a\u751f\u6210\u8d85\u65f6\uff0c\u8bf7\u7a0d\u540e\u5237\u65b0\u62a5\u544a\u5217\u8868\u3002");
   }
 
   async function generateReport() {
@@ -326,9 +348,18 @@ export default function ReviewPage() {
         method: "POST",
         body: formData,
       });
-      const payload = await parseJsonResponse(response);
+      let payload = await parseJsonResponse(response);
 
       if (!response.ok) {
+        throw new Error(formatReportError(payload, copy.errorTitle));
+      }
+
+      if (isPendingReport(payload) && payload.status_url) {
+        showToast("\u62a5\u544a\u751f\u6210\u4e2d\uff0c\u6b63\u5728\u8bfb\u53d6\u7814\u7a76\u7ed3\u679c\u3002");
+        payload = await pollReportStatus(payload.status_url);
+      }
+
+      if (payload.status === "error") {
         throw new Error(formatReportError(payload, copy.errorTitle));
       }
 
