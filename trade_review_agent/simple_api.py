@@ -702,7 +702,7 @@ def _manifest_from_run_dir(run_id: str, run_dir: Path) -> dict:
         presenter_url = f"/api/reports/{run_id}/{presenter_path.name}"
         reports.append(
             {
-                "title": _report_title_from_artifacts(presenter_path, workbench_path, html_path.stem),
+                "title": _report_title_from_stem(html_path.stem),
                 "rating": "",
                 "score": 0,
                 "trade_type": "",
@@ -749,26 +749,6 @@ def _report_title_from_stem(stem: str) -> str:
     if len(parts) >= 2:
         return f"{parts[0]} {parts[1]}"
     return stem
-
-
-def _report_title_from_artifacts(presenter_path: Path, workbench_path: Path, stem: str) -> str:
-    for path in (presenter_path, workbench_path):
-        if not path.exists():
-            continue
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            continue
-        company = data.get("company") if isinstance(data, dict) else {}
-        if not isinstance(company, dict):
-            continue
-        name = str(company.get("name") or "").strip()
-        code = str(company.get("code") or "").strip()
-        if name and code:
-            return f"{name} {code}"
-        if name:
-            return name
-    return _report_title_from_stem(stem)
 
 
 def _report_manifest(run_id: str, results: list) -> dict:

@@ -8,33 +8,27 @@ from .industry_profiles import IndustryProfile
 from .workbench_schema import merge_default_workbench
 
 
-def compose_workbench_data(
-    context: dict[str, Any],
-    wang: dict[str, Any],
-    equity: dict[str, Any],
-    trading_context: dict[str, Any] | None = None,
-) -> dict[str, Any]:
+def compose_workbench_data(context: dict[str, Any], wang: dict[str, Any], equity: dict[str, Any]) -> dict[str, Any]:
     wang = wang if isinstance(wang, dict) else {}
     equity = equity if isinstance(equity, dict) else {}
-    trading_context = trading_context if isinstance(trading_context, dict) else {}
     company = context.get("company", {}) if isinstance(context, dict) else {}
     action = _dict(equity.get("action"))
     code = str(company.get("code") or "").strip()
-    name = str(company.get("name") or code or "stock").strip()
+    name = str(company.get("name") or code or "个股").strip()
     data = {
         "company": {
             "code": code,
             "name": name,
             "market": company.get("market") or "A-share",
-            "sector": _pick(wang.get("sector"), context.get("company", {}).get("sector"), "pending verification"),
-            "theme": _pick(wang.get("theme"), context.get("company", {}).get("theme"), "pending verification"),
+            "sector": _pick(wang.get("sector"), context.get("company", {}).get("sector"), "待验证"),
+            "theme": _pick(wang.get("theme"), context.get("company", {}).get("theme"), "待验证"),
         },
         "sector_symbol": _pick(wang.get("sector_symbol"), ""),
         "market_hype_reason": _pick(
             wang.get("market_hype_reason"),
             equity.get("market_hype_reason"),
             context.get("market_hype_reason"),
-            "recent hype reason pending verification",
+            "最近炒作原因待验证",
         ),
         "recent_catalysts": _dedupe_list(
             _list(wang.get("recent_catalysts"), [])
@@ -45,13 +39,13 @@ def compose_workbench_data(
             equity.get("traded_business_line"),
             wang.get("traded_business_line"),
             context.get("traded_business_line"),
-            "pending verification",
+            "待验证",
         ),
         "what_market_is_pricing": _pick(
             equity.get("what_market_is_pricing"),
             wang.get("what_market_is_pricing"),
             context.get("what_market_is_pricing"),
-            "pending verification",
+            "待验证",
         ),
         "evidence_quality": _pick(
             equity.get("evidence_quality"),
@@ -70,9 +64,9 @@ def compose_workbench_data(
         "hero": {
             "industry_rating": _pick(wang.get("industry_rating"), "B"),
             "investment_rating": _pick(equity.get("investment_rating"), "B"),
-            "tags": (_list(wang.get("industry_tags"), []) + _list(action.get("status_tags"), ["pending verification"]))[:6],
-            "claims": _list(wang.get("claims"), [_pick(equity.get("one_sentence_conclusion"), "research conclusion pending")])[:4],
-            "note": "Workbench expresses current evidence, memo conclusions, and pending verification conditions.",
+            "tags": (_list(wang.get("industry_tags"), []) + _list(action.get("status_tags"), ["待验证"]))[:6],
+            "claims": _list(wang.get("claims"), [_pick(equity.get("one_sentence_conclusion"), "结论待验证")])[:4],
+            "note": "首屏展示结构化结论，深度事实以来源和待验证条件约束。",
         },
         "profit_flow": _dict(wang.get("profit_flow")),
         "moat_radar": _dict(wang.get("moat_radar")),
@@ -84,18 +78,10 @@ def compose_workbench_data(
         "action": action,
         "valuation_odds": equity.get("valuation_odds") or "",
         "trade_review": context.get("trade") or {},
-        "trade_timing": trading_context.get("trade_timing") or context.get("trade_timing") or {},
-        "peer_comparison": trading_context.get("peer_comparison") or context.get("peer_comparison") or {},
-        "peer_candidates": trading_context.get("peer_candidates") or context.get("peer_candidates") or [],
-        "trade_execution_notes": trading_context.get("trade_execution_notes") or context.get("trade_execution_notes") or {},
-        "data_source_status": trading_context.get("data_source_status") or context.get("data_source_status") or {},
-        "data_errors": trading_context.get("data_errors") or context.get("data_errors") or [],
-        "workflow_timings_ms": trading_context.get("workflow_timings_ms") or context.get("workflow_timings_ms") or {},
         "research_model": context.get("research_model") or {},
         "sources": _list(equity.get("sources"), []) + _list(context.get("evidence"), []) + _list(context.get("news"), []),
         "wang_agent": wang,
         "public_equity_agent": equity,
-        "trading_context_agent": trading_context,
         "deep_memos": {
             "wang": _pick(wang.get("deep_memo"), wang.get("memo"), ""),
             "public_equity": _pick(equity.get("deep_memo"), equity.get("memo"), ""),
@@ -115,64 +101,47 @@ def workbench_to_profile_payload(data: dict[str, Any]) -> dict[str, Any]:
     risks = data.get("risks", [])
     logic = data.get("logic_tree", [])
     validation = data.get("validation_panel", [])
-    peer_candidates = data.get("peer_candidates", [])
 
     chain_nodes = []
     for item in logic[:6]:
         if isinstance(item, dict):
-            title = str(item.get("node") or "logic node")
-            chain_nodes.append(("logic", title, f"certainty {item.get('certainty_pct', 'pending verification')}%"))
+            title = str(item.get("node") or "逻辑节点")
+            chain_nodes.append(("logic", title, f"确定性 {item.get('certainty_pct', '待验证')}%"))
     if not chain_nodes:
         chain_nodes = [
-            ("demand", str(profit_flow.get("value_pool") or "demand"), "pending verification"),
-            ("company", str(profit_flow.get("company_position") or "company position"), "pending verification"),
-            ("profit", "profit flow", str(profit_flow.get("why_profit_flows_here") or "pending verification")),
+            ("demand", str(profit_flow.get("value_pool") or "需求冲击"), "待验证"),
+            ("company", str(profit_flow.get("company_position") or "公司位置"), "待验证"),
+            ("profit", "利润流向", str(profit_flow.get("why_profit_flows_here") or "待验证")),
         ]
 
     dimensions = moat.get("dimensions") if isinstance(moat, dict) else []
     barriers = []
     if isinstance(dimensions, list):
-        barriers = [
-            f"{item.get('name', 'moat')}: company {item.get('company', 'pending verification')} / industry {item.get('average', 'pending verification')}"
-            for item in dimensions
-            if isinstance(item, dict)
-        ]
+        barriers = [f"{item.get('name', '壁垒')}：公司{item.get('company', '待验证')} / 行业{item.get('average', '待验证')}" for item in dimensions if isinstance(item, dict)]
     if isinstance(moat, dict) and moat.get("explanation"):
         barriers.insert(0, str(moat["explanation"]))
 
     flow_items = profit_flow.get("items") if isinstance(profit_flow, dict) else []
     profit_levers = []
     if isinstance(flow_items, list):
-        profit_levers = [
-            f"{item.get('name', 'segment')}: value share about {item.get('share_pct', 'pending verification')}%"
-            for item in flow_items
-            if isinstance(item, dict)
-        ]
+        profit_levers = [f"{item.get('name', '环节')}：价值占比约{item.get('share_pct', '待验证')}%" for item in flow_items if isinstance(item, dict)]
     if isinstance(profit_flow, dict) and profit_flow.get("why_profit_flows_here"):
         profit_levers.insert(0, str(profit_flow["why_profit_flows_here"]))
-
-    peers = []
-    for item in peer_candidates:
-        if isinstance(item, dict) and not item.get("is_target"):
-            name = str(item.get("name") or "")
-            code = str(item.get("code") or "")
-            if name or code:
-                peers.append(f"{name} {code}".strip())
 
     return {
         "code": company.get("code"),
         "name": company.get("name"),
         "theme": company.get("theme"),
-        "core_driver": _first(hero.get("claims"), profit_flow.get("value_pool"), "core driver pending verification"),
-        "node": profit_flow.get("company_position") or company.get("sector") or "industry node pending verification",
+        "core_driver": _first(hero.get("claims"), profit_flow.get("value_pool"), "主线待验证"),
+        "node": profit_flow.get("company_position") or company.get("sector") or "产业链位置待验证",
         "sector_symbol": wang_sector_symbol(data),
         "chain_nodes": chain_nodes,
-        "barriers": barriers or ["pending verification"],
-        "profit_levers": profit_levers or ["pending verification"],
-        "peers": peers,
+        "barriers": barriers or ["壁垒待验证"],
+        "profit_levers": profit_levers or ["利润流向待验证"],
+        "peers": [],
         "industry_judgment": _join(hero.get("claims")),
         "company_judgment": equity_conclusion(data),
-        "financial_validation": [_validation_text(item) for item in validation[:6]] or ["financial validation pending"],
+        "financial_validation": [_validation_text(item) for item in validation[:6]] or ["财务验证待补充"],
         "expectation_gap": _gap_text(gap),
         "valuation_odds": str(data.get("valuation_odds") or ""),
         "catalysts": [_event_text(item) for item in data.get("catalysts", [])[:6]],
@@ -181,7 +150,7 @@ def workbench_to_profile_payload(data: dict[str, Any]) -> dict[str, Any]:
         "one_sentence_thesis": equity_conclusion(data),
         "rerating_anchor": gap.get("underestimated") if isinstance(gap, dict) else "",
         "market_position": ", ".join(_list(action.get("status_tags"), [])),
-        "peer_ranking": [str(item.get("name") or item.get("code") or "") for item in data.get("peer_comparison", {}).get("rows", [])[:5] if isinstance(item, dict)],
+        "peer_ranking": [],
         "best_expression": action.get("suitable_for") or public.get("best_expression") or "",
         "trading_implication": data.get("trade_review", {}).get("execution_lesson") or action.get("not_suitable_for") or "",
         "evidence": [str(item) for item in data.get("sources", [])[:6]],
@@ -195,13 +164,13 @@ def profile_from_workbench(data: dict[str, Any]) -> IndustryProfile:
     return IndustryProfile(
         code=str(payload.get("code") or ""),
         name=str(payload.get("name") or ""),
-        theme=str(payload.get("theme") or "pending verification"),
-        core_driver=str(payload.get("core_driver") or "pending verification"),
-        node=str(payload.get("node") or "pending verification"),
+        theme=str(payload.get("theme") or "待验证"),
+        core_driver=str(payload.get("core_driver") or "待验证"),
+        node=str(payload.get("node") or "待验证"),
         sector_symbol=str(payload.get("sector_symbol") or "sh000300"),
         chain_nodes=tuple(tuple(item) for item in payload.get("chain_nodes", [])),
-        barriers=tuple(_list(payload.get("barriers"), ["pending verification"])),
-        profit_levers=tuple(_list(payload.get("profit_levers"), ["pending verification"])),
+        barriers=tuple(_list(payload.get("barriers"), ["待验证"])),
+        profit_levers=tuple(_list(payload.get("profit_levers"), ["待验证"])),
         peers=tuple(_list(payload.get("peers"), [])),
         industry_judgment=str(payload.get("industry_judgment") or ""),
         company_judgment=str(payload.get("company_judgment") or ""),
@@ -243,30 +212,30 @@ def equity_conclusion(data: dict[str, Any]) -> str:
 
 def _validation_text(item: Any) -> str:
     if isinstance(item, dict):
-        return f"{item.get('status', 'pending verification')}: {item.get('item', '')} {item.get('evidence', '')}".strip()
+        return f"{item.get('status', '待验证')}：{item.get('item', '')} {item.get('evidence', '')}".strip()
     return str(item)
 
 
 def _event_text(item: Any) -> str:
     if isinstance(item, dict):
-        return f"{item.get('time', 'TBD')}: {item.get('event', '')} ({item.get('impact', 'pending verification')})".strip()
+        return f"{item.get('time', '待定')}：{item.get('event', '')}（{item.get('impact', '待验证')}）"
     return str(item)
 
 
 def _risk_text(item: Any) -> str:
     if isinstance(item, dict):
-        return f"{item.get('name', 'risk')}: {item.get('why_it_matters', '')}; action: {item.get('downgrade_action', 'pending verification')}"
+        return f"{item.get('name', '风险')}：{item.get('why_it_matters', '')}；动作：{item.get('downgrade_action', '待验证')}"
     return str(item)
 
 
 def _gap_text(gap: Any) -> str:
     if not isinstance(gap, dict):
         return str(gap or "")
-    return f"underestimated: {gap.get('underestimated', 'pending verification')}; overestimated: {gap.get('overestimated', 'pending verification')}"
+    return f"低估：{gap.get('underestimated', '待验证')}；高估：{gap.get('overestimated', '待验证')}"
 
 
 def _join(value: Any) -> str:
-    return "; ".join(_list(value, []))
+    return "；".join(_list(value, []))
 
 
 def _first(value: Any, *fallbacks: Any) -> str:

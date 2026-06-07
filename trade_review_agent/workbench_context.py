@@ -19,10 +19,8 @@ def build_stock_context(
     stock: pd.DataFrame | None = None,
     sector: pd.DataFrame | None = None,
     benchmark: pd.DataFrame | None = None,
-    market_catalyst: dict[str, Any] | None = None,
-    trading_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Compact facts passed to downstream research agents."""
+    """Compact facts passed to WANG/Public Equity workbench agents."""
     trades = []
     if trade_round is not None:
         for trade in trade_round.trades:
@@ -32,8 +30,8 @@ def build_stock_context(
 
     analysis = analysis or {}
     optimal = analysis.get("optimal") or {}
-    catalyst = market_catalyst if isinstance(market_catalyst, dict) else build_market_catalyst_context(code, name)
-    context = {
+    catalyst = build_market_catalyst_context(code, name)
+    return {
         "company": {
             "code": code,
             "name": name or code,
@@ -75,18 +73,6 @@ def build_stock_context(
         "evidence": catalyst.get("evidence", []),
         "news": catalyst.get("recent_catalysts", []),
     }
-    if isinstance(trading_context, dict):
-        context.update(
-            {
-                "trade_timing": trading_context.get("trade_timing", {}),
-                "peer_comparison": trading_context.get("peer_comparison", {}),
-                "peer_candidates": trading_context.get("peer_candidates", []),
-                "trade_execution_notes": trading_context.get("trade_execution_notes", {}),
-                "data_source_status": trading_context.get("data_source_status", {}),
-                "data_errors": trading_context.get("data_errors", []),
-            }
-        )
-    return context
 
 
 def _frame_snapshot(frame: pd.DataFrame | None) -> str:
