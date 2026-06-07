@@ -3,9 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "clean": "node -e \"require('fs').rmSync('.next',{recursive:true,force:true})\"",
     "dev": "next dev --hostname 0.0.0.0 --port 3000",
+    "dev:clean": "npm run clean && next dev --hostname 0.0.0.0 --port 3000",
     "build": "next build",
     "start": "next start --hostname 0.0.0.0 --port 3000",
+    "start:clean": "npm run clean && npm run build && next start --hostname 0.0.0.0 --port 3000",
     "lint": "next lint"
   },
   "dependencies": {

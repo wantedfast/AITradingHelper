@@ -4,10 +4,12 @@ import base64
 import json
 import mimetypes
 import os
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +36,28 @@ HEADERS = [
 ]
 
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
+RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+MAX_OPENAI_ATTEMPTS = 3
+MAX_RETRY_SLEEP_SECONDS = 8.0
+
+
+class OpenAITradeParsingError(RuntimeError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        retryable: bool = False,
+        retry_after: float | None = None,
+        user_message: str = "AI 解析服务暂时不可用，请稍后重试",
+        code: str = "openai_trade_parsing_failed",
+    ):
+        super().__init__(message)
+        self.status_code = status_code
+        self.retryable = retryable
+        self.retry_after = retry_after
+        self.user_message = user_message
+        self.code = code
 
 
 @dataclass(frozen=True)
@@ -136,7 +160,7 @@ def _system_prompt(mode: str) -> str:
         "中文别名：买入/买/建仓/加仓/B 属于 buy；卖出/卖/清仓/减仓/S 属于 sell。"
         "如果截图或表格顶部有股票名称，而具体成交行省略了股票名，要把顶部股票名应用到成交行。"
         "卖出行数量可能显示为负数，输出时 quantity 必须为正数。"
-        "如果没有股票代码但能看到股票名称，code 可以留空，后端会根据股票名解析。"
+        "如果没有股票代码但能看到股票名称，code 可以留空，后端会根据股票名称解析。"
         "忽略账户盈亏汇总、现价、提示、笔记、BS 点开关，除非它们本身就是交易行。"
         "返回 JSON only，schema："
         "{\"trades\":[{\"name\":\"\",\"code\":\"\",\"trade_date\":\"YYYY-MM-DD\","
@@ -149,7 +173,13 @@ def _openai_extract(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     load_env(BASE_DIR / ".env")
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
     if not api_key or "your-openai-api-key" in api_key:
-        raise RuntimeError("OPENAI_API_KEY is required for AI trade parsing")
+        raise OpenAITradeParsingError(
+            "OPENAI_API_KEY is not configured",
+            status_code=503,
+            retryable=False,
+            user_message="AI 解析服务尚未配置，请检查 OPENAI_API_KEY",
+            code="openai_not_configured",
+        )
 
     payload = {
         "model": os.getenv("OPENAI_MODEL", "gpt-4.1-mini"),
@@ -158,23 +188,61 @@ def _openai_extract(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         "response_format": {"type": "json_object"},
     }
     base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").strip().rstrip("/")
-    request = urllib.request.Request(
-        f"{base_url}/chat/completions",
-        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=90) as response:
-            data = json.loads(response.read().decode("utf-8"))
-        content = data["choices"][0]["message"]["content"]
-        parsed = json.loads(content)
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError, IndexError) as exc:
-        raise RuntimeError(f"OpenAI trade parsing failed: {exc}") from exc
+    parsed: dict[str, Any] | None = None
+    last_error: OpenAITradeParsingError | None = None
+
+    for attempt in range(1, MAX_OPENAI_ATTEMPTS + 1):
+        request = urllib.request.Request(
+            f"{base_url}/chat/completions",
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=90) as response:
+                data = json.loads(response.read().decode("utf-8"))
+            content = data["choices"][0]["message"]["content"]
+            parsed = json.loads(content)
+            break
+        except urllib.error.HTTPError as exc:
+            retry_after = _retry_after_seconds(exc)
+            retryable = exc.code in RETRYABLE_STATUS_CODES
+            last_error = _openai_http_error(exc, retry_after=retry_after, retryable=retryable)
+            if not retryable or attempt >= MAX_OPENAI_ATTEMPTS:
+                raise last_error from exc
+            _sleep_before_retry(attempt, retry_after)
+        except (urllib.error.URLError, TimeoutError) as exc:
+            last_error = OpenAITradeParsingError(
+                "OpenAI trade parsing request failed",
+                status_code=503,
+                retryable=True,
+                user_message="AI 解析服务网络暂时不可用，请稍后重试",
+                code="openai_unavailable",
+            )
+            if attempt >= MAX_OPENAI_ATTEMPTS:
+                raise last_error from exc
+            _sleep_before_retry(attempt, None)
+        except (json.JSONDecodeError, KeyError, IndexError) as exc:
+            raise OpenAITradeParsingError(
+                "OpenAI trade parsing returned invalid response",
+                status_code=502,
+                retryable=True,
+                user_message="AI 解析服务返回异常，请稍后重试",
+                code="openai_invalid_response",
+            ) from exc
+
+    if parsed is None:
+        raise last_error or OpenAITradeParsingError("OpenAI trade parsing failed", status_code=503, retryable=True)
 
     trades = parsed.get("trades", [])
     if not isinstance(trades, list):
-        raise RuntimeError("OpenAI trade parsing returned invalid JSON: trades is not a list")
+        raise OpenAITradeParsingError(
+            "OpenAI trade parsing returned invalid JSON: trades is not a list",
+            status_code=502,
+            retryable=True,
+            user_message="AI 解析服务返回异常，请稍后重试",
+            code="openai_invalid_response",
+        )
     return [item for item in trades if isinstance(item, dict)]
 
 
@@ -196,7 +264,7 @@ def _normalize_intents(items: list[dict[str, Any]], source_text: str) -> list[Tr
     ]
     valid = [item for item in intents if _valid_intent(item)]
     if not valid:
-        raise RuntimeError("OpenAI did not extract valid trade facts")
+        raise ValueError("未识别到有效成交记录，请上传包含成交日期、代码、买卖方向、数量和价格的明细")
     return valid
 
 
@@ -269,9 +337,9 @@ def _frame_to_text(frame: pd.DataFrame, path: Path) -> str:
 
 def _normalize_side(value: str) -> str:
     text = str(value).strip().lower()
-    if text in {"buy", "b"} or any(word in text for word in ("买入", "买", "建仓", "加仓")):
+    if text in {"buy", "b"} or any(word in text for word in ("买入", "买", "建仓", "加仓", "证券买入")):
         return "buy"
-    if text in {"sell", "s"} or any(word in text for word in ("卖出", "卖", "清仓", "减仓")):
+    if text in {"sell", "s"} or any(word in text for word in ("卖出", "卖", "清仓", "减仓", "证券卖出")):
         return "sell"
     return text
 
@@ -297,15 +365,83 @@ def _normalize_time(value: str) -> str:
     parts = text.split(":")
     if len(parts) >= 3:
         return f"{int(parts[0]):02d}:{int(parts[1]):02d}:{int(float(parts[2])):02d}"
+    if len(parts) == 2:
+        return f"{int(parts[0]):02d}:{int(parts[1]):02d}:00"
     return ""
 
 
 def _to_float(value: Any) -> float:
     try:
-        return float(str(value or "0").replace(",", "").replace("−", "-"))
+        text = str(value or "0").strip()
+        text = (
+            text.replace(",", "")
+            .replace("，", "")
+            .replace("￥", "")
+            .replace("¥", "")
+            .replace("元", "")
+            .replace("股", "")
+            .replace("−", "-")
+            .replace("－", "-")
+        )
+        return float(text)
     except Exception:
         return 0.0
 
 
 def _digits(value: str) -> str:
     return "".join(ch for ch in str(value or "") if ch.isdigit())
+
+
+def _openai_http_error(
+    exc: urllib.error.HTTPError,
+    *,
+    retry_after: float | None,
+    retryable: bool,
+) -> OpenAITradeParsingError:
+    if exc.code == 429:
+        return OpenAITradeParsingError(
+            "OpenAI trade parsing rate limited",
+            status_code=429,
+            retryable=True,
+            retry_after=retry_after,
+            user_message="AI 解析服务暂时繁忙，请稍后重试",
+            code="openai_rate_limited",
+        )
+    if retryable:
+        return OpenAITradeParsingError(
+            f"OpenAI trade parsing temporary error: HTTP {exc.code}",
+            status_code=exc.code,
+            retryable=True,
+            retry_after=retry_after,
+            user_message="AI 解析服务暂时不可用，请稍后重试",
+            code="openai_temporary_error",
+        )
+    return OpenAITradeParsingError(
+        f"OpenAI trade parsing failed: HTTP {exc.code}",
+        status_code=exc.code,
+        retryable=False,
+        user_message="AI 解析失败，请检查上传内容或稍后重试",
+        code="openai_request_failed",
+    )
+
+
+def _retry_after_seconds(exc: urllib.error.HTTPError) -> float | None:
+    value = exc.headers.get("Retry-After") if exc.headers else None
+    if not value:
+        return None
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        pass
+    try:
+        target = parsedate_to_datetime(value)
+        if target.tzinfo is None:
+            target = target.replace(tzinfo=timezone.utc)
+        return max(0.0, (target - datetime.now(timezone.utc)).total_seconds())
+    except Exception:
+        return None
+
+
+def _sleep_before_retry(attempt: int, retry_after: float | None) -> None:
+    delay = retry_after if retry_after is not None else 0.75 * (2 ** (attempt - 1))
+    time.sleep(min(delay, MAX_RETRY_SLEEP_SECONDS))

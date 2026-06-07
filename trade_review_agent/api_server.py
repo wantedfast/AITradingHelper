@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from uuid import uuid4
 
@@ -7,6 +8,7 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
+from .simple_api import REPORT_MANIFEST_NAME, _ensure_report_aliases, _report_manifest, _resolve_report_file
 from .visual_report import build_all_reports
 
 
@@ -35,7 +37,7 @@ def health() -> dict[str, str]:
 async def create_reports(file: UploadFile = File(...)) -> dict:
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in {".xls", ".xlsx", ".csv", ".txt"}:
-        raise HTTPException(status_code=400, detail="只支持 xls/xlsx/csv/txt 成交记录文件")
+        raise HTTPException(status_code=400, detail="仅支持 xls/xlsx/csv/txt 成交记录文件")
 
     run_id = uuid4().hex
     run_dir = REPORT_DIR / run_id
@@ -45,27 +47,16 @@ async def create_reports(file: UploadFile = File(...)) -> dict:
     upload_path.write_bytes(await file.read())
 
     results = build_all_reports(trades_path=upload_path, output_dir=run_dir, cache_db=CACHE_DB)
-    return {
-        "run_id": run_id,
-        "count": len(results),
-        "reports": [
-            {
-                "title": result.title,
-                "rating": result.rating,
-                "score": result.score,
-                "trade_type": result.trade_type,
-                "url": f"/api/reports/{run_id}/{result.output.name}",
-            }
-            for result in results
-        ],
-        "index_url": f"/api/reports/{run_id}/index.html",
-    }
+    _ensure_report_aliases(run_dir)
+    manifest = _report_manifest(run_id, results)
+    (run_dir / REPORT_MANIFEST_NAME).write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    return manifest
 
 
 @app.get("/api/reports/{run_id}/{filename}")
 def get_report(run_id: str, filename: str) -> FileResponse:
     safe_name = Path(filename).name
-    path = REPORT_DIR / run_id / safe_name
+    path = _resolve_report_file(run_id, REPORT_DIR / run_id, safe_name)
     if not path.exists() or not path.is_file():
         raise HTTPException(status_code=404, detail="报告不存在")
     return FileResponse(path)

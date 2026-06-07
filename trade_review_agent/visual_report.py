@@ -4,17 +4,24 @@ from dataclasses import dataclass
 from datetime import timedelta
 from html import escape
 from pathlib import Path
+import shutil
 
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 from .data_provider import MarketDataProvider
+from .industry_agent import get_workbench_profile_data
 from .industry_profiles import IndustryProfile, get_profile
 from .io import read_trade_file
 from .schema import Trade
 from .sector_strength import build_sector_signal
 from .trade_rounds import TradeRound, split_trade_rounds
+from .presenter_agent import build_presenter_data
+from .workbench_agents import research_model_metadata
+from .workbench_report_renderer import render_workbench_report
+from .workbench_composer import write_workbench_json
+from .workbench_schema import merge_default_workbench
 
 
 @dataclass(frozen=True)
@@ -24,6 +31,10 @@ class VisualReportResult:
     rating: str
     score: int
     trade_type: str
+    requested_research_model_tier: str = "standard"
+    research_model_tier: str = "standard"
+    wang_model: str = "gpt-4.1"
+    public_equity_model: str = "gpt-4.1"
 
 
 def build_all_reports(
@@ -31,6 +42,7 @@ def build_all_reports(
     output_dir: str | Path,
     cache_db: str | Path = "work/real_trade_review_cache.sqlite",
     benchmark_symbol: str = "sh000300",
+    research_model_tier: str = "standard",
 ) -> list[VisualReportResult]:
     trades = read_trade_file(trades_path)
     rounds = split_trade_rounds(trades)
@@ -46,10 +58,24 @@ def build_all_reports(
             output=output_dir / slug,
             cache_db=cache_db,
             benchmark_symbol=benchmark_symbol,
+            research_model_tier=research_model_tier,
         )
         results.append(result)
+    _write_first_report_json_aliases(output_dir, results)
     _write_index(output_dir / "index.html", results)
     return results
+
+
+def _write_first_report_json_aliases(output_dir: Path, results: list[VisualReportResult]) -> None:
+    if not results:
+        return
+    _copy_first_json_alias(results[0].output.with_suffix(".presenter.json"), output_dir / "research_presenter_data.json")
+    _copy_first_json_alias(results[0].output.with_suffix(".workbench.json"), output_dir / "research_workbench_data.json")
+
+
+def _copy_first_json_alias(source: Path, target: Path) -> None:
+    if source.exists() and source.is_file():
+        shutil.copyfile(source, target)
 
 
 def build_single_stock_html(
@@ -79,6 +105,7 @@ def build_round_html(
     cache_db: str | Path,
     benchmark_symbol: str = "sh000300",
     profile: IndustryProfile | None = None,
+    research_model_tier: str = "standard",
 ) -> VisualReportResult:
     profile = profile or get_profile(trade_round.code, trade_round.name)
     start = trade_round.start_date - timedelta(days=25)
@@ -95,17 +122,91 @@ def build_round_html(
     trade_frame = pd.DataFrame([trade.__dict__ for trade in trade_round.trades])
     trade_frame["trade_date"] = pd.to_datetime(trade_frame["trade_date"])
     analysis = _analyze(trade_round, profile, stock, sector, benchmark)
+    workbench_data = _write_round_workbench_data(output, profile, analysis, trade_round, stock, sector, benchmark, research_model_tier)
+    presenter_data = build_presenter_data(
+        workbench=workbench_data,
+        profile=profile,
+        analysis=analysis,
+        trade_frame=trade_frame,
+    )
+    write_workbench_json(Path(output).with_suffix(".presenter.json"), presenter_data)
     market_html = _premium_market_context_html(stock, sh_index, benchmark, growth_index, sector, analysis)
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(_premium_page_html(profile, analysis, market_html, trade_frame), encoding="utf-8")
+    output.write_text(render_workbench_report(presenter_data), encoding="utf-8")
+    research_model = workbench_data.get("research_model") if isinstance(workbench_data, dict) else {}
+    if not isinstance(research_model, dict):
+        research_model = research_model_metadata("standard")
+    requested_research_model = workbench_data.get("requested_research_model") if isinstance(workbench_data, dict) else {}
+    if not isinstance(requested_research_model, dict):
+        requested_research_model = research_model
     return VisualReportResult(
         output=output,
         title=f"{profile.name} {trade_round.code} {trade_round.start_date:%Y-%m-%d}",
         rating=str(analysis["rating"]),
         score=int(analysis["score"]),
         trade_type=str(analysis["trade_type"]),
+        requested_research_model_tier=str(requested_research_model.get("tier") or research_model.get("tier") or "standard"),
+        research_model_tier=str(research_model.get("tier") or "standard"),
+        wang_model=str(research_model.get("wang_model") or research_model.get("model") or "gpt-4.1"),
+        public_equity_model=str(research_model.get("public_equity_model") or research_model.get("model") or "gpt-4.1"),
     )
+
+
+def _write_round_workbench_data(
+    output: str | Path,
+    profile: IndustryProfile,
+    analysis: dict,
+    trade_round: TradeRound,
+    stock: pd.DataFrame,
+    sector: pd.DataFrame,
+    benchmark: pd.DataFrame,
+    research_model_tier: str = "standard",
+) -> dict:
+    output = Path(output)
+    agent_errors: list[str] = []
+    requested_research_model = research_model_metadata(research_model_tier)
+    try:
+        data = get_workbench_profile_data(
+            profile.code,
+            profile.name,
+            trade_round=trade_round,
+            analysis=analysis,
+            stock=stock,
+            sector=sector,
+            benchmark=benchmark,
+            research_model_tier=research_model_tier,
+        )
+    except Exception as exc:
+        message = f"workbench agents failed for {profile.code}: {exc}"
+        print(f"[warn] {message}")
+        agent_errors.append(message)
+        data = {}
+    if not isinstance(data, dict):
+        agent_errors.append(f"workbench agents returned non-object data for {profile.code}")
+        data = {}
+    if agent_errors:
+        data["agent_errors"] = agent_errors
+    if not data.get("requested_research_model"):
+        data["requested_research_model"] = requested_research_model
+    if not data.get("research_model"):
+        fallback_tier = "standard" if agent_errors else research_model_tier
+        data["research_model"] = research_model_metadata(fallback_tier)
+    data = merge_default_workbench(data, code=profile.code, name=profile.name)
+    trade_review = data.setdefault("trade_review", {})
+    optimal = analysis.get("optimal") or {}
+    trade_review.update(
+        {
+            "trade_return_pct": float(analysis.get("return", 0.0) or 0.0),
+            "trade_score": int(analysis.get("score", 0) or 0),
+            "buy_verdict": str(optimal.get("buy_verdict") or optimal.get("buy_label") or ""),
+            "sell_verdict": str(optimal.get("sell_verdict") or optimal.get("sell_label") or ""),
+            "execution_lesson": str(optimal.get("sell_reason") or analysis.get("headline") or ""),
+        }
+    )
+    write_workbench_json(output.parent / "research_workbench_data.json", data)
+    write_workbench_json(output.with_suffix(".workbench.json"), data)
+    return data
 
 
 def _select_round(rounds: list[TradeRound], trade_date: str | None) -> TradeRound:
@@ -1063,6 +1164,373 @@ def _missed_return(analysis: dict) -> str:
     return f"{max(0.0, planned - actual):.1f}%"
 
 
+def _premium_page_html(profile: IndustryProfile, analysis: dict, market_html: str, trade_frame: pd.DataFrame) -> str:
+    """Final workbench report template used by the existing backend call site."""
+    date_label = analysis["first_day"].strftime("%Y-%m-%d")
+    generated_at = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M")
+    trade_status = "已闭环" if analysis["is_closed"] else "持仓中"
+    score = int(analysis.get("score", 0) or 0)
+    sector_signal = analysis.get("sector_signal", {}) or {}
+    sector_score = int(sector_signal.get("score", 0) or 0)
+    industry_score = max(sector_score, min(95, max(55, score + 4)))
+    invest_score = min(98, max(45, score))
+    stock_pct = float(analysis.get("day_pct", 0.0))
+    sector_pct = float(analysis.get("sector_pct", 0.0))
+    benchmark_pct = float(analysis.get("benchmark_pct", 0.0))
+    max_abs = max(abs(stock_pct), abs(sector_pct), abs(benchmark_pct), 1.0)
+    optimal = analysis["optimal"]
+    subtitle = f"{profile.code}{_wb_exchange_suffix(profile.code)} · {profile.theme} / {profile.node}"
+    flow_html, source_label, target_subtitle = _wb_profit_flow(profile)
+    wang_text = profile.wang_investor_report or profile.industry_judgment or "WANG-INVESTOR memo 暂未生成。"
+    equity_text = profile.public_equity_report or profile.valuation_odds or "Public Equity memo 暂未生成。"
+    return f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{escape(profile.name)} AI 复盘分析</title>
+  <style>
+    :root {{ color-scheme:dark; --bg:#061111; --panel:#111b1a; --line:#29403d; --gold:#ffd966; --cyan:#70d9e6; --text:#fff9e8; --muted:#b5c9c5; --green:#78dd93; --red:#ff746e; }}
+    * {{ box-sizing:border-box; }}
+    body {{ margin:0; background:radial-gradient(circle at 16% 0%,rgba(112,217,230,.16),transparent 28%),radial-gradient(circle at 92% 8%,rgba(255,217,102,.12),transparent 30%),linear-gradient(90deg,rgba(112,217,230,.06) 1px,transparent 1px),linear-gradient(0deg,rgba(112,217,230,.05) 1px,transparent 1px),var(--bg); background-size:auto,auto,48px 48px,48px 48px,auto; color:var(--text); font-family:"Microsoft YaHei","PingFang SC",Arial,sans-serif; }}
+    .page {{ width:min(1440px,calc(100vw - 32px)); margin:0 auto; padding:32px 0 60px; }}
+    .topbar {{ display:flex; justify-content:space-between; gap:16px; align-items:center; color:var(--muted); margin-bottom:26px; }}
+    .brand {{ color:var(--cyan); letter-spacing:.12em; font-weight:900; text-transform:uppercase; }}
+    .topbar span {{ border:1px solid rgba(255,217,102,.28); border-radius:999px; padding:8px 12px; margin-left:8px; color:#e8d69a; }}
+    .hero {{ display:grid; grid-template-columns:1.06fr .94fr; min-height:520px; border-bottom:1px solid rgba(255,217,102,.2); }}
+    .hero-left {{ padding:54px 56px 54px 20px; background:linear-gradient(90deg,rgba(112,217,230,.08),transparent); }}
+    .kicker {{ color:var(--cyan); font-size:18px; font-weight:900; margin-bottom:22px; }}
+    h1 {{ margin:0; font-size:clamp(60px,8vw,112px); line-height:.95; letter-spacing:-.06em; }}
+    .subtitle {{ color:#f1d996; font-size:28px; font-weight:900; margin-top:24px; }}
+    .rating-row {{ display:flex; flex-wrap:wrap; gap:16px; margin-top:34px; }}
+    .rating,.chip {{ border:1px solid rgba(255,217,102,.38); background:rgba(255,217,102,.08); border-radius:8px; padding:16px 22px; font-size:22px; color:var(--gold); font-weight:900; }}
+    .chip {{ color:var(--text); font-size:18px; }}
+    .hero-card,.section {{ border:1px solid var(--line); border-radius:8px; background:linear-gradient(180deg,rgba(17,27,26,.96),rgba(8,17,17,.96)); box-shadow:0 30px 80px rgba(0,0,0,.26); }}
+    .hero-card {{ padding:48px; display:grid; align-content:center; }}
+    .hero-card h2,.section h2 {{ margin:0 0 28px; color:var(--gold); font-size:36px; }}
+    .bullet-list {{ display:grid; gap:24px; }}
+    .bullet {{ display:grid; grid-template-columns:14px 1fr; gap:22px; align-items:start; font-size:29px; line-height:1.35; font-weight:900; }}
+    .dot {{ width:13px; height:13px; margin-top:13px; border-radius:50%; background:var(--cyan); box-shadow:0 0 20px rgba(112,217,230,.8); }}
+    .hero-note,.section p {{ color:var(--muted); line-height:1.75; font-size:18px; }}
+    .section {{ margin-top:28px; padding:34px; }}
+    .section-head {{ display:flex; align-items:flex-start; justify-content:space-between; gap:20px; margin-bottom:24px; }}
+    .pill {{ border:1px solid rgba(112,217,230,.45); color:var(--cyan); border-radius:999px; padding:10px 16px; font-weight:900; white-space:nowrap; }}
+    .flow-grid {{ min-height:360px; display:grid; grid-template-columns:230px 1fr 300px; gap:30px; align-items:center; }}
+    .source,.target,.mini,.expect-box {{ border:1px solid rgba(112,217,230,.35); background:rgba(112,217,230,.06); border-radius:8px; padding:26px; }}
+    .source {{ border-color:rgba(255,217,102,.35); background:rgba(255,217,102,.08); }}
+    .source b {{ display:block; color:var(--gold); font-size:34px; margin-bottom:10px; }}
+    .target b {{ display:block; color:var(--cyan); font-size:36px; margin-bottom:8px; }}
+    .flow-list {{ display:grid; gap:16px; }}
+    .flow {{ display:grid; grid-template-columns:140px 1fr 64px; gap:16px; align-items:center; font-size:22px; }}
+    .bar {{ height:24px; border-radius:999px; overflow:hidden; background:#263635; }}
+    .fill {{ height:100%; border-radius:inherit; background:linear-gradient(90deg,#dfb94d,#ffe590); }}
+    .flow.highlight .fill {{ background:linear-gradient(90deg,var(--cyan),#b8f4fb); box-shadow:0 0 24px rgba(112,217,230,.36); }}
+    .logic-row {{ display:grid; grid-template-columns:repeat(6,1fr); gap:16px; }}
+    .logic-card {{ min-height:154px; border:1px solid rgba(112,217,230,.35); background:rgba(112,217,230,.06); border-radius:8px; padding:22px; }}
+    .logic-card h3 {{ margin:0 0 22px; font-size:22px; }}
+    .logic-card b {{ color:var(--gold); font-size:38px; }}
+    .logic-card span {{ display:block; color:var(--muted); margin-top:10px; line-height:1.5; }}
+    .expect-grid {{ display:grid; grid-template-columns:1fr 250px 1fr; gap:24px; align-items:stretch; }}
+    .expect-box h3,.mini h3 {{ color:#f1d996; margin:0 0 18px; font-size:26px; }}
+    .expect-box ul {{ margin:0; padding-left:24px; color:var(--muted); font-size:22px; line-height:1.65; }}
+    .gap-score {{ display:grid; place-items:center; text-align:center; border:1px solid rgba(255,217,102,.45); background:rgba(255,217,102,.09); border-radius:8px; }}
+    .gap-score b {{ font-size:64px; color:var(--gold); display:block; }}
+    .two {{ display:grid; grid-template-columns:1fr 1fr; gap:22px; }}
+    .three {{ display:grid; grid-template-columns:repeat(3,1fr); gap:18px; }}
+    .memo {{ white-space:pre-wrap; color:#d7e1df; line-height:1.8; font-size:16px; max-height:520px; overflow:auto; }}
+    .list {{ color:#d7e1df; line-height:1.8; font-size:17px; }}
+    table {{ width:100%; border-collapse:collapse; }}
+    th,td {{ border-bottom:1px solid rgba(255,217,102,.16); padding:13px 10px; text-align:left; }}
+    th {{ color:var(--gold); }}
+    .green {{ color:var(--green); }} .red {{ color:var(--red); }}
+    footer {{ color:#78908b; margin-top:28px; font-size:13px; }}
+    @media (max-width:1100px) {{ .hero,.flow-grid,.expect-grid,.two {{ grid-template-columns:1fr; }} .logic-row,.three {{ grid-template-columns:1fr 1fr; }} }}
+    @media (max-width:680px) {{ .logic-row,.three {{ grid-template-columns:1fr; }} .hero-left,.hero-card,.section {{ padding:24px; }} h1 {{ font-size:52px; }} .bullet {{ font-size:22px; }} }}
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="topbar"><div class="brand">Research Workbench</div><div><span>{escape(date_label)}</span><span>{escape(generated_at)}</span><span>{escape(trade_status)}</span></div></header>
+    <section class="hero">
+      <div class="hero-left">
+        <div class="kicker">这家公司值得研究吗?</div>
+        <h1>{escape(profile.name)}</h1>
+        <div class="subtitle">{escape(subtitle)}</div>
+        <div class="rating-row"><span class="rating">产业评级 {_wb_grade(industry_score)}</span><span class="rating">投资评级 {_wb_grade(invest_score)}</span></div>
+        <div class="rating-row">{_wb_chips(profile, industry_score)}</div>
+      </div>
+      <div class="hero-card"><h2>一句话结论</h2><div class="bullet-list">{_wb_conclusion_bullets(profile, analysis)}</div><p class="hero-note">首屏不展示总分，而是先让用户判断：这家公司是否值得进入研究清单。</p></div>
+    </section>
+    <section class="section"><div class="section-head"><div><h2>利润流向图</h2><p>用资金流和利润池解释“为什么是它”，而不是让用户在财务指标里猜。</p></div><span class="pill">核心模块</span></div><div class="flow-grid"><div class="source"><b>{escape(source_label)}</b><span>价值池 100%</span></div><div class="flow-list">{flow_html}</div><div class="target"><span>高亮位置</span><b>{escape(profile.name)}</b><p>{escape(target_subtitle)}</p></div></div></section>
+    <section class="section"><div class="section-head"><div><h2>产业逻辑树</h2><p>把上涨逻辑拆成节点，显示每一步的确定性，暴露逻辑链最脆弱的位置。</p></div><span class="pill">因果链</span></div><div class="logic-row">{_wb_logic_tree(profile, analysis)}</div></section>
+    <section class="section"><div class="section-head"><div><h2>市场预期差</h2><p>股票上涨来自“比市场想得更好”，这里直接展示市场叙事和研究员判断之间的差距。</p></div><span class="pill">涨幅来源</span></div>{_wb_expectation_gap(profile, analysis)}</section>
+    <section class="section"><div class="section-head"><div><h2>产业壁垒与利润杠杆</h2><p>这里保留 agent 的关键判断，防止图表把研究结论过度压扁。</p></div><span class="pill">moat</span></div><div class="three"><article class="mini"><h3>壁垒</h3><ul class="list">{_rw_list(list(profile.barriers)[:5])}</ul></article><article class="mini"><h3>利润杠杆</h3><ul class="list">{_rw_list(list(profile.profit_levers)[:5])}</ul></article><article class="mini"><h3>反证点</h3><ul class="list">{_rw_list(list(profile.disconfirming_signals)[:5])}</ul></article></div></section>
+    <footer>本报告由 AI 自动生成，用于交易复盘和研究训练，不构成投资建议。</footer>
+  </main>
+</body>
+</html>"""
+
+
+# Workbench report v2: convert agent memo fields into visual primitives.
+def _premium_page_html(
+    *,
+    trade_round: TradeRound,
+    trade_frame: pd.DataFrame,
+    profile: IndustryProfile,
+    stock: pd.DataFrame,
+    benchmark: pd.DataFrame,
+    sector: pd.DataFrame,
+    analysis: dict,
+    date_label: str,
+    generated_at: str,
+) -> str:
+    trade_status = "已闭环" if analysis["is_closed"] else "持仓中"
+    title = f"{profile.name} {profile.code} AI 复盘分析"
+    optimal = analysis["optimal"]
+    sector_signal = analysis.get("sector_signal", {}) or {}
+    sector_score = int(sector_signal.get("score", 0) or 0)
+    score = int(analysis.get("score", 0) or 0)
+    industry_score = max(sector_score, min(95, max(55, score + 4)))
+    invest_score = min(98, max(45, score))
+    stock_pct = float(analysis.get("day_pct", 0.0))
+    sector_pct = float(analysis.get("sector_pct", 0.0))
+    benchmark_pct = float(analysis.get("benchmark_pct", 0.0))
+    max_abs = max(abs(stock_pct), abs(sector_pct), abs(benchmark_pct), 1.0)
+    subtitle = f"{profile.code}{_wb_exchange_suffix(profile.code)} · {profile.theme} / {profile.node}"
+    bullets = _wb_conclusion_bullets(profile, analysis)
+    chips = _wb_chips(profile, industry_score)
+    flow_html, source_label, target_subtitle = _wb_profit_flow(profile)
+    logic_html = _wb_logic_tree(profile, analysis)
+    expectation_html = _wb_expectation_gap(profile, analysis)
+    wang_text = profile.wang_investor_report or profile.industry_judgment or "WANG-INVESTOR memo 暂未生成。"
+    equity_text = profile.public_equity_report or profile.valuation_odds or "Public Equity memo 暂未生成。"
+    return f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{escape(title)}</title>
+  <style>
+    :root {{ color-scheme: dark; --bg:#061111; --panel:#111b1a; --panel2:#162423; --line:#29403d; --gold:#ffd966; --cyan:#70d9e6; --text:#fff9e8; --muted:#b5c9c5; --green:#78dd93; --red:#ff746e; }}
+    * {{ box-sizing:border-box; }}
+    body {{ margin:0; background:radial-gradient(circle at 16% 0%,rgba(112,217,230,.16),transparent 28%),radial-gradient(circle at 92% 8%,rgba(255,217,102,.12),transparent 30%),linear-gradient(90deg,rgba(112,217,230,.06) 1px,transparent 1px),linear-gradient(0deg,rgba(112,217,230,.05) 1px,transparent 1px),var(--bg); background-size:auto,auto,48px 48px,48px 48px,auto; color:var(--text); font-family:"Microsoft YaHei","PingFang SC",Arial,sans-serif; }}
+    .page {{ width:min(1440px,calc(100vw - 32px)); margin:0 auto; padding:32px 0 60px; }}
+    .topbar {{ display:flex; justify-content:space-between; gap:16px; align-items:center; color:var(--muted); margin-bottom:26px; }}
+    .brand {{ color:var(--cyan); letter-spacing:.12em; font-weight:900; text-transform:uppercase; }}
+    .topbar span {{ border:1px solid rgba(255,217,102,.28); border-radius:999px; padding:8px 12px; margin-left:8px; color:#e8d69a; }}
+    .hero {{ display:grid; grid-template-columns:1.06fr .94fr; min-height:520px; border-bottom:1px solid rgba(255,217,102,.2); }}
+    .hero-left {{ padding:54px 56px 54px 20px; background:linear-gradient(90deg,rgba(112,217,230,.08),transparent); }}
+    .kicker {{ color:var(--cyan); font-size:18px; font-weight:900; margin-bottom:22px; }}
+    h1 {{ margin:0; font-size:clamp(60px,8vw,112px); line-height:.95; letter-spacing:-.06em; }}
+    .subtitle {{ color:#f1d996; font-size:28px; font-weight:900; margin-top:24px; }}
+    .rating-row {{ display:flex; flex-wrap:wrap; gap:16px; margin-top:34px; }}
+    .rating,.chip {{ border:1px solid rgba(255,217,102,.38); background:rgba(255,217,102,.08); border-radius:8px; padding:16px 22px; font-size:22px; color:var(--gold); font-weight:900; }}
+    .chip {{ color:var(--text); font-size:18px; }}
+    .hero-card,.section {{ border:1px solid var(--line); border-radius:8px; background:linear-gradient(180deg,rgba(17,27,26,.96),rgba(8,17,17,.96)); box-shadow:0 30px 80px rgba(0,0,0,.26); }}
+    .hero-card {{ padding:48px; display:grid; align-content:center; }}
+    .hero-card h2,.section h2 {{ margin:0 0 28px; color:var(--gold); font-size:36px; }}
+    .bullet-list {{ display:grid; gap:24px; }}
+    .bullet {{ display:grid; grid-template-columns:14px 1fr; gap:22px; align-items:start; font-size:29px; line-height:1.35; font-weight:900; }}
+    .dot {{ width:13px; height:13px; margin-top:13px; border-radius:50%; background:var(--cyan); box-shadow:0 0 20px rgba(112,217,230,.8); }}
+    .hero-note,.section p {{ color:var(--muted); line-height:1.75; font-size:18px; }}
+    .section {{ margin-top:28px; padding:34px; }}
+    .section-head {{ display:flex; align-items:flex-start; justify-content:space-between; gap:20px; margin-bottom:24px; }}
+    .pill {{ border:1px solid rgba(112,217,230,.45); color:var(--cyan); border-radius:999px; padding:10px 16px; font-weight:900; white-space:nowrap; }}
+    .flow-grid {{ min-height:360px; display:grid; grid-template-columns:230px 1fr 300px; gap:30px; align-items:center; }}
+    .source,.target,.mini,.expect-box {{ border:1px solid rgba(112,217,230,.35); background:rgba(112,217,230,.06); border-radius:8px; padding:26px; }}
+    .source {{ border-color:rgba(255,217,102,.35); background:rgba(255,217,102,.08); }}
+    .source b {{ display:block; color:var(--gold); font-size:34px; margin-bottom:10px; }}
+    .target b {{ display:block; color:var(--cyan); font-size:36px; margin-bottom:8px; }}
+    .flow-list {{ display:grid; gap:16px; }}
+    .flow {{ display:grid; grid-template-columns:140px 1fr 64px; gap:16px; align-items:center; font-size:22px; }}
+    .bar {{ height:24px; border-radius:999px; overflow:hidden; background:#263635; }}
+    .fill {{ height:100%; border-radius:inherit; background:linear-gradient(90deg,#dfb94d,#ffe590); }}
+    .flow.highlight .fill {{ background:linear-gradient(90deg,var(--cyan),#b8f4fb); box-shadow:0 0 24px rgba(112,217,230,.36); }}
+    .logic-row {{ display:grid; grid-template-columns:repeat(6,1fr); gap:16px; }}
+    .logic-card {{ min-height:154px; border:1px solid rgba(112,217,230,.35); background:rgba(112,217,230,.06); border-radius:8px; padding:22px; }}
+    .logic-card h3 {{ margin:0 0 22px; font-size:22px; }}
+    .logic-card b {{ color:var(--gold); font-size:38px; }}
+    .logic-card span {{ display:block; color:var(--muted); margin-top:10px; line-height:1.5; }}
+    .expect-grid {{ display:grid; grid-template-columns:1fr 250px 1fr; gap:24px; align-items:stretch; }}
+    .expect-box h3,.mini h3 {{ color:#f1d996; margin:0 0 18px; font-size:26px; }}
+    .expect-box ul {{ margin:0; padding-left:24px; color:var(--muted); font-size:22px; line-height:1.65; }}
+    .gap-score {{ display:grid; place-items:center; text-align:center; border:1px solid rgba(255,217,102,.45); background:rgba(255,217,102,.09); border-radius:8px; }}
+    .gap-score b {{ font-size:64px; color:var(--gold); display:block; }}
+    .two {{ display:grid; grid-template-columns:1fr 1fr; gap:22px; }}
+    .three {{ display:grid; grid-template-columns:repeat(3,1fr); gap:18px; }}
+    .memo {{ white-space:pre-wrap; color:#d7e1df; line-height:1.8; font-size:16px; max-height:520px; overflow:auto; }}
+    .list {{ color:#d7e1df; line-height:1.8; font-size:17px; }}
+    table {{ width:100%; border-collapse:collapse; }}
+    th,td {{ border-bottom:1px solid rgba(255,217,102,.16); padding:13px 10px; text-align:left; }}
+    th {{ color:var(--gold); }}
+    .green {{ color:var(--green); }} .red {{ color:var(--red); }}
+    footer {{ color:#78908b; margin-top:28px; font-size:13px; }}
+    @media (max-width:1100px) {{ .hero,.flow-grid,.expect-grid,.two {{ grid-template-columns:1fr; }} .logic-row,.three {{ grid-template-columns:1fr 1fr; }} }}
+    @media (max-width:680px) {{ .logic-row,.three {{ grid-template-columns:1fr; }} .hero-left,.hero-card,.section {{ padding:24px; }} h1 {{ font-size:52px; }} .bullet {{ font-size:22px; }} }}
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="topbar"><div class="brand">Research Workbench</div><div><span>{escape(date_label)}</span><span>{escape(generated_at)}</span><span>{escape(trade_status)}</span></div></header>
+    <section class="hero">
+      <div class="hero-left">
+        <div class="kicker">这家公司值得研究吗?</div>
+        <h1>{escape(profile.name)}</h1>
+        <div class="subtitle">{escape(subtitle)}</div>
+        <div class="rating-row"><span class="rating">产业评级 {_wb_grade(industry_score)}</span><span class="rating">投资评级 {_wb_grade(invest_score)}</span></div>
+        <div class="rating-row">{chips}</div>
+      </div>
+      <div class="hero-card">
+        <h2>一句话结论</h2>
+        <div class="bullet-list">{bullets}</div>
+        <p class="hero-note">首屏不展示总分，而是先让用户判断：这家公司是否值得进入研究清单。</p>
+      </div>
+    </section>
+    <section class="section">
+      <div class="section-head"><div><h2>利润流向图</h2><p>用资金流和利润池解释“为什么是它”，而不是让用户在财务指标里猜。</p></div><span class="pill">核心模块</span></div>
+      <div class="flow-grid"><div class="source"><b>{escape(source_label)}</b><span>价值池 100%</span></div><div class="flow-list">{flow_html}</div><div class="target"><span>高亮位置</span><b>{escape(profile.name)}</b><p>{escape(target_subtitle)}</p></div></div>
+    </section>
+    <section class="section">
+      <div class="section-head"><div><h2>产业逻辑树</h2><p>把上涨逻辑拆成节点，显示每一步的确定性，暴露逻辑链最脆弱的位置。</p></div><span class="pill">因果链</span></div>
+      <div class="logic-row">{logic_html}</div>
+    </section>
+    <section class="section">
+      <div class="section-head"><div><h2>市场预期差</h2><p>股票上涨来自“比市场想得更好”，这里直接展示市场叙事和研究员判断之间的差距。</p></div><span class="pill">涨幅来源</span></div>
+      {expectation_html}
+    </section>
+    <section class="section">
+      <div class="section-head"><div><h2>产业壁垒与利润杠杆</h2><p>这里保留 agent 的关键判断，防止图表把研究结论过度压扁。</p></div><span class="pill">moat</span></div>
+      <div class="three"><article class="mini"><h3>壁垒</h3><ul class="list">{_rw_list(list(profile.barriers)[:5])}</ul></article><article class="mini"><h3>利润杠杆</h3><ul class="list">{_rw_list(list(profile.profit_levers)[:5])}</ul></article><article class="mini"><h3>反证点</h3><ul class="list">{_rw_list(list(profile.disconfirming_signals)[:5])}</ul></article></div>
+    </section>
+    <footer>本报告由 AI 自动生成，用于交易复盘和研究训练，不构成投资建议。</footer>
+  </main>
+</body>
+</html>"""
+
+
+def _wb_text(*values: object, fallback: str = "") -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return fallback
+
+
+def _wb_exchange_suffix(code: str) -> str:
+    code = str(code or "")
+    if code.startswith("6"):
+        return ".SH"
+    if code.startswith(("0", "3")):
+        return ".SZ"
+    if code.startswith(("8", "4")):
+        return ".BJ"
+    return ""
+
+
+def _wb_grade(score: int) -> str:
+    if score >= 88:
+        return "S"
+    if score >= 80:
+        return "A+"
+    if score >= 72:
+        return "A"
+    if score >= 62:
+        return "B+"
+    if score >= 52:
+        return "B"
+    return "C"
+
+
+def _wb_chips(profile: IndustryProfile, industry_score: int) -> str:
+    chips: list[str] = []
+    if industry_score >= 80:
+        chips.append("高景气")
+    if profile.barriers:
+        chips.append("高壁垒")
+    if profile.profit_levers:
+        chips.append("利润流向清晰")
+    if profile.expectation_gap:
+        chips.append("存在预期差")
+    if not chips:
+        chips = ["等待验证", "风险优先", "小仓观察"]
+    return "".join(f'<span class="chip">{escape(item)}</span>' for item in chips[:4])
+
+
+def _wb_conclusion_bullets(profile: IndustryProfile, analysis: dict) -> str:
+    raw = [profile.rerating_anchor, profile.core_driver, profile.expectation_gap, profile.trading_implication]
+    bullets = [_wb_shorten(item, 24) for item in raw if str(item or "").strip()]
+    if len(bullets) < 4:
+        bullets.extend([str(analysis.get("headline", "") or "交易逻辑已识别"), "买卖点需结合板块与指数环境", "下一步看财报、订单和反证信号"])
+    return "".join(f'<div class="bullet"><span class="dot"></span><span>{escape(item)}</span></div>' for item in bullets[:4])
+
+
+def _wb_shorten(text: object, limit: int) -> str:
+    value = " ".join(str(text or "").replace("\n", " ").split())
+    if len(value) <= limit:
+        return value
+    return value[:limit].rstrip("，。；、 ") + "..."
+
+
+def _wb_profit_flow(profile: IndustryProfile) -> tuple[str, str, str]:
+    labels: list[str] = []
+    for _, title, subtitle in list(profile.chain_nodes or ())[:5]:
+        label = str(title or "").strip()
+        if subtitle:
+            label = f"{label} / {subtitle}"
+        if label:
+            labels.append(label)
+    if not labels:
+        labels = ["需求端", "核心环节", profile.node or profile.name, "下游应用", "其他"]
+    weights = [35, 25, 18, 12, 10]
+    highlight_index = _wb_highlight_index(labels, profile)
+    rows = []
+    for idx, label in enumerate(labels[:5]):
+        pct = weights[idx] if idx < len(weights) else 10
+        cls = " highlight" if idx == highlight_index else ""
+        rows.append(f'<div class="flow{cls}"><span>{escape(_wb_shorten(label, 12))}</span><div class="bar"><div class="fill" style="width:{pct}%"></div></div><b>{pct}%</b></div>')
+    source_label = _wb_shorten(_wb_text(profile.theme, profile.core_driver, fallback="产业价值池"), 10)
+    target_subtitle = _wb_text(profile.node, profile.market_position, profile.rerating_anchor, fallback="产业链位置待验证")
+    return "".join(rows), source_label, target_subtitle
+
+
+def _wb_highlight_index(labels: list[str], profile: IndustryProfile) -> int:
+    needles = [profile.name, profile.node, profile.theme]
+    for idx, label in enumerate(labels):
+        for needle in needles:
+            needle = str(needle or "").strip()
+            if needle and needle in label:
+                return idx
+    return 2 if len(labels) >= 3 else 0
+
+
+def _wb_logic_tree(profile: IndustryProfile, analysis: dict) -> str:
+    items = [
+        ("需求增长", profile.core_driver),
+        ("产业景气", profile.industry_judgment),
+        ("利润流向", "; ".join(list(profile.profit_levers)[:2])),
+        ("壁垒验证", "; ".join(list(profile.barriers)[:2])),
+        ("公司兑现", profile.company_judgment),
+        ("交易验证", analysis.get("headline", "")),
+    ]
+    scores = [92, 88, 84, 80, 76, int(analysis.get("score", 72) or 72)]
+    return "".join(f'<article class="logic-card"><h3>{escape(title)}</h3><b>{score}%</b><span>{escape(_wb_shorten(desc, 34))}</span></article>' for (title, desc), score in zip(items, scores))
+
+
+def _wb_expectation_gap(profile: IndustryProfile, analysis: dict) -> str:
+    left_items = [_wb_text(profile.market_position, fallback="市场只看到题材标签"), _wb_text(profile.valuation_odds, fallback="估值和拥挤度需要验证"), _wb_text(profile.best_expression, fallback="同赛道最佳表达待比较")]
+    right_items = [_wb_text(profile.expectation_gap, fallback="真实预期差仍需确认"), _wb_text(profile.rerating_anchor, fallback="重估锚需要财报或订单验证"), _wb_text(profile.trading_implication, fallback="下一步看买卖点纪律")]
+    gap_score = min(95, max(45, int(analysis.get("score", 70) or 70) + 5))
+    return f'<div class="expect-grid"><div class="expect-box"><h3>市场认为</h3><ul>{_wb_li(left_items)}</ul></div><div class="gap-score"><div><b>{gap_score}</b><span>预期差</span></div></div><div class="expect-box"><h3>实际情况</h3><ul>{_wb_li(right_items)}</ul></div></div>'
+
+
+def _wb_li(items: list[str]) -> str:
+    return "".join(f"<li>{escape(_wb_shorten(item, 24))}</li>" for item in items if str(item or "").strip())
+
+
+def _wb_metric(label: str, value: str) -> str:
+    return f'<article class="mini"><h3>{escape(label)}</h3><p style="font-size:34px;color:var(--gold);font-weight:900">{escape(value)}</p></article>'
+
+
 def _one_line_verdict(analysis: dict) -> str:
     optimal = analysis["optimal"]
     return f"买点：{optimal['buy_verdict']} 卖点：{optimal['sell_verdict']}"
@@ -1301,3 +1769,293 @@ def _write_index(path: Path, results: list[VisualReportResult]) -> None:
 <body><main class="wrap"><h1>交易复盘目录</h1><p>每份报告均由交割单、个股行情、指数环境、板块共振和产业链定位动态生成。</p><table><thead><tr><th>报告</th><th>交易类型</th><th>评级</th><th>评分</th></tr></thead><tbody>{rows}</tbody></table></main></body></html>""",
         encoding="utf-8",
     )
+
+
+def _premium_page_html(profile: IndustryProfile, analysis: dict, market_html: str, trade_frame: pd.DataFrame) -> str:
+    """Research-workbench style report page.
+
+    This intentionally shadows the earlier legacy template above. The backend
+    analysis pipeline stays the same; only the generated report shell changes.
+    """
+    date_label = analysis["first_day"].strftime("%Y-%m-%d")
+    generated_at = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M")
+    trade_status = "已闭合" if analysis["is_closed"] else "持仓中"
+    title = f"{profile.name} {profile.code} 交易复盘"
+    thesis = profile.one_sentence_thesis or str(analysis.get("headline", ""))
+    optimal = analysis["optimal"]
+    stock_pct = float(analysis.get("day_pct", 0.0))
+    sector_pct = float(analysis.get("sector_pct", 0.0))
+    benchmark_pct = float(analysis.get("benchmark_pct", 0.0))
+    sector_signal = analysis.get("sector_signal", {}) or {}
+    sector_score = int(sector_signal.get("score", 0) or 0)
+    max_abs = max(abs(stock_pct), abs(sector_pct), abs(benchmark_pct), 1.0)
+    wang_text = profile.wang_investor_report or profile.industry_judgment or ""
+    equity_text = profile.public_equity_report or profile.valuation_odds or ""
+    evidence_html = f'<h3>证据</h3><ul class="list">{_rw_list(profile.evidence[:5])}</ul>' if profile.evidence else ""
+    return f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{escape(title)}</title>
+  <style>
+    :root {{
+      color-scheme: dark;
+      --bg: #070b0c;
+      --panel: #101718;
+      --panel-2: #151d1e;
+      --line: #283536;
+      --gold: #f2cf67;
+      --gold-2: #b99034;
+      --cyan: #6fd5df;
+      --green: #82d38a;
+      --red: #ff8d7b;
+      --text: #f2eee0;
+      --muted: #aeb8b5;
+      --soft: #d9c897;
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      background:
+        radial-gradient(circle at 15% 0%, rgba(111, 213, 223, .16), transparent 28%),
+        radial-gradient(circle at 82% 5%, rgba(242, 207, 103, .12), transparent 24%),
+        linear-gradient(90deg, rgba(111, 213, 223, .04) 1px, transparent 1px),
+        linear-gradient(0deg, rgba(111, 213, 223, .035) 1px, transparent 1px),
+        var(--bg);
+      background-size: auto, auto, 48px 48px, 48px 48px, auto;
+      color: var(--text);
+      font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif;
+      letter-spacing: 0;
+    }}
+    .page {{ width: min(1200px, calc(100vw - 36px)); margin: 0 auto; padding: 36px 0 64px; }}
+    .topbar {{ display: flex; align-items: center; justify-content: space-between; color: var(--muted); font-size: 15px; margin-bottom: 26px; }}
+    .brand {{ color: var(--gold); font-weight: 900; font-size: 20px; }}
+    .nav {{ display: flex; gap: 12px; flex-wrap: wrap; }}
+    .nav span {{ border: 1px solid rgba(242,207,103,.28); border-radius: 999px; padding: 8px 12px; color: var(--soft); }}
+    .hero {{ min-height: 520px; display: grid; grid-template-columns: 1.02fr .98fr; gap: 26px; align-items: stretch; border-bottom: 1px solid rgba(242,207,103,.18); padding-bottom: 34px; }}
+    .hero-left {{ display: flex; flex-direction: column; justify-content: center; padding: 34px 0; }}
+    .kicker, .eyebrow {{ color: var(--cyan); font-size: 17px; font-weight: 900; letter-spacing: .12em; text-transform: uppercase; }}
+    h1 {{ margin: 16px 0 0; font-size: clamp(52px, 7vw, 86px); line-height: 1.05; font-weight: 900; letter-spacing: -.04em; }}
+    .ticker {{ margin-top: 16px; color: var(--soft); font-size: 25px; font-weight: 800; }}
+    .lead {{ margin-top: 22px; color: #dbe1dc; font-size: 18px; line-height: 1.8; max-width: 720px; }}
+    .rating-row {{ display: flex; gap: 14px; margin-top: 30px; flex-wrap: wrap; }}
+    .rating, .tag {{ border: 1px solid rgba(242,207,103,.34); background: rgba(242,207,103,.08); border-radius: 8px; padding: 12px 16px; color: var(--gold); font-size: 18px; font-weight: 900; }}
+    .tag {{ color: var(--text); background: rgba(16,23,24,.86); }}
+    .hero-card, .section {{ border: 1px solid var(--line); background: linear-gradient(180deg, rgba(21,29,30,.96), rgba(13,19,20,.96)); border-radius: 8px; box-shadow: 0 24px 60px rgba(0,0,0,.24); }}
+    .hero-card {{ padding: 34px; display: grid; align-content: center; }}
+    .hero-card h2, .section h2 {{ margin: 0 0 16px; font-size: 28px; color: var(--gold); }}
+    .score-card {{ display: grid; grid-template-columns: 190px 1fr; gap: 28px; align-items: center; }}
+    .score-ring {{ --score: {int(analysis["score"])}; width: 178px; height: 178px; border-radius: 50%; display: grid; place-items: center; background: conic-gradient(var(--gold) calc(var(--score) * 1%), rgba(255,255,255,.08) 0); box-shadow: 0 0 42px rgba(242,207,103,.22); }}
+    .score-inner {{ width: 134px; height: 134px; border-radius: 50%; display: grid; place-items: center; text-align: center; background: #071012; border: 1px solid rgba(242,207,103,.24); }}
+    .score-main {{ color: var(--gold); font-size: 54px; font-weight: 950; line-height: 1; }}
+    .score-sub {{ color: var(--muted); font-size: 13px; }}
+    .claim-list {{ display: grid; gap: 16px; margin-top: 18px; }}
+    .claim {{ display: grid; grid-template-columns: 10px 1fr; gap: 14px; align-items: center; color: #f6efd5; font-size: 22px; line-height: 1.35; font-weight: 800; }}
+    .dot {{ width: 10px; height: 10px; border-radius: 50%; background: var(--cyan); box-shadow: 0 0 18px rgba(111,213,223,.75); }}
+    .section {{ margin-top: 28px; padding: 28px; }}
+    .section-head {{ display: flex; justify-content: space-between; gap: 20px; align-items: end; margin-bottom: 22px; }}
+    .section-head p, .muted {{ margin: 0; color: var(--muted); font-size: 16px; line-height: 1.65; }}
+    .pill {{ border: 1px solid rgba(111,213,223,.35); color: var(--cyan); border-radius: 999px; padding: 8px 13px; font-size: 14px; font-weight: 900; white-space: nowrap; }}
+    .metrics {{ display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px; }}
+    .metric {{ border: 1px solid rgba(242,207,103,.22); background: rgba(242,207,103,.06); border-radius: 8px; padding: 18px; }}
+    .metric b {{ display: block; color: var(--gold); font-size: 28px; margin-top: 8px; }}
+    .metric span {{ color: var(--muted); font-size: 14px; }}
+    .two {{ display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }}
+    .three {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }}
+    .sankey {{ display: grid; grid-template-columns: 180px 1fr 230px; gap: 24px; align-items: center; min-height: 310px; }}
+    .source-box, .target-box {{ border: 1px solid rgba(242,207,103,.28); background: rgba(242,207,103,.08); border-radius: 8px; padding: 20px; }}
+    .source-box strong {{ display: block; font-size: 28px; color: var(--gold); margin-bottom: 8px; }}
+    .flow-list {{ display: grid; gap: 12px; }}
+    .flow {{ display: grid; grid-template-columns: 110px 1fr 58px; gap: 12px; align-items: center; font-size: 17px; color: #e9eadf; }}
+    .bar {{ height: 18px; background: #263132; border-radius: 999px; overflow: hidden; }}
+    .fill {{ height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--gold-2), #ffe28a); }}
+    .highlight .fill {{ background: linear-gradient(90deg, var(--cyan), #aaf4fb); box-shadow: 0 0 20px rgba(111,213,223,.35); }}
+    .target-box {{ border-color: rgba(111,213,223,.44); background: rgba(111,213,223,.07); }}
+    .target-box strong {{ display: block; color: var(--cyan); font-size: 24px; margin-bottom: 8px; }}
+    .mini-card {{ border: 1px solid rgba(242,207,103,.22); background: rgba(242,207,103,.055); border-radius: 8px; padding: 18px; min-height: 150px; }}
+    .mini-card h3 {{ margin: 0 0 10px; color: var(--gold); font-size: 20px; }}
+    .mini-card p, .body-text {{ color: #d7ded9; line-height: 1.75; margin: 0; }}
+    .list {{ margin: 0; padding-left: 20px; color: #d7ded9; line-height: 1.85; }}
+    .memo {{ white-space: pre-wrap; color: #d7ded9; line-height: 1.8; }}
+    .trade-table {{ width: 100%; border-collapse: collapse; }}
+    .trade-table th, .trade-table td {{ border-bottom: 1px solid rgba(242,207,103,.14); padding: 12px 10px; text-align: left; }}
+    .trade-table th {{ color: var(--gold); }}
+    .green {{ color: var(--green); }} .red {{ color: var(--red); }}
+    footer {{ margin-top: 24px; color: #73807b; font-size: 13px; }}
+    @media (max-width: 980px) {{ .hero, .two, .sankey {{ grid-template-columns: 1fr; }} .metrics, .three {{ grid-template-columns: 1fr 1fr; }} .score-card {{ grid-template-columns: 1fr; }} }}
+    @media (max-width: 640px) {{ .metrics, .three {{ grid-template-columns: 1fr; }} h1 {{ font-size: 44px; }} }}
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="topbar">
+      <div class="brand">AI Trading Research</div>
+      <nav class="nav"><span>{escape(date_label)}</span><span>{escape(generated_at)}</span><span>{escape(trade_status)}</span></nav>
+    </header>
+    <section class="hero">
+      <div class="hero-left">
+        <div class="kicker">Research Workbench</div>
+        <h1>{escape(profile.name)}<br>{escape(profile.code)}</h1>
+        <div class="ticker">{escape(str(analysis["rating"]))} · {analysis["score"]}/100 · {escape(str(analysis["trade_type"]))}</div>
+        <p class="lead">{escape(thesis)}</p>
+        <div class="rating-row"><span class="rating">{analysis["score"]}/100</span><span class="tag">{escape(profile.theme)}</span><span class="tag">{escape(profile.node)}</span><span class="tag">{escape(trade_status)}</span></div>
+      </div>
+      <div class="hero-card">
+        <div class="eyebrow">AI Review Agent</div>
+        <h2>{escape(str(analysis["headline"]))}</h2>
+        <div class="score-card">
+          <div class="score-ring"><div class="score-inner"><div><div class="score-main">{analysis["score"]}</div><div class="score-sub">/100</div></div></div></div>
+          <div class="claim-list">
+            <div class="claim"><span class="dot"></span><span>{escape(str(optimal.get("buy_verdict", "")))}</span></div>
+            <div class="claim"><span class="dot"></span><span>{escape(str(optimal.get("sell_verdict", "")))}</span></div>
+            <div class="claim"><span class="dot"></span><span>{escape(str(profile.rerating_anchor or profile.core_driver))}</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+    <section class="section">
+      <div class="section-head"><div><div class="eyebrow">Scoreboard</div><h2>交易结果一眼看懂</h2></div><span class="pill">buy / sell / risk</span></div>
+      <div class="metrics">
+        {_rw_metric("持有收益", f"{analysis['return']:.1f}%")}
+        {_rw_metric("计划收益", _rw_planned_return(analysis))}
+        {_rw_metric("少赚收益", _rw_missed_return(analysis))}
+        {_rw_metric("利润", f"{analysis['profit']:.0f}")}
+        {_rw_metric("板块强度", f"{sector_score}/100")}
+      </div>
+    </section>
+    <section class="section">
+      <div class="section-head"><div><div class="eyebrow">Market Alignment</div><h2>市场、板块、个股共振</h2></div><span class="pill">relative strength</span></div>
+      <div class="sankey">
+        <div class="source-box"><strong>买入日</strong><span>{escape(date_label)}</span><p class="muted">先看大盘情绪，再看板块主攻，最后判断个股买点。</p></div>
+        <div class="flow-list">
+          {_rw_flow("沪深300", benchmark_pct, max_abs)}
+          {_rw_flow("板块/ETF", sector_pct, max_abs, True)}
+          {_rw_flow(profile.name, stock_pct, max_abs, True)}
+        </div>
+        <div class="target-box"><strong>{escape(profile.name)}</strong><span>{escape(profile.node)}</span><p class="muted">{escape(str(sector_signal.get("warning", "") or profile.market_position or ""))}</p></div>
+      </div>
+    </section>
+    <section class="section">
+      <div class="section-head"><div><div class="eyebrow">Industry Chain</div><h2>产业链定位、壁垒和利润流向</h2></div><span class="pill">{escape(profile.theme)}</span></div>
+      <div class="two">
+        <div><div class="flow-list">{_rw_chain_nodes(profile)}</div><p class="body-text" style="margin-top:18px">{escape(profile.industry_judgment)}</p></div>
+        <div class="three" style="grid-template-columns:1fr">
+          <article class="mini-card"><h3>壁垒</h3><ul class="list">{_rw_list(profile.barriers[:5])}</ul></article>
+          <article class="mini-card"><h3>利润流向</h3><ul class="list">{_rw_list(profile.profit_levers[:5])}</ul></article>
+        </div>
+      </div>
+    </section>
+    <section class="section">
+      <div class="section-head"><div><div class="eyebrow">Catalysts & Risks</div><h2>催化剂、反证点和同赛道比较</h2></div><span class="pill">decision guardrails</span></div>
+      <div class="three">
+        <article class="mini-card"><h3>催化剂</h3><ul class="list">{_rw_list(profile.catalysts[:5])}</ul></article>
+        <article class="mini-card"><h3>反证点</h3><ul class="list">{_rw_list(profile.disconfirming_signals[:5])}</ul></article>
+        <article class="mini-card"><h3>同赛道</h3>{_rw_peer_rows(profile)}{evidence_html}</article>
+      </div>
+    </section>
+    <footer>本报告由 AI 自动生成，用于交易复盘和研究训练，不构成投资建议。</footer>
+  </main>
+</body>
+</html>"""
+
+
+def _rw_metric(label: str, value: str) -> str:
+    return f'<div class="metric"><span>{escape(label)}</span><b>{escape(value)}</b></div>'
+
+
+def _rw_flow(name: str, value: float, max_abs: float, highlight: bool = False) -> str:
+    width = max(4.0, min(100.0, abs(value) / max_abs * 100))
+    cls = "highlight" if highlight else ""
+    value_cls = "green" if value >= 0 else "red"
+    return f'<div class="flow {cls}"><span>{escape(name)}</span><div class="bar"><div class="fill" style="width:{width:.1f}%"></div></div><b class="{value_cls}">{value:.2f}%</b></div>'
+
+
+def _rw_list(items: list[str]) -> str:
+    if not items:
+        return "<li>暂无明确数据，后续需要继续验证。</li>"
+    return "".join(f"<li>{escape(str(item))}</li>" for item in items)
+
+
+def _rw_chain_nodes(profile: IndustryProfile) -> str:
+    nodes = list(profile.chain_nodes[:5])
+    if not nodes:
+        return '<div class="flow highlight"><span>产业链</span><div class="bar"><div class="fill" style="width:70%"></div></div><b>待补全</b></div>'
+    rows = []
+    total = max(len(nodes), 1)
+    for idx, (_, title, subtitle) in enumerate(nodes):
+        width = 100 - idx * (46 / total)
+        label = f"{title} / {subtitle}" if subtitle else title
+        rows.append(f'<div class="flow {"highlight" if idx == 0 else ""}"><span>{escape(label)}</span><div class="bar"><div class="fill" style="width:{width:.1f}%"></div></div><b>{idx + 1}</b></div>')
+    return "".join(rows)
+
+
+def _rw_peer_rows(profile: IndustryProfile) -> str:
+    if profile.peer_ranking:
+        return f'<ol class="list">{_rw_list(profile.peer_ranking)}</ol>'
+    if profile.peers:
+        return f'<p class="body-text">{escape("、".join(profile.peers))}</p>'
+    return '<p class="body-text">暂无同赛道数据。</p>'
+
+
+def _rw_trade_rows(trade_frame: pd.DataFrame) -> str:
+    rows = []
+    for row in trade_frame.sort_values("trade_date").itertuples():
+        side = "买入" if row.side == "buy" else "卖出"
+        rows.append(
+            f"<tr><td>{row.trade_date:%Y-%m-%d}</td><td>{escape(side)}</td><td>{float(row.price):.3f}</td><td>{float(row.quantity):.0f}</td><td>{float(row.amount):.2f}</td></tr>"
+        )
+    return "".join(rows)
+
+
+def _rw_planned_return(analysis: dict) -> str:
+    optimal = analysis["optimal"]
+    if optimal.get("rule_sell_date"):
+        return f"{optimal['rule_sell_return']:.1f}%"
+    return f"{optimal.get('peak_return', 0.0):.1f}%"
+
+
+def _rw_missed_return(analysis: dict) -> str:
+    optimal = analysis["optimal"]
+    actual = optimal.get("actual_sell_return")
+    planned = optimal.get("rule_sell_return") if optimal.get("rule_sell_date") else optimal.get("peak_return", 0.0)
+    if actual is None:
+        return "未卖出"
+    return f"{max(0.0, planned - actual):.1f}%"
+ 
+
+
+def _premium_page_html(profile: IndustryProfile, analysis: dict, market_html: str, trade_frame: pd.DataFrame) -> str:
+    """EOF final workbench report template used by the current call site."""
+    date_label = analysis["first_day"].strftime("%Y-%m-%d")
+    generated_at = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M")
+    trade_status = "已闭环" if analysis["is_closed"] else "持仓中"
+    score = int(analysis.get("score", 0) or 0)
+    sector_signal = analysis.get("sector_signal", {}) or {}
+    sector_score = int(sector_signal.get("score", 0) or 0)
+    industry_score = max(sector_score, min(95, max(55, score + 4)))
+    invest_score = min(98, max(45, score))
+    stock_pct = float(analysis.get("day_pct", 0.0))
+    sector_pct = float(analysis.get("sector_pct", 0.0))
+    benchmark_pct = float(analysis.get("benchmark_pct", 0.0))
+    max_abs = max(abs(stock_pct), abs(sector_pct), abs(benchmark_pct), 1.0)
+    optimal = analysis["optimal"]
+    subtitle = f"{profile.code}{_wb_exchange_suffix(profile.code)} · {profile.theme} / {profile.node}"
+    flow_html, source_label, target_subtitle = _wb_profit_flow(profile)
+    wang_text = profile.wang_investor_report or profile.industry_judgment or "WANG-INVESTOR memo 暂未生成。"
+    equity_text = profile.public_equity_report or profile.valuation_odds or "Public Equity memo 暂未生成。"
+    return f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{escape(profile.name)} AI 复盘分析</title>
+<style>
+:root{{color-scheme:dark;--bg:#061111;--panel:#111b1a;--line:#29403d;--gold:#ffd966;--cyan:#70d9e6;--text:#fff9e8;--muted:#b5c9c5;--green:#78dd93;--red:#ff746e}}*{{box-sizing:border-box}}body{{margin:0;background:radial-gradient(circle at 16% 0%,rgba(112,217,230,.16),transparent 28%),radial-gradient(circle at 92% 8%,rgba(255,217,102,.12),transparent 30%),linear-gradient(90deg,rgba(112,217,230,.06) 1px,transparent 1px),linear-gradient(0deg,rgba(112,217,230,.05) 1px,transparent 1px),var(--bg);background-size:auto,auto,48px 48px,48px 48px,auto;color:var(--text);font-family:"Microsoft YaHei","PingFang SC",Arial,sans-serif}}.page{{width:min(1440px,calc(100vw - 32px));margin:0 auto;padding:32px 0 60px}}.topbar{{display:flex;justify-content:space-between;gap:16px;align-items:center;color:var(--muted);margin-bottom:26px}}.brand{{color:var(--cyan);letter-spacing:.12em;font-weight:900;text-transform:uppercase}}.topbar span{{border:1px solid rgba(255,217,102,.28);border-radius:999px;padding:8px 12px;margin-left:8px;color:#e8d69a}}.hero{{display:grid;grid-template-columns:1.06fr .94fr;min-height:520px;border-bottom:1px solid rgba(255,217,102,.2)}}.hero-left{{padding:54px 56px 54px 20px;background:linear-gradient(90deg,rgba(112,217,230,.08),transparent)}}.kicker{{color:var(--cyan);font-size:18px;font-weight:900;margin-bottom:22px}}h1{{margin:0;font-size:clamp(60px,8vw,112px);line-height:.95;letter-spacing:-.06em}}.subtitle{{color:#f1d996;font-size:28px;font-weight:900;margin-top:24px}}.rating-row{{display:flex;flex-wrap:wrap;gap:16px;margin-top:34px}}.rating,.chip{{border:1px solid rgba(255,217,102,.38);background:rgba(255,217,102,.08);border-radius:8px;padding:16px 22px;font-size:22px;color:var(--gold);font-weight:900}}.chip{{color:var(--text);font-size:18px}}.hero-card,.section{{border:1px solid var(--line);border-radius:8px;background:linear-gradient(180deg,rgba(17,27,26,.96),rgba(8,17,17,.96));box-shadow:0 30px 80px rgba(0,0,0,.26)}}.hero-card{{padding:48px;display:grid;align-content:center}}.hero-card h2,.section h2{{margin:0 0 28px;color:var(--gold);font-size:36px}}.bullet-list{{display:grid;gap:24px}}.bullet{{display:grid;grid-template-columns:14px 1fr;gap:22px;align-items:start;font-size:29px;line-height:1.35;font-weight:900}}.dot{{width:13px;height:13px;margin-top:13px;border-radius:50%;background:var(--cyan);box-shadow:0 0 20px rgba(112,217,230,.8)}}.hero-note,.section p{{color:var(--muted);line-height:1.75;font-size:18px}}.section{{margin-top:28px;padding:34px}}.section-head{{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;margin-bottom:24px}}.pill{{border:1px solid rgba(112,217,230,.45);color:var(--cyan);border-radius:999px;padding:10px 16px;font-weight:900;white-space:nowrap}}.flow-grid{{min-height:360px;display:grid;grid-template-columns:230px 1fr 300px;gap:30px;align-items:center}}.source,.target,.mini,.expect-box{{border:1px solid rgba(112,217,230,.35);background:rgba(112,217,230,.06);border-radius:8px;padding:26px}}.source{{border-color:rgba(255,217,102,.35);background:rgba(255,217,102,.08)}}.source b{{display:block;color:var(--gold);font-size:34px;margin-bottom:10px}}.target b{{display:block;color:var(--cyan);font-size:36px;margin-bottom:8px}}.flow-list{{display:grid;gap:16px}}.flow{{display:grid;grid-template-columns:140px 1fr 64px;gap:16px;align-items:center;font-size:22px}}.bar{{height:24px;border-radius:999px;overflow:hidden;background:#263635}}.fill{{height:100%;border-radius:inherit;background:linear-gradient(90deg,#dfb94d,#ffe590)}}.flow.highlight .fill{{background:linear-gradient(90deg,var(--cyan),#b8f4fb);box-shadow:0 0 24px rgba(112,217,230,.36)}}.logic-row{{display:grid;grid-template-columns:repeat(6,1fr);gap:16px}}.logic-card{{min-height:154px;border:1px solid rgba(112,217,230,.35);background:rgba(112,217,230,.06);border-radius:8px;padding:22px}}.logic-card h3{{margin:0 0 22px;font-size:22px}}.logic-card b{{color:var(--gold);font-size:38px}}.logic-card span{{display:block;color:var(--muted);margin-top:10px;line-height:1.5}}.expect-grid{{display:grid;grid-template-columns:1fr 250px 1fr;gap:24px;align-items:stretch}}.expect-box h3,.mini h3{{color:#f1d996;margin:0 0 18px;font-size:26px}}.expect-box ul{{margin:0;padding-left:24px;color:var(--muted);font-size:22px;line-height:1.65}}.gap-score{{display:grid;place-items:center;text-align:center;border:1px solid rgba(255,217,102,.45);background:rgba(255,217,102,.09);border-radius:8px}}.gap-score b{{font-size:64px;color:var(--gold);display:block}}.two{{display:grid;grid-template-columns:1fr 1fr;gap:22px}}.three{{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}}.memo{{white-space:pre-wrap;color:#d7e1df;line-height:1.8;font-size:16px;max-height:520px;overflow:auto}}.list{{color:#d7e1df;line-height:1.8;font-size:17px}}table{{width:100%;border-collapse:collapse}}th,td{{border-bottom:1px solid rgba(255,217,102,.16);padding:13px 10px;text-align:left}}th{{color:var(--gold)}}.green{{color:var(--green)}}.red{{color:var(--red)}}footer{{color:#78908b;margin-top:28px;font-size:13px}}@media(max-width:1100px){{.hero,.flow-grid,.expect-grid,.two{{grid-template-columns:1fr}}.logic-row,.three{{grid-template-columns:1fr 1fr}}}}@media(max-width:680px){{.logic-row,.three{{grid-template-columns:1fr}}.hero-left,.hero-card,.section{{padding:24px}}h1{{font-size:52px}}.bullet{{font-size:22px}}}}
+</style></head><body><main class="page">
+<header class="topbar"><div class="brand">Research Workbench</div><div><span>{escape(date_label)}</span><span>{escape(generated_at)}</span><span>{escape(trade_status)}</span></div></header>
+<section class="hero"><div class="hero-left"><div class="kicker">这家公司值得研究吗?</div><h1>{escape(profile.name)}</h1><div class="subtitle">{escape(subtitle)}</div><div class="rating-row"><span class="rating">产业评级 {_wb_grade(industry_score)}</span><span class="rating">投资评级 {_wb_grade(invest_score)}</span></div><div class="rating-row">{_wb_chips(profile, industry_score)}</div></div><div class="hero-card"><h2>一句话结论</h2><div class="bullet-list">{_wb_conclusion_bullets(profile, analysis)}</div><p class="hero-note">首屏不展示总分，而是先让用户判断：这家公司是否值得进入研究清单。</p></div></section>
+<section class="section"><div class="section-head"><div><h2>利润流向图</h2><p>用资金流和利润池解释“为什么是它”，而不是让用户在财务指标里猜。</p></div><span class="pill">核心模块</span></div><div class="flow-grid"><div class="source"><b>{escape(source_label)}</b><span>价值池 100%</span></div><div class="flow-list">{flow_html}</div><div class="target"><span>高亮位置</span><b>{escape(profile.name)}</b><p>{escape(target_subtitle)}</p></div></div></section>
+<section class="section"><div class="section-head"><div><h2>产业逻辑树</h2><p>把上涨逻辑拆成节点，显示每一步的确定性，暴露逻辑链最脆弱的位置。</p></div><span class="pill">因果链</span></div><div class="logic-row">{_wb_logic_tree(profile, analysis)}</div></section>
+<section class="section"><div class="section-head"><div><h2>市场预期差</h2><p>股票上涨来自“比市场想得更好”，这里直接展示市场叙事和研究员判断之间的差距。</p></div><span class="pill">涨幅来源</span></div>{_wb_expectation_gap(profile, analysis)}</section>
+<section class="section"><div class="section-head"><div><h2>产业壁垒与利润杠杆</h2><p>这里保留 agent 的关键判断，防止图表把研究结论过度压扁。</p></div><span class="pill">moat</span></div><div class="three"><article class="mini"><h3>壁垒</h3><ul class="list">{_rw_list(list(profile.barriers)[:5])}</ul></article><article class="mini"><h3>利润杠杆</h3><ul class="list">{_rw_list(list(profile.profit_levers)[:5])}</ul></article><article class="mini"><h3>反证点</h3><ul class="list">{_rw_list(list(profile.disconfirming_signals)[:5])}</ul></article></div></section>
+<footer>本报告由 AI 自动生成，用于交易复盘和研究训练，不构成投资建议。</footer></main></body></html>"""
