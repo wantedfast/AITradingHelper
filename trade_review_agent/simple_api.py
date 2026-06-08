@@ -700,6 +700,7 @@ def _manifest_from_run_dir(run_id: str, run_dir: Path) -> dict:
         html_url = f"/api/reports/{run_id}/{html_path.name}"
         workbench_url = f"/api/reports/{run_id}/{workbench_path.name}"
         presenter_url = f"/api/reports/{run_id}/{presenter_path.name}"
+        trade_execution_url = f"/api/reports/{run_id}/{html_path.with_suffix('.trade_execution.json').name}"
         reports.append(
             {
                 "title": _report_title_from_stem(html_path.stem),
@@ -715,6 +716,7 @@ def _manifest_from_run_dir(run_id: str, run_dir: Path) -> dict:
                 "html_url": html_url,
                 "workbench_url": workbench_url,
                 "presenter_url": presenter_url,
+                "trade_execution_url": trade_execution_url,
             }
         )
     return _manifest_payload(run_id, reports)
@@ -757,6 +759,7 @@ def _report_manifest(run_id: str, results: list) -> dict:
         html_url = f"/api/reports/{run_id}/{result.output.name}"
         workbench_url = f"/api/reports/{run_id}/{result.output.with_suffix('.workbench.json').name}"
         presenter_url = f"/api/reports/{run_id}/{result.output.with_suffix('.presenter.json').name}"
+        trade_execution_url = f"/api/reports/{run_id}/{result.output.with_suffix('.trade_execution.json').name}"
         reports.append(
             {
                 "title": result.title,
@@ -772,6 +775,7 @@ def _report_manifest(run_id: str, results: list) -> dict:
                 "html_url": html_url,
                 "workbench_url": workbench_url,
                 "presenter_url": presenter_url,
+                "trade_execution_url": trade_execution_url,
             }
         )
     return _manifest_payload(run_id, reports)
@@ -790,6 +794,7 @@ def _manifest_payload(run_id: str, reports: list[dict]) -> dict:
         "html_url": first.get("html_url", ""),
         "presenter_url": first.get("presenter_url", ""),
         "workbench_url": first.get("workbench_url", ""),
+        "trade_execution_url": first.get("trade_execution_url", ""),
         "requested_research_model_tier": first.get("requested_research_model_tier", first.get("research_model_tier", "standard")),
         "research_model_tier": first.get("research_model_tier", "standard"),
         "actual_research_model_tier": first.get("actual_research_model_tier", first.get("research_model_tier", "standard")),
