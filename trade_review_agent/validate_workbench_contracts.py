@@ -602,6 +602,7 @@ def test_trade_execution_structurer_bad_types_contract() -> None:
             "peer_comparison": {"rows": "bad"},
             "trade_execution_notes": {"buy_verdict": "bad"},
             "execution_advice": {"summary": 123, "next_time_rules": "rule", "confirmation_signals": {"bad": True}},
+            "peer_recommendations": {"basis": 456, "items": {"bad": True}},
         },
         data_source_status={"fallback_used": "cache", "errors": "missing quotes"},
     )
@@ -614,6 +615,8 @@ def test_trade_execution_structurer_bad_types_contract() -> None:
     assert isinstance(payload["execution_advice"]["next_time_rules"], list)
     assert isinstance(payload["execution_advice"]["confirmation_signals"], list)
     assert payload["execution_advice"]["summary"] == "123"
+    assert isinstance(payload["peer_recommendations"]["items"], list)
+    assert payload["peer_recommendations"]["basis"] == "456"
     _assert_no_trade_execution_mojibake(payload)
 
 
@@ -627,7 +630,10 @@ def test_trade_execution_agent_missing_data_contract() -> None:
     assert output["execution_advice"]["summary"]
     assert isinstance(output["execution_advice"]["next_time_rules"], list)
     assert isinstance(output["execution_advice"]["confirmation_signals"], list)
+    assert isinstance(output["peer_recommendations"]["items"], list)
     final = structure_trade_execution_payload(trade_facts={}, execution_analysis=output, data_source_status={})
+    assert final["peer_recommendations"]["items"] == []
+    assert final["peer_recommendations"]["basis"]
     _assert_no_trade_execution_mojibake(final)
 
 
@@ -675,6 +681,14 @@ def test_trade_execution_advice_normal_contract() -> None:
     assert "卖" in advice["sell_issue"]
     assert isinstance(advice["next_time_rules"], list) and advice["next_time_rules"]
     assert isinstance(advice["confirmation_signals"], list) and advice["confirmation_signals"]
+    recommendations = final["peer_recommendations"]
+    assert recommendations["basis"]
+    assert 1 <= len(recommendations["items"]) <= 3
+    for index, item in enumerate(recommendations["items"], start=1):
+        assert item["rank"] == index
+        for key in ["name", "code", "why_strong", "moat_reason", "profit_flow_reason", "risk_note"]:
+            assert isinstance(item[key], str)
+            assert item[key]
     _assert_no_trade_execution_mojibake(final)
 
 
