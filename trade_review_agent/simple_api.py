@@ -19,6 +19,7 @@ from .alerts import AlertPlan, evaluate_plans, event_dedupe_key, load_plans, sav
 from .ai_trade_parser import OpenAITradeParsingError
 from .config import load_env
 from .ocr_trades import trade_file_to_trade_csv
+from .openai_agent_api import OpenAIAgentError
 from .visual_report import build_all_reports
 from .workbench_agents import normalize_research_model_tier
 from .voice_settings import VoiceSettings, load_voice_settings, normalize_voice_settings, save_voice_settings, voice_settings_payload
@@ -183,6 +184,7 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             raise
 
     def _create_watch_plan(self) -> None:
+        self._set_stage("create_watch_plan")
         payload = self._read_json_body()
         stock_name = str(payload.get("stock_name") or "").strip()
         buy_date = str(payload.get("buy_date") or "").strip()
@@ -197,6 +199,7 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
         if buy_price is None:
             raise ValueError("请填写买入价")
 
+        self._set_stage("watch_plan_agent")
         plan = build_watch_plan(
             stock_name=stock_name,
             buy_date=buy_date,
@@ -204,6 +207,7 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             buy_price=buy_price,
             cache_db=CACHE_DB,
         )
+        self._set_stage("save_watch_plan")
         plans = [item for item in load_plans(ALERT_PLANS) if item.plan_id != plan.plan_id]
         plans.insert(0, plan)
         save_plans(ALERT_PLANS, plans)
@@ -409,7 +413,10 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            return
 
     def _cors_headers(self) -> None:
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -589,9 +596,19 @@ def _api_error_payload(exc: Exception, *, request_id: str, run_id: str = "", sta
         if exc.retry_after is not None:
             payload["retry_after"] = exc.retry_after
         return payload
+    if isinstance(exc, OpenAIAgentError):
+        return {
+            "error": exc.user_message,
+            "detail": _openai_agent_error_detail(exc),
+            "code": exc.code,
+            "retryable": exc.retryable,
+            "request_id": request_id,
+            "run_id": run_id,
+            "stage": stage,
+        }
     return {
         "error": "Internal Server Error",
-        "detail": str(exc),
+        "detail": _redact_sensitive(str(exc)),
         "request_id": request_id,
         "run_id": run_id,
         "stage": stage,
@@ -600,6 +617,14 @@ def _api_error_payload(exc: Exception, *, request_id: str, run_id: str = "", sta
 
 def _api_error_status(exc: Exception, fallback: int = 500) -> int:
     if isinstance(exc, OpenAITradeParsingError):
+        if exc.status_code == 429:
+            return 429
+        if exc.status_code in {400, 401, 403, 404}:
+            return 502
+        if exc.status_code and 500 <= exc.status_code <= 599:
+            return 503
+        return 503 if exc.retryable else 502
+    if isinstance(exc, OpenAIAgentError):
         if exc.status_code == 429:
             return 429
         if exc.status_code in {400, 401, 403, 404}:
@@ -618,6 +643,16 @@ def _openai_error_detail(exc: OpenAITradeParsingError) -> str:
     if exc.status_code:
         return f"OpenAI 解析请求失败（HTTP {exc.status_code}）"
     return "OpenAI 解析请求失败"
+
+
+def _openai_agent_error_detail(exc: OpenAIAgentError) -> str:
+    if exc.status_code == 429:
+        return "OpenAI 请求过于频繁，已重试后仍被限流"
+    if exc.status_code in {500, 502, 503, 504}:
+        return f"OpenAI 服务临时异常（HTTP {exc.status_code}），请稍后重试"
+    if exc.status_code:
+        return f"OpenAI 请求失败（HTTP {exc.status_code}）"
+    return "OpenAI 请求失败"
 
 
 def _write_api_error(
@@ -640,13 +675,24 @@ def _write_api_error(
             "run_id": run_id,
             "stage": stage,
             "recovered": recovered,
-            "exception": repr(exc),
-            "traceback": traceback.format_exc(),
+            "exception": _redact_sensitive(repr(exc)),
+            "traceback": _redact_sensitive(traceback.format_exc()),
         }
         with API_ERROR_LOG.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
     except Exception:
         print(f"[warn] failed to write API error log for {request_id}", flush=True)
+
+
+def _redact_sensitive(text: str) -> str:
+    redacted = str(text or "")
+    for key in ("OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_PROXY_URL"):
+        value = os.getenv(key, "")
+        if value:
+            redacted = redacted.replace(value, "<redacted>")
+    redacted = re.sub(r"Bearer\s+[A-Za-z0-9._~+/=-]+", "Bearer <redacted>", redacted)
+    redacted = re.sub(r"sk-[A-Za-z0-9._~+/=-]+", "<redacted>", redacted)
+    return redacted
 
 
 def _resolve_report_file(run_id: str, run_dir: Path, filename: str) -> Path:
