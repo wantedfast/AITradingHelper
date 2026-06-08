@@ -89,6 +89,20 @@ type TradeExecutionData = {
     rows?: Array<Record<string, unknown>>;
     [key: string]: unknown;
   };
+  peer_recommendations?: {
+    basis?: unknown;
+    items?: Array<{
+      rank?: unknown;
+      name?: unknown;
+      code?: unknown;
+      why_strong?: unknown;
+      moat_reason?: unknown;
+      profit_flow_reason?: unknown;
+      risk_note?: unknown;
+      [key: string]: unknown;
+    }>;
+    [key: string]: unknown;
+  };
   [key: string]: unknown;
 };
 
@@ -446,11 +460,12 @@ function StructuredWorkbench({
 
 function TradeExecutionAdvicePanel({ tradeExecution }: { tradeExecution: TradeExecutionState }) {
   const data = tradeExecution.data;
+  const buyPoints = useMemo(() => pointList(data?.trade_timing?.buy_points), [data?.trade_timing?.buy_points]);
+  const sellPoints = useMemo(() => pointList(data?.trade_timing?.sell_points), [data?.trade_timing?.sell_points]);
   const peerRows = useMemo(
     () => (Array.isArray(data?.peer_comparison?.rows) ? data.peer_comparison.rows : []),
     [data?.peer_comparison?.rows],
   );
-  const peerTableColumns = useMemo(() => peerColumns(peerRows), [peerRows]);
 
   return (
     <section className="structured-section trade-execution-section">
@@ -482,57 +497,35 @@ function TradeExecutionAdvicePanel({ tradeExecution }: { tradeExecution: TradeEx
 
       {tradeExecution.status === "ready" && data && (
         <div className="trade-execution-layout">
-          <div className="trade-execution-grid">
-            <TradePointGroup
-              title={"\u4e70\u70b9\u8bc4\u4ef7"}
-              points={pointList(data.trade_timing?.buy_points)}
-              fallback={"\u4e70\u70b9\u8bc4\u4ef7\u6682\u672a\u751f\u6210"}
-              tone="buy"
-            />
-            <TradePointGroup
-              title={"\u5356\u70b9\u8bc4\u4ef7"}
-              points={pointList(data.trade_timing?.sell_points)}
-              fallback={"\u5356\u70b9\u8bc4\u4ef7\u6682\u672a\u751f\u6210"}
-              tone="sell"
-            />
-          </div>
-
+          <CombinedTradeTimingCard buyPoints={buyPoints} sellPoints={sellPoints} />
+          <BuyDayComparisonChart point={buyPoints[0]} />
           <ExecutionAdvicePanel advice={data.execution_advice} />
-
-          <article className="trade-execution-card">
-            <h3>{"\u540c\u4e1a\u8868\u73b0\u53c2\u8003"}</h3>
-            {peerRows.length && peerTableColumns.length ? (
-              <div className="trade-peer-table-wrap">
-                <table className="trade-peer-table">
-                  <thead>
-                    <tr>
-                      {peerTableColumns.map((column) => (
-                        <th key={column}>{labelize(column)}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {peerRows.map((row, index) => (
-                      <tr key={`peer-${index}`}>
-                        {peerTableColumns.map((column) => (
-                          <td key={`${column}-${index}`}>{formatValue(row[column])}</td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ) : (
-              <p className="trade-execution-muted">{"\u540c\u4e1a\u8868\u73b0\u6570\u636e\u6682\u672a\u751f\u6210"}</p>
-            )}
-          </article>
+          <PeerRecommendationsPanel recommendations={data.peer_recommendations} fallbackRows={peerRows} />
         </div>
       )}
     </section>
   );
 }
 
-function TradePointGroup({
+function CombinedTradeTimingCard({
+  buyPoints,
+  sellPoints,
+}: {
+  buyPoints: Array<Record<string, unknown>>;
+  sellPoints: Array<Record<string, unknown>>;
+}) {
+  return (
+    <article className="trade-execution-card trade-timing-card">
+      <h3>{"\u4e70\u5356\u70b9\u8bc4\u4ef7"}</h3>
+      <div className="trade-timing-sections">
+        <TradePointSection title={"\u4e70\u70b9"} points={buyPoints} fallback={"\u4e70\u70b9\u8bc4\u4ef7\u6682\u672a\u751f\u6210"} tone="buy" />
+        <TradePointSection title={"\u5356\u70b9"} points={sellPoints} fallback={"\u5356\u70b9\u8bc4\u4ef7\u6682\u672a\u751f\u6210"} tone="sell" />
+      </div>
+    </article>
+  );
+}
+
+function TradePointSection({
   title,
   points,
   fallback,
@@ -544,8 +537,8 @@ function TradePointGroup({
   tone: "buy" | "sell";
 }) {
   return (
-    <article className="trade-execution-card">
-      <h3>{title}</h3>
+    <section className={`trade-timing-side is-${tone}`}>
+      <h4>{title}</h4>
       {points.length ? (
         <div className="trade-execution-point-stack">
           {points.map((point, index) => (
@@ -562,29 +555,94 @@ function TradePointGroup({
                 <span>{"\u539f\u56e0"}</span>
                 <p>{formatValue(point.reason || point["\u539f\u56e0"])}</p>
               </div>
-              <TradeMetricStrip point={point} />
             </div>
           ))}
         </div>
       ) : (
         <p className="trade-execution-muted">{fallback}</p>
       )}
+    </section>
+  );
+}
+
+function BuyDayComparisonChart({ point }: { point?: Record<string, unknown> }) {
+  const items = buyDayChartItems(point);
+  const maxAbs = Math.max(1, ...items.map((item) => Math.abs(item.value)));
+
+  return (
+    <article className="trade-execution-card trade-buy-chart">
+      <h3>{"\u4e70\u5165\u65e5\u6da8\u5e45\u5bf9\u6bd4"}</h3>
+      {items.length ? (
+        <div className="trade-buy-bars">
+          {items.map((item) => {
+            const width = `${Math.max(3, (Math.abs(item.value) / maxAbs) * 50)}%`;
+            return (
+              <div className="trade-buy-bar-row" key={item.label}>
+                <span className="trade-buy-bar-label">{item.label}</span>
+                <div className="trade-buy-bar-track">
+                  <i />
+                  <span className={`trade-buy-bar ${item.value >= 0 ? "is-positive" : "is-negative"}`} style={{ width }} />
+                </div>
+                <strong>{formatPercent(item.value)}</strong>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <p className="trade-execution-muted">{"\u4e70\u5165\u65e5\u6da8\u5e45\u5bf9\u6bd4\u6682\u672a\u751f\u6210"}</p>
+      )}
     </article>
   );
 }
 
-function TradeMetricStrip({ point }: { point: Record<string, unknown> }) {
-  const metrics = tradeMetrics(point);
-  if (!metrics.length) return null;
+function PeerRecommendationsPanel({
+  recommendations,
+  fallbackRows,
+}: {
+  recommendations?: TradeExecutionData["peer_recommendations"];
+  fallbackRows: Array<Record<string, unknown>>;
+}) {
+  const rows = peerRecommendationItems(recommendations, fallbackRows);
 
   return (
-    <div className="trade-execution-metrics">
-      {metrics.map((metric) => (
-        <div className="trade-execution-metric" key={metric.label}>
-          <span>{metric.label}</span>
-          <strong>{metric.value}</strong>
+    <article className="trade-execution-card trade-peer-recommendations">
+      <h3>{"\u540c\u4e1a\u5f3a\u8005\u89c2\u5bdf"}</h3>
+      {hasMeaningfulValue(recommendations?.basis) && <p className="trade-peer-basis">{formatValue(recommendations?.basis)}</p>}
+      {rows.length ? (
+        <div className="trade-peer-recommendation-list">
+          {rows.map((item, index) => (
+            <section className="trade-peer-recommendation-card" key={`${formatValue(item.code)}-${index}`}>
+              <div className="trade-peer-recommendation-head">
+                <span>{formatRank(item.rank, index)}</span>
+                <strong>
+                  {formatValue(item.name)}
+                  {hasMeaningfulValue(item.code) && <small>{formatValue(item.code)}</small>}
+                </strong>
+              </div>
+              <div className="trade-peer-copy">
+                <b>{"\u4e3a\u4ec0\u4e48\u5f3a"}</b>
+                <p>{formatValue(item.why_strong)}</p>
+              </div>
+              <div className="trade-peer-detail-grid">
+                <PeerReason title={"\u58c1\u5792\u7406\u7531"} value={item.moat_reason} />
+                <PeerReason title={"\u5229\u6da6\u6d41\u5411"} value={item.profit_flow_reason} />
+                <PeerReason title={"\u98ce\u9669\u63d0\u793a"} value={item.risk_note} />
+              </div>
+            </section>
+          ))}
         </div>
-      ))}
+      ) : (
+        <p className="trade-execution-muted">{"\u540c\u4e1a\u5f3a\u8005\u89c2\u5bdf\u6682\u672a\u751f\u6210"}</p>
+      )}
+    </article>
+  );
+}
+
+function PeerReason({ title, value }: { title: string; value: unknown }) {
+  return (
+    <div>
+      <span>{title}</span>
+      <p>{hasMeaningfulValue(value) ? formatValue(value) : "\u5f85\u8865\u5145"}</p>
     </div>
   );
 }
@@ -598,7 +656,7 @@ function ExecutionAdvicePanel({ advice }: { advice?: TradeExecutionData["executi
   );
 
   return (
-    <article className="trade-execution-card trade-advice-card">
+    <article className="trade-execution-card trade-advice-card is-subtle">
       <h3>{"\u4e70\u5356\u70b9\u590d\u76d8\u5efa\u8bae"}</h3>
       {!hasAdvice || !advice ? (
         <p className="trade-execution-muted">{"\u590d\u76d8\u5efa\u8bae\u6682\u672a\u751f\u6210"}</p>
@@ -688,31 +746,47 @@ function tradePointMeta(point: Record<string, unknown>) {
   return price === "-" ? "\u6210\u4ea4\u4ef7\u5f85\u8865\u5145" : `\u6210\u4ea4\u4ef7 ${price}`;
 }
 
-function tradeMetrics(point: Record<string, unknown>) {
+function buyDayChartItems(point?: Record<string, unknown>) {
+  if (!point) return [];
   const stockPctKey = "stock" + " pct";
   const hs300PctKey = "hs300 etf" + " pct";
   const sectorPctKey = "sector" + " pct";
-  const vsHs300PctKey = "vs hs300" + " pct";
-  const vsSectorPctKey = "vs sector" + " pct";
-  const metricKeys: Array<{ label: string; keys: string[] }> = [
-    { label: "\u4e2a\u80a1\u6da8\u8dcc\u5e45", keys: ["stock_pct", stockPctKey] },
-    { label: "\u6caa\u6df1300ETF\u6da8\u8dcc\u5e45", keys: ["hs300_etf_pct", hs300PctKey] },
-    { label: "\u677f\u5757\u6da8\u8dcc\u5e45", keys: ["sector_pct", sectorPctKey] },
-    {
-      label: "\u76f8\u5bf9\u6caa\u6df1300ETF",
-      keys: ["vs_hs300_pct", vsHs300PctKey, "excess_vs_hs300_pct", "excess vs hs300" + " pct"],
-    },
-    {
-      label: "\u76f8\u5bf9\u677f\u5757",
-      keys: ["vs_sector_pct", vsSectorPctKey, "excess_vs_sector_pct", "excess vs sector" + " pct"],
-    },
+  const chartKeys: Array<{ label: string; keys: string[] }> = [
+    { label: "\u4e2a\u80a1", keys: ["stock_pct", stockPctKey] },
+    { label: "\u6caa\u6df1300ETF", keys: ["hs300_etf_pct", hs300PctKey] },
+    { label: "\u6240\u5c5e\u677f\u5757/\u6982\u5ff5", keys: ["sector_pct", sectorPctKey] },
   ];
 
-  return metricKeys.flatMap(({ label, keys }) => {
+  return chartKeys.flatMap(({ label, keys }) => {
     const value = pickValue(point, keys);
     if (!hasMeaningfulValue(value)) return [];
-    return [{ label, value: formatPercent(value) }];
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return [];
+    return [{ label, value: parsed }];
   });
+}
+
+function peerRecommendationItems(
+  recommendations: TradeExecutionData["peer_recommendations"] | undefined,
+  fallbackRows: Array<Record<string, unknown>>,
+) {
+  const items = Array.isArray(recommendations?.items) ? recommendations.items : [];
+  if (items.length) return items.slice(0, 3);
+
+  return fallbackRows.slice(0, 3).map((row, index) => ({
+    rank: index + 1,
+    name: row.name || row.stock_name || row.symbol,
+    code: row.code || row.symbol,
+    why_strong: "\u540c\u884c\u8868\u73b0\u53c2\u8003\uff0c\u63a8\u8350\u7406\u7531\u5f85\u8865\u5145\u3002",
+    moat_reason: "\u58c1\u5792\u7406\u7531\u5f85\u8865\u5145\u3002",
+    profit_flow_reason: "\u5229\u6da6\u6d41\u5411\u7406\u7531\u5f85\u8865\u5145\u3002",
+    risk_note: "\u8be5\u6761\u4e3a\u4fdd\u5b88\u5360\u4f4d\uff0c\u4ec5\u4f9b\u540c\u884c\u8868\u73b0\u53c2\u8003\u3002",
+  }));
+}
+
+function formatRank(rank: unknown, index: number) {
+  const parsed = Number(rank);
+  return `#${Number.isFinite(parsed) ? Math.round(parsed) : index + 1}`;
 }
 
 function pickValue(source: Record<string, unknown>, keys: string[]) {
@@ -747,30 +821,6 @@ function resolveReportAssetUrl(url: string, safeReportId: string) {
   if (trimmed.startsWith("/")) return `${API_BASE}${trimmed}`;
   const cleaned = trimmed.replace(/^\.?\//, "");
   return `${API_BASE}/api/reports/${safeReportId}/${cleaned}`;
-}
-
-function peerColumns(rows: Array<Record<string, unknown>>) {
-  const preferred = ["code", "name", "stock_name", "day_pct", "five_day_pct", "twenty_day_pct", "advantage", "weakness"];
-  const seen = new Set<string>();
-  const columns: string[] = [];
-
-  preferred.forEach((key) => {
-    if (rows.some((row) => row[key] !== undefined)) {
-      seen.add(key);
-      columns.push(key);
-    }
-  });
-
-  rows.forEach((row) => {
-    Object.keys(row).forEach((key) => {
-      if (!seen.has(key) && labelize(key) !== "\u5176\u4ed6") {
-        seen.add(key);
-        columns.push(key);
-      }
-    });
-  });
-
-  return columns.slice(0, 8);
 }
 
 function labelize(key: string) {
