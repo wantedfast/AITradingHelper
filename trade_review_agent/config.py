@@ -8,12 +8,12 @@ def load_env(path: str | Path = ".env") -> None:
     env_path = Path(path)
     if not env_path.exists():
         return
-    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+    for raw_line in env_path.read_text(encoding="utf-8-sig").splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, value = line.split("=", 1)
-        key = key.strip()
+        key = key.strip().lstrip("\ufeff")
         value = value.strip().strip('"').strip("'")
         if key and key not in os.environ:
             os.environ[key] = value
@@ -21,4 +21,4 @@ def load_env(path: str | Path = ".env") -> None:
 
 def openai_configured() -> bool:
     value = os.getenv("OPENAI_API_KEY", "").strip()
-    return bool(value and not value.startswith("把你的") and "your-openai-api-key" not in value)
+    return bool(value and "your-openai-api-key" not in value)

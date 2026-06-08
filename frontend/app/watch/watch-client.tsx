@@ -26,7 +26,9 @@ import {
   X,
 } from "lucide-react";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "";
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE || (process.env.NODE_ENV === "development" ? "http://127.0.0.1:8600" : "");
+const SHOW_WATCH_VOICE_TEST = process.env.NODE_ENV === "development";
+const WATCH_VOICE_TEST_LINE = "贵州茅台触达风险位，请按预案控制回撤。";
 
 const POSITION_OPTIONS = ["1 成 (10%)", "2 成 (20%)", "3 成 (30%)", "半仓 (50%)", "7 成 (70%)", "重仓 (80%)", "满仓 (100%)"];
 
@@ -134,6 +136,32 @@ type WatchOcrPayload = {
   error?: string;
 };
 
+async function apiFetchJson<T>(path: string, init?: RequestInit, fallbackError = "请求失败"): Promise<T> {
+  const response = await fetch(`${API_BASE}${path}`, init);
+  const text = await response.text();
+  let payload: unknown = null;
+  if (text.trim()) {
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      payload = null;
+    }
+  }
+  if (!response.ok) {
+    if (payload && typeof payload === "object") {
+      const record = payload as { error?: unknown; detail?: unknown };
+      const message = typeof record.error === "string" ? record.error : typeof record.detail === "string" ? record.detail : "";
+      if (message) throw new Error(message);
+    }
+    const suffix = text.trim() ? `：${shortText(text.trim(), 120)}` : `（HTTP ${response.status}）`;
+    throw new Error(`${fallbackError}${suffix}`);
+  }
+  if (!payload || typeof payload !== "object") {
+    throw new Error(text.trim() ? `${fallbackError}：响应不是 JSON` : `${fallbackError}：响应为空`);
+  }
+  return payload as T;
+}
+
 const FALLBACK_VOICE_OPTIONS: VoiceSettingsPayload["options"] = {
   provider: [
     { value: "openai", label: "OpenAI TTS" },
@@ -157,7 +185,11 @@ const FALLBACK_VOICE_OPTIONS: VoiceSettingsPayload["options"] = {
 };
 
 function fallbackSpeak(text: string, hint: "female" | "male" = "female") {
-  if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
+  if (typeof window === "undefined") return;
+  if (!("speechSynthesis" in window)) {
+    recordWatchSpeechTestCall(text);
+    return;
+  }
   window.speechSynthesis.cancel();
   const utterance = new SpeechSynthesisUtterance(text);
   utterance.lang = "zh-CN";
@@ -168,7 +200,29 @@ function fallbackSpeak(text: string, hint: "female" | "male" = "female") {
     .filter((voice) => /zh|chinese|mandarin/i.test(`${voice.lang} ${voice.name}`))
     .sort((left, right) => scoreBrowserVoice(`${right.name} ${right.lang}`, hint) - scoreBrowserVoice(`${left.name} ${left.lang}`, hint));
   if (ranked[0]) utterance.voice = ranked[0];
+  recordWatchSpeechTestCall(text);
   window.speechSynthesis.speak(utterance);
+}
+
+function recordWatchSpeechTestCall(text: string) {
+  if (!watchSpeechTestEnabled()) return;
+  const attr = "data-watch-speech-calls";
+  const current = document.documentElement.getAttribute(attr);
+  let calls: string[] = [];
+  if (current) {
+    try {
+      const parsed = JSON.parse(current);
+      if (Array.isArray(parsed)) calls = parsed.filter((item): item is string => typeof item === "string");
+    } catch {
+      calls = [];
+    }
+  }
+  document.documentElement.setAttribute(attr, JSON.stringify([...calls, text]));
+}
+
+function watchSpeechTestEnabled() {
+  if (typeof window === "undefined") return false;
+  return window.location.search.includes("watchSpeechTest=1");
 }
 
 function scoreBrowserVoice(name: string, hint: "female" | "male") {
@@ -350,6 +404,11 @@ export default function WatchClient({ mode }: { mode: Mode }) {
     toastTimer.current = window.setTimeout(() => setToast(""), 2600);
   }
 
+  function handleTestVoiceAlert() {
+    showToast(`测试语音提醒：${WATCH_VOICE_TEST_LINE}`);
+    fallbackSpeak(WATCH_VOICE_TEST_LINE, voiceSettings.fallback_browser_voice_hint);
+  }
+
   function clearFieldError(field: keyof WatchFormErrors) {
     setFieldErrors((current) => (current[field] ? { ...current, [field]: "" } : current));
   }
@@ -372,9 +431,7 @@ export default function WatchClient({ mode }: { mode: Mode }) {
   }
 
   async function fetchPlans() {
-    const response = await fetch(`${API_BASE}/api/watch/plans`);
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.error || "读取预案失败");
+    const payload = await apiFetchJson<{ plans?: WatchPlan[] }>("/api/watch/plans", undefined, "读取预案失败");
     return (payload.plans || []) as WatchPlan[];
   }
 
@@ -385,20 +442,15 @@ export default function WatchClient({ mode }: { mode: Mode }) {
   }
 
   async function fetchVoiceSettings() {
-    const response = await fetch(`${API_BASE}/api/watch/voice-settings`);
-    const payload = (await response.json()) as VoiceSettingsPayload & { error?: string };
-    if (!response.ok) throw new Error(payload.error || "读取语音设置失败");
-    return payload;
+    return apiFetchJson<VoiceSettingsPayload>("/api/watch/voice-settings", undefined, "读取语音设置失败");
   }
 
   async function pollNow(silent = false) {
-    const response = await fetch(`${API_BASE}/api/watch/poll`, {
+    const payload = await apiFetchJson<PollPayload>("/api/watch/poll", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({}),
-    });
-    const payload = (await response.json()) as PollPayload & { error?: string };
-    if (!response.ok) throw new Error(payload.error || "轮询失败");
+    }, "轮询失败");
     setPlans(payload.plans || []);
     setQuotes(payload.quotes || []);
     setErrors(payload.errors || []);
@@ -428,7 +480,7 @@ export default function WatchClient({ mode }: { mode: Mode }) {
 
     setLoadingPlans(true);
     try {
-      const response = await fetch(`${API_BASE}/api/watch/plans`, {
+      const payload = await apiFetchJson<{ plan: WatchPlan; plans?: WatchPlan[] }>("/api/watch/plans", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -437,12 +489,11 @@ export default function WatchClient({ mode }: { mode: Mode }) {
           position: validation.nextPosition,
           buy_price: Number(validation.nextBuyPrice),
         }),
-      });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || "预案生成失败");
+      }, "预案生成失败");
       setPlans((current) => [payload.plan, ...current.filter((item) => item.plan_id !== payload.plan.plan_id)]);
       showToast("次日预案已生成，正在切换到预案结果视图。");
-      router.push(`/watch?planId=${encodeURIComponent(payload.plan.plan_id)}`);
+      const testSuffix = watchSpeechTestEnabled() ? "&watchSpeechTest=1" : "";
+      router.push(`/watch?planId=${encodeURIComponent(payload.plan.plan_id)}${testSuffix}`);
     } catch (error) {
       showToast(error instanceof Error ? error.message : "预案生成失败");
     } finally {
@@ -460,9 +511,7 @@ export default function WatchClient({ mode }: { mode: Mode }) {
     try {
       const formData = new FormData();
       formData.append("file", file);
-      const response = await fetch(`${API_BASE}/api/watch/ocr`, { method: "POST", body: formData });
-      const payload = (await response.json()) as WatchOcrPayload;
-      if (!response.ok) throw new Error(payload.error || "OCR 识别失败");
+      const payload = await apiFetchJson<WatchOcrPayload>("/api/watch/ocr", { method: "POST", body: formData }, "OCR 识别失败");
       setStockName(payload.fields.stock_name || "");
       setBuyDate(payload.fields.buy_date || "");
       setPosition(normalizePositionOption(payload.fields.position));
@@ -483,13 +532,11 @@ export default function WatchClient({ mode }: { mode: Mode }) {
     const payload = next || voiceSettings;
     setSavingVoice(true);
     try {
-      const response = await fetch(`${API_BASE}/api/watch/voice-settings`, {
+      const result = await apiFetchJson<VoiceSettingsPayload>("/api/watch/voice-settings", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
-      });
-      const result = (await response.json()) as VoiceSettingsPayload & { error?: string };
-      if (!response.ok) throw new Error(result.error || "保存语音设置失败");
+      }, "保存语音设置失败");
       setVoiceSettings(result.settings);
       setVoiceOptions(result.options);
       showToast("语音设置已保存。");
@@ -503,13 +550,11 @@ export default function WatchClient({ mode }: { mode: Mode }) {
   async function handlePreviewVoice() {
     setPreviewingVoice(true);
     try {
-      const response = await fetch(`${API_BASE}/api/watch/voice-preview`, {
+      const payload = await apiFetchJson<{ voice_line: string; audio_url?: string; provider?: string; voice?: string }>("/api/watch/voice-preview", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(voiceSettings),
-      });
-      const payload = (await response.json()) as { voice_line: string; audio_url?: string; provider?: string; voice?: string; error?: string };
-      if (!response.ok) throw new Error(payload.error || "试听失败");
+      }, "试听失败");
       const audioUrl = payload.audio_url ? `${API_BASE}${payload.audio_url}` : "";
       if (audioUrl) {
         const audio = new Audio(audioUrl);
@@ -527,13 +572,11 @@ export default function WatchClient({ mode }: { mode: Mode }) {
 
   async function handleClearPlans() {
     try {
-      const response = await fetch(`${API_BASE}/api/watch/plans/clear`, {
+      await apiFetchJson<{ plans?: WatchPlan[] }>("/api/watch/plans/clear", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({}),
-      });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || "清空预案失败");
+      }, "清空预案失败");
       setPlans([]);
       setQuotes([]);
       setEvents([]);
@@ -607,13 +650,14 @@ export default function WatchClient({ mode }: { mode: Mode }) {
     const fresh = events.find((item) => !playedKeys.current.has(item.key));
     if (!fresh) return;
     playedKeys.current.add(fresh.key);
+    const speechText = fresh.voice_line || fresh.message;
     const audioUrl = fresh.audio_url ? `${API_BASE}${fresh.audio_url}` : "";
     if (audioUrl) {
       const audio = new Audio(audioUrl);
-      audio.play().catch(() => fallbackSpeak(fresh.voice_line || fresh.message, voiceSettings.fallback_browser_voice_hint));
+      audio.play().catch(() => fallbackSpeak(speechText, voiceSettings.fallback_browser_voice_hint));
       return;
     }
-    fallbackSpeak(fresh.voice_line || fresh.message, voiceSettings.fallback_browser_voice_hint);
+    fallbackSpeak(speechText, voiceSettings.fallback_browser_voice_hint);
   }, [events, viewMode, voiceSettings.fallback_browser_voice_hint]);
 
   return (
@@ -670,6 +714,12 @@ export default function WatchClient({ mode }: { mode: Mode }) {
               <List />
               <span>预案列表</span>
             </button>
+            {SHOW_WATCH_VOICE_TEST ? (
+              <button type="button" onClick={handleTestVoiceAlert}>
+                <Volume2 />
+                <span>测试语音提醒</span>
+              </button>
+            ) : null}
             <button type="button" onClick={() => setSettingsOpen(true)}>
               <Settings2 />
               <span>设置</span>

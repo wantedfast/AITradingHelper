@@ -8,15 +8,51 @@ from tempfile import TemporaryDirectory
 
 from . import ai_trade_parser
 from .ai_trade_parser import MAX_OPENAI_ATTEMPTS, OpenAITradeParsingError
+from .config import load_env
+from .openai_agent_api import OpenAIAgentError
 from .ocr_trades import trade_file_to_trade_csv
 from .simple_api import _api_error_payload, _api_error_status
 
 
 def main() -> None:
+    _assert_bom_env_loads_openai_key()
+    _assert_watch_agent_payload_is_sanitized()
     _assert_csv_upload_still_uses_openai()
     _assert_429_retry_and_payload_contract()
     _assert_non_429_payload_is_sanitized()
     print("openai error contract validation passed")
+
+
+def _assert_bom_env_loads_openai_key() -> None:
+    original = os.environ.pop("OPENAI_API_KEY", None)
+    try:
+        with TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env"
+            env_path.write_text("\ufeffOPENAI_API_KEY=test-bom-key\n", encoding="utf-8")
+            load_env(env_path)
+            assert os.environ["OPENAI_API_KEY"] == "test-bom-key"
+    finally:
+        if original is None:
+            os.environ.pop("OPENAI_API_KEY", None)
+        else:
+            os.environ["OPENAI_API_KEY"] = original
+
+
+def _assert_watch_agent_payload_is_sanitized() -> None:
+    exc = OpenAIAgentError(
+        "OpenAI API key is not configured",
+        status_code=503,
+        retryable=False,
+        code="openai_not_configured",
+        user_message="AI 服务尚未配置，请检查本地环境变量",
+    )
+    payload = _api_error_payload(exc, request_id="req-watch", run_id="", stage="watch_plan_agent")
+    assert _api_error_status(exc) == 503
+    assert payload["code"] == "openai_not_configured"
+    assert payload["stage"] == "watch_plan_agent"
+    serialized = repr(payload)
+    assert "OPENAI_API_KEY is required" not in serialized
+    assert "test-bom-key" not in serialized
 
 
 def _assert_csv_upload_still_uses_openai() -> None:
