@@ -28,12 +28,14 @@ def analyze_trade_execution(data_context: dict[str, Any]) -> dict[str, Any]:
     peer = _peer_comparison(facts, market, relative)
     notes = _execution_notes(buy_points, sell_points, peer, relative)
     advice = _execution_advice(buy_points, sell_points, relative, peer, notes)
+    recommendations = _peer_recommendations(peer)
     return {
         "trade_timing": {"buy_points": buy_points, "sell_points": sell_points},
         "relative_strength": relative,
         "peer_comparison": peer,
         "trade_execution_notes": notes,
         "execution_advice": advice,
+        "peer_recommendations": recommendations,
     }
 
 
@@ -244,6 +246,104 @@ def _confirmation_signals(relative: dict[str, Any], peer: dict[str, Any]) -> lis
     if relative.get("stock_vs_sector") == "weak":
         signals.append("若个股弱于板块，只能按试错仓位或等待二次确认。")
     return signals
+
+
+def _peer_recommendations(peer: dict[str, Any]) -> dict[str, Any]:
+    rows = peer.get("rows") if isinstance(peer.get("rows"), list) else []
+    basis = "从壁垒、利润流向和相对表现综合筛选，不等于投资建议。若缺少真实壁垒数据，则使用行情强度和产业链位置 proxy。"
+    if not rows:
+        return {"basis": basis, "items": []}
+    ranked = sorted((_recommendation_candidate(row) for row in rows), key=lambda item: item["_score"], reverse=True)
+    items = []
+    for rank, item in enumerate(ranked[:3], start=1):
+        items.append(
+            {
+                "rank": rank,
+                "name": item["name"],
+                "code": item["code"],
+                "why_strong": item["why_strong"],
+                "moat_reason": item["moat_reason"],
+                "profit_flow_reason": item["profit_flow_reason"],
+                "risk_note": item["risk_note"],
+            }
+        )
+    return {"basis": basis, "items": items}
+
+
+def _recommendation_candidate(row: dict[str, Any]) -> dict[str, Any]:
+    name = str(row.get("name") or "")
+    code = str(row.get("code") or "")
+    day_pct = _num(row.get("day_pct"))
+    five_day_pct = _num(row.get("five_day_pct"))
+    twenty_day_pct = _num(row.get("twenty_day_pct"))
+    proxy = _peer_proxy(name, code)
+    score = day_pct * 0.2 + five_day_pct * 0.35 + twenty_day_pct * 0.25 + proxy["score"]
+    return {
+        "_score": score,
+        "name": name,
+        "code": code,
+        "why_strong": _why_peer_strong(proxy, day_pct, five_day_pct, twenty_day_pct),
+        "moat_reason": proxy["moat_reason"],
+        "profit_flow_reason": proxy["profit_flow_reason"],
+        "risk_note": _peer_recommendation_risk(row, day_pct, five_day_pct, twenty_day_pct),
+    }
+
+
+def _peer_proxy(name: str, code: str) -> dict[str, Any]:
+    key = code or name
+    proxies = {
+        "600487": {
+            "score": 28,
+            "moat_reason": "规模、客户和光纤光缆行业位置 proxy 更强。",
+            "profit_flow_reason": "更接近光纤光缆利润池核心，更可能承接光通信景气修复的利润流。",
+        },
+        "600522": {
+            "score": 26,
+            "moat_reason": "海缆、通信网络和客户资源 proxy 较强，行业位置更靠前。",
+            "profit_flow_reason": "更可能承接通信基础设施和光通信链条修复带来的利润流。",
+        },
+        "600498": {
+            "score": 22,
+            "moat_reason": "通信设备和运营商客户 proxy 较强，产业链位置偏核心。",
+            "profit_flow_reason": "更可能受益于通信网络升级和光通信需求改善。",
+        },
+        "600105": {
+            "score": 15,
+            "moat_reason": "光纤光缆相关业务具备产业链相关性，但行业位置 proxy 弱于核心龙头。",
+            "profit_flow_reason": "可承接部分板块修复利润流，但持续性需要行情和订单继续验证。",
+        },
+        "000070": {
+            "score": 12,
+            "moat_reason": "通信相关业务具备题材相关性，但规模和行业位置 proxy 偏弱。",
+            "profit_flow_reason": "更偏主题弹性承接，利润流确定性弱于核心光纤光缆标的。",
+        },
+    }
+    if key in proxies:
+        return proxies[key]
+    return {
+        "score": 10,
+        "moat_reason": "缺少真实壁垒数据，暂用行情强度和产业链相关性 proxy。",
+        "profit_flow_reason": "可能承接同概念景气修复的部分利润流，但需要进一步验证主营相关性。",
+    }
+
+
+def _why_peer_strong(proxy: dict[str, Any], day_pct: float, five_day_pct: float, twenty_day_pct: float) -> str:
+    if five_day_pct >= 8 and twenty_day_pct >= 8:
+        return "产业链位置 proxy 较强，短中期强度同时领先。"
+    if five_day_pct >= 8:
+        return "产业链位置 proxy 较强，近5日资金强度领先。"
+    if day_pct >= 5:
+        return "产业链位置 proxy 较强，买入日相对表现突出。"
+    return "产业链位置 proxy 较强，但行情强度仍需继续确认。"
+
+
+def _peer_recommendation_risk(row: dict[str, Any], day_pct: float, five_day_pct: float, twenty_day_pct: float) -> str:
+    weakness = str(row.get("weakness") or "")
+    if twenty_day_pct < -5:
+        return "中期趋势仍偏弱，短线反弹持续性需要验证。"
+    if day_pct > 8 or five_day_pct > 20:
+        return "短期涨幅已经较高，追高风险和持续性仍需验证。"
+    return weakness or "推荐仅基于行情强度和产业链位置 proxy，不等于投资建议。"
 
 
 def _buy_judgment(stock_pct: float, benchmark_pct: float, sector_pct: float, position: str) -> tuple[str, str]:
