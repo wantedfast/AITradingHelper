@@ -20,18 +20,20 @@ def analyze_trade_execution(data_context: dict[str, Any]) -> dict[str, Any]:
         if _side(trade) == "buy"
     ]
     sell_points = [
-        _sell_point_payload(trade, stock_quotes, benchmark_quotes, sector_quotes, trades)
+        _sell_point_payload(trade, stock_quotes, benchmark_quotes, sector_quotes)
         for trade in trades
         if _side(trade) == "sell"
     ]
-    relative = _relative_strength(buy_points, sell_points)
+    relative = _relative_strength(buy_points)
     peer = _peer_comparison(facts, market, relative)
     notes = _execution_notes(buy_points, sell_points, peer, relative)
+    advice = _execution_advice(buy_points, sell_points, relative, peer, notes)
     return {
         "trade_timing": {"buy_points": buy_points, "sell_points": sell_points},
         "relative_strength": relative,
         "peer_comparison": peer,
         "trade_execution_notes": notes,
+        "execution_advice": advice,
     }
 
 
@@ -75,7 +77,6 @@ def _sell_point_payload(
     stock_quotes: dict[str, dict[str, Any]],
     benchmark_quotes: dict[str, dict[str, Any]],
     sector_quotes: dict[str, dict[str, Any]],
-    trades: list[dict[str, Any]],
 ) -> dict[str, Any]:
     payload = _point_payload(trade, stock_quotes, benchmark_quotes, sector_quotes, side="sell")
     sold_flying = _sold_flying(trade, stock_quotes)
@@ -91,16 +92,16 @@ def _sell_point_payload(
     return payload
 
 
-def _relative_strength(buy_points: list[dict[str, Any]], sell_points: list[dict[str, Any]]) -> dict[str, Any]:
+def _relative_strength(buy_points: list[dict[str, Any]]) -> dict[str, Any]:
     anchor = buy_points[0] if buy_points else {}
-    vs_benchmark = _strength_label(_num(anchor.get("excess_vs_hs300_pct")))
-    vs_sector = _strength_label(_num(anchor.get("excess_vs_sector_pct")))
+    vs_benchmark = _strength_label(_num(anchor.get("excess_vs_hs300_pct")), has_point=bool(anchor))
+    vs_sector = _strength_label(_num(anchor.get("excess_vs_sector_pct")), has_point=bool(anchor))
     if vs_benchmark == "strong" and vs_sector == "strong":
         conclusion = "买入日个股同时强于沪深300ETF和板块，收益更偏个股主动强势。"
     elif vs_sector == "weak":
         conclusion = "买入日个股弱于板块，更像板块带动下的跟随或补涨。"
     elif vs_benchmark == "strong":
-        conclusion = "买入日强于大盘但相对板块优势有限，收益来源偏题材/板块带动。"
+        conclusion = "买入日强于大盘但相对板块优势有限，收益来源偏题材或板块带动。"
     elif vs_benchmark == "unknown" or vs_sector == "unknown":
         conclusion = "行情数据不足，暂不能稳定判断收益来自个股、板块还是大盘。"
     else:
@@ -159,6 +160,92 @@ def _execution_notes(
     return {"buy_verdict": buy_verdict, "sell_verdict": sell_verdict, "main_lesson": main_lesson}
 
 
+def _execution_advice(
+    buy_points: list[dict[str, Any]],
+    sell_points: list[dict[str, Any]],
+    relative: dict[str, Any],
+    peer: dict[str, Any],
+    notes: dict[str, Any],
+) -> dict[str, Any]:
+    buy = buy_points[0] if buy_points else {}
+    sell = sell_points[0] if sell_points else {}
+    buy_issue = _advice_buy_issue(buy, relative, peer)
+    sell_issue = _advice_sell_issue(sell)
+    return {
+        "summary": _advice_summary(notes, buy_issue, sell_issue),
+        "buy_issue": buy_issue,
+        "sell_issue": sell_issue,
+        "next_time_rules": _next_time_rules(notes, peer),
+        "confirmation_signals": _confirmation_signals(relative, peer),
+    }
+
+
+def _advice_summary(notes: dict[str, Any], buy_issue: str, sell_issue: str) -> str:
+    buy_verdict = str(notes.get("buy_verdict") or "unknown")
+    sell_verdict = str(notes.get("sell_verdict") or "unknown")
+    if buy_verdict == "poor" and sell_verdict == "poor":
+        return "这笔交易的核心问题是买点确认不足，卖点偏早或执行质量偏弱。"
+    if buy_verdict == "poor":
+        return "这笔交易的核心问题是买点确认不足，后续应先确认个股强于大盘和板块。"
+    if sell_verdict == "poor":
+        return "这笔交易的核心问题是卖点处理偏弱，后续应先确认转弱再减仓。"
+    if buy_verdict == "unknown" or sell_verdict == "unknown":
+        return f"这笔交易仍有数据不足项，先按保守复盘处理：{buy_issue} {sell_issue}"
+    return "这笔交易的买卖点质量中性，下一次重点提高确认信号和分批执行纪律。"
+
+
+def _advice_buy_issue(buy: dict[str, Any], relative: dict[str, Any], peer: dict[str, Any]) -> str:
+    if not buy:
+        return "缺少买点行情或交易事实，暂不能评价买点质量。"
+    judgment = str(buy.get("judgment") or "unknown")
+    reason = str(buy.get("reason") or "")
+    relative_text = str(relative.get("conclusion") or "")
+    peer_text = str(peer.get("conclusion") or "")
+    if judgment == "unknown":
+        return reason or "买点数据不足，暂不能判断是否强于沪深300ETF和板块。"
+    return " ".join(item for item in [reason, relative_text, peer_text] if item).strip() or judgment
+
+
+def _advice_sell_issue(sell: dict[str, Any]) -> str:
+    if not sell:
+        return "缺少卖出记录或卖点行情，暂不能评价卖点质量。"
+    judgment = str(sell.get("judgment") or "unknown")
+    reason = str(sell.get("reason") or "")
+    if judgment == "unknown":
+        return reason or "卖点数据不足，暂不能判断是否卖在转弱或是否卖飞。"
+    return reason or judgment
+
+
+def _next_time_rules(notes: dict[str, Any], peer: dict[str, Any]) -> list[str]:
+    rows = []
+    if notes.get("buy_verdict") in {"poor", "unknown"}:
+        rows.append("买入前先确认个股至少不弱于沪深300ETF和所属板块。")
+        rows.append("如果同概念核心品种更强，目标股只按跟随或补涨处理，降低仓位和预期。")
+    else:
+        rows.append("买点成立时也要分批执行，避免一次性追在日内高位。")
+    if notes.get("sell_verdict") in {"poor", "unknown"}:
+        rows.append("卖出前先确认是否转弱：弱于大盘、弱于板块、跌破日内关键价位至少满足一项。")
+        rows.append("个股仍强于板块时，优先用分批止盈或移动止盈，减少卖飞。")
+    else:
+        rows.append("卖点执行后记录规则触发原因，复盘是否按计划完成。")
+    if peer.get("rows"):
+        rows.append("每天复核同概念前三名强度，目标股弱于核心品种时不按龙头打法处理。")
+    return rows
+
+
+def _confirmation_signals(relative: dict[str, Any], peer: dict[str, Any]) -> list[str]:
+    signals = [
+        "买入日个股涨跌幅强于沪深300ETF。",
+        "买入日个股涨跌幅强于所属板块或概念。",
+        "买入价不处在日内高位，或有明确放量承接。",
+    ]
+    if peer.get("rows"):
+        signals.append("同概念横向比较中，目标股强度至少进入前排而不是明显落后。")
+    if relative.get("stock_vs_sector") == "weak":
+        signals.append("若个股弱于板块，只能按试错仓位或等待二次确认。")
+    return signals
+
+
 def _buy_judgment(stock_pct: float, benchmark_pct: float, sector_pct: float, position: str) -> tuple[str, str]:
     excess_benchmark = stock_pct - benchmark_pct
     excess_sector = stock_pct - sector_pct
@@ -170,7 +257,7 @@ def _buy_judgment(stock_pct: float, benchmark_pct: float, sector_pct: float, pos
         return "买点质量偏弱", "买入日个股相对大盘或板块偏弱，更多是试错而非强势确认。"
     if position == "high":
         return "买点质量一般", "相对强弱没有明显优势，且成交价接近日内高位。"
-    return "买点质量中性", "买入日相对强弱接近大盘/板块，需要后续走势确认。"
+    return "买点质量中性", "买入日相对强弱接近大盘或板块，需要后续走势确认。"
 
 
 def _sell_judgment(stock_pct: float, benchmark_pct: float, sector_pct: float, position: str, sold_flying: str) -> tuple[str, str]:
@@ -257,7 +344,9 @@ def _sell_verdict(points: list[dict[str, Any]]) -> str:
     return "average"
 
 
-def _strength_label(excess: float) -> str:
+def _strength_label(excess: float, *, has_point: bool = True) -> str:
+    if not has_point:
+        return "unknown"
     if excess >= 1:
         return "strong"
     if excess <= -1:

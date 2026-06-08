@@ -26,6 +26,7 @@ def structure_trade_execution_payload(
         "relative_strength": _normalize_relative_strength(analysis.get("relative_strength")),
         "peer_comparison": _normalize_peer_comparison(analysis.get("peer_comparison")),
         "trade_execution_notes": _normalize_execution_notes(analysis.get("trade_execution_notes")),
+        "execution_advice": _normalize_execution_advice(analysis.get("execution_advice")),
         "data_source_status": _normalize_source_status(data_source_status),
     }
     if trade_facts:
@@ -132,6 +133,17 @@ def _normalize_execution_notes(value: Any) -> dict[str, Any]:
         "buy_verdict": _choice(value.get("buy_verdict"), VERDICT_VALUES),
         "sell_verdict": _choice(value.get("sell_verdict"), VERDICT_VALUES),
         "main_lesson": _text(value.get("main_lesson"), "unknown"),
+    }
+
+
+def _normalize_execution_advice(value: Any) -> dict[str, Any]:
+    value = value if isinstance(value, dict) else {}
+    return {
+        "summary": _text(value.get("summary"), "unknown"),
+        "buy_issue": _text(value.get("buy_issue"), "unknown"),
+        "sell_issue": _text(value.get("sell_issue"), "unknown"),
+        "next_time_rules": _str_list(value.get("next_time_rules")),
+        "confirmation_signals": _str_list(value.get("confirmation_signals")),
     }
 
 

@@ -177,6 +177,13 @@ def _write_trade_execution_artifacts(
             },
             "peer_comparison": {"concept": "unknown", "leader": "unknown", "rows": [], "conclusion": "执行分析链路失败，暂不能判断同概念位置。"},
             "trade_execution_notes": {"buy_verdict": "unknown", "sell_verdict": "unknown", "main_lesson": "执行分析链路失败，请查看 data_source_status.errors。"},
+            "execution_advice": {
+                "summary": "执行分析链路失败，暂不能给出买卖点评价。",
+                "buy_issue": "unknown",
+                "sell_issue": "unknown",
+                "next_time_rules": [],
+                "confirmation_signals": [],
+            },
             "data_source_status": {
                 "stock_quote": "missing",
                 "stock_quote_source": "missing",

@@ -51,6 +51,7 @@ def main() -> None:
     test_openai_429_status_payload_contract()
     test_trade_execution_structurer_bad_types_contract()
     test_trade_execution_agent_missing_data_contract()
+    test_trade_execution_advice_normal_contract()
     test_trade_execution_tencent_success_contract()
     test_trade_execution_akshare_fallback_contract()
     test_trade_execution_existing_fallback_contract()
@@ -600,6 +601,7 @@ def test_trade_execution_structurer_bad_types_contract() -> None:
             "relative_strength": {"stock_vs_benchmark": "bad"},
             "peer_comparison": {"rows": "bad"},
             "trade_execution_notes": {"buy_verdict": "bad"},
+            "execution_advice": {"summary": 123, "next_time_rules": "rule", "confirmation_signals": {"bad": True}},
         },
         data_source_status={"fallback_used": "cache", "errors": "missing quotes"},
     )
@@ -609,6 +611,10 @@ def test_trade_execution_structurer_bad_types_contract() -> None:
     assert isinstance(payload["data_source_status"]["fallback_used"], list)
     assert payload["relative_strength"]["stock_vs_benchmark"] == "unknown"
     assert payload["trade_execution_notes"]["buy_verdict"] == "unknown"
+    assert isinstance(payload["execution_advice"]["next_time_rules"], list)
+    assert isinstance(payload["execution_advice"]["confirmation_signals"], list)
+    assert payload["execution_advice"]["summary"] == "123"
+    _assert_no_trade_execution_mojibake(payload)
 
 
 def test_trade_execution_agent_missing_data_contract() -> None:
@@ -618,6 +624,58 @@ def test_trade_execution_agent_missing_data_contract() -> None:
     assert output["relative_strength"]["stock_vs_benchmark"] in {"similar", "unknown"}
     assert isinstance(output["peer_comparison"]["rows"], list)
     assert output["trade_execution_notes"]["buy_verdict"] == "unknown"
+    assert output["execution_advice"]["summary"]
+    assert isinstance(output["execution_advice"]["next_time_rules"], list)
+    assert isinstance(output["execution_advice"]["confirmation_signals"], list)
+    final = structure_trade_execution_payload(trade_facts={}, execution_analysis=output, data_source_status={})
+    _assert_no_trade_execution_mojibake(final)
+
+
+def test_trade_execution_advice_normal_contract() -> None:
+    output = analyze_trade_execution(
+        {
+            "trade_facts": {
+                "stock_name": "通鼎互联",
+                "stock_code": "002491",
+                "trades": [
+                    {"side": "buy", "date": "2026-06-03", "price": 25.4, "quantity": 500},
+                    {"side": "sell", "date": "2026-06-04", "price": 25.09, "quantity": 100},
+                ],
+            },
+            "market_data": {
+                "stock_quotes": [
+                    {"date": "2026-06-03", "open": 25.0, "high": 26.0, "low": 24.8, "close": 24.9, "pct": -2.79},
+                    {"date": "2026-06-04", "open": 25.0, "high": 26.2, "low": 24.9, "close": 25.8, "pct": 10.0},
+                    {"date": "2026-06-05", "open": 26.0, "high": 27.2, "low": 25.8, "close": 26.5, "pct": 2.0},
+                ],
+                "benchmark_quotes": [
+                    {"date": "2026-06-03", "pct": 0.5},
+                    {"date": "2026-06-04", "pct": -0.8},
+                ],
+                "sector_quotes": [
+                    {"date": "2026-06-03", "name": "光通信/光纤光缆", "pct": 4.9},
+                    {"date": "2026-06-04", "name": "光通信/光纤光缆", "pct": -0.4},
+                ],
+                "peers": [
+                    {"name": "亨通光电", "code": "600487", "day_pct": 9.9, "five_day_pct": 20, "twenty_day_pct": 10},
+                    {"name": "中天科技", "code": "600522", "day_pct": 4.8, "five_day_pct": 10, "twenty_day_pct": 5},
+                    {"name": "烽火通信", "code": "600498", "day_pct": 5.0, "five_day_pct": 6, "twenty_day_pct": 2},
+                ],
+            },
+        }
+    )
+    final = structure_trade_execution_payload(
+        trade_facts={"stock_name": "通鼎互联", "stock_code": "002491", "trades": []},
+        execution_analysis=output,
+        data_source_status={"stock_quote": "ok", "stock_quote_source": "tencent_finance"},
+    )
+    advice = final["execution_advice"]
+    assert advice["summary"]
+    assert "买点" in advice["buy_issue"] or "买入" in advice["buy_issue"]
+    assert "卖" in advice["sell_issue"]
+    assert isinstance(advice["next_time_rules"], list) and advice["next_time_rules"]
+    assert isinstance(advice["confirmation_signals"], list) and advice["confirmation_signals"]
+    _assert_no_trade_execution_mojibake(final)
 
 
 def test_trade_execution_tencent_success_contract() -> None:
@@ -713,6 +771,12 @@ def _sample_daily_frame(symbol: str) -> pd.DataFrame:
             {"symbol": symbol, "trade_date": date(2026, 6, 5), "open": 10.4, "close": 10.3, "high": 10.5, "low": 10.2, "volume": 900, "amount": 9000, "pct_chg": -0.96, "turnover": 0.9},
         ]
     )
+
+
+def _assert_no_trade_execution_mojibake(value) -> None:
+    bad_fragments = ["涔", "鏉", "鍗", "杩", "璐", "鏃", "鐐", "�"]
+    text = json.dumps(value, ensure_ascii=False, default=str)
+    assert not any(fragment in text for fragment in bad_fragments), text
 
 
 def _remove_if_possible(path: str) -> None:
