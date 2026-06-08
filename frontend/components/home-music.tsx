@@ -11,7 +11,8 @@ export function HomeMusic() {
   const play = async () => {
     const audio = audioRef.current;
     if (!audio) return;
-    audio.volume = 0.42;
+    audio.volume = 0.32;
+
     try {
       await audio.play();
       setPlaying(true);
@@ -44,19 +45,23 @@ export function HomeMusic() {
     };
   }, []);
 
+  const label = playing ? "关闭首页音乐" : blocked ? "点击播放首页音乐" : "播放首页音乐";
+  const buttonText = playing ? "音乐开" : blocked ? "点此播放" : "音乐";
+
   return (
     <>
       <audio ref={audioRef} src="/home-theme.mp3" loop preload="auto" />
       <button
-        className={`music-toggle ${playing ? "is-playing" : ""}`}
+        className={`music-toggle ${playing ? "is-playing" : ""} ${blocked ? "is-blocked" : ""}`}
         type="button"
         onClick={() => (playing ? pause() : void play())}
-        aria-label={playing ? "关闭首页音乐" : "播放首页音乐"}
+        aria-label={label}
+        title={label}
       >
         <span className="music-toggle__icon">
           {playing ? <Volume2 className="h-4 w-4" /> : blocked ? <VolumeX className="h-4 w-4" /> : <Music2 className="h-4 w-4" />}
         </span>
-        <span>{playing ? "音乐播放中" : blocked ? "点击播放音乐" : "首页音乐"}</span>
+        <span className="music-toggle__label">{buttonText}</span>
       </button>
     </>
   );

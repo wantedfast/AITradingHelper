@@ -37,23 +37,23 @@ function makeNoiseTexture() {
 }
 
 function createMaterials(frostNoise: THREE.Texture | null) {
-  const redGlow = new THREE.Color("#D21F3C");
+  const redGlow = new THREE.Color("#8B1E2D");
   const options = {
-    metalness: 0.7,
-    roughness: 0.64,
+    metalness: 0.72,
+    roughness: 0.58,
     clearcoat: 0.34,
-    clearcoatRoughness: 0.72,
+    clearcoatRoughness: 0.7,
     roughnessMap: frostNoise ?? undefined,
     bumpMap: frostNoise ?? undefined,
     bumpScale: 0.025
   };
   return [
-    new THREE.MeshPhysicalMaterial({ ...options, color: "#08080A" }),
-    new THREE.MeshPhysicalMaterial({ ...options, color: "#151419" }),
-    new THREE.MeshPhysicalMaterial({ ...options, color: "#8B0F1F", emissive: redGlow, emissiveIntensity: 0.08 }),
-    new THREE.MeshPhysicalMaterial({ ...options, color: "#D21F3C", emissive: redGlow, emissiveIntensity: 0.12 }),
-    new THREE.MeshPhysicalMaterial({ ...options, color: "#050506" }),
-    new THREE.MeshPhysicalMaterial({ ...options, color: "#26040A", emissive: redGlow, emissiveIntensity: 0.04 })
+    new THREE.MeshPhysicalMaterial({ ...options, color: "#060303" }),
+    new THREE.MeshPhysicalMaterial({ ...options, color: "#0A0A0A" }),
+    new THREE.MeshPhysicalMaterial({ ...options, color: "#2A070D", emissive: redGlow, emissiveIntensity: 0.014 }),
+    new THREE.MeshPhysicalMaterial({ ...options, color: "#5C131D", emissive: redGlow, emissiveIntensity: 0.026 }),
+    new THREE.MeshPhysicalMaterial({ ...options, color: "#121212" }),
+    new THREE.MeshPhysicalMaterial({ ...options, color: "#8B1E2D", emissive: redGlow, emissiveIntensity: 0.04 })
   ];
 }
 
@@ -81,7 +81,7 @@ export function GoldMagicCube() {
 
     const cubelets: Cubelet[] = [];
     const geometry = new THREE.BoxGeometry(cubeletSize, cubeletSize, cubeletSize);
-    const edgeMaterial = new THREE.LineBasicMaterial({ color: "#FF4D64", transparent: true, opacity: 0.22 });
+    const edgeMaterial = new THREE.LineBasicMaterial({ color: "#5C131D", transparent: true, opacity: 0.2 });
     const frostNoise = makeNoiseTexture();
 
     for (let x = -1; x <= 1; x += 1) {
@@ -99,31 +99,31 @@ export function GoldMagicCube() {
       }
     }
 
-    scene.add(new THREE.AmbientLight("#2A080C", 0.7));
-    scene.add(new THREE.HemisphereLight("#FFE1E6", "#050505", 1.08));
+    scene.add(new THREE.AmbientLight("#0A0A0A", 0.74));
+    scene.add(new THREE.HemisphereLight("#8B1E2D", "#050303", 0.78));
 
-    const key = new THREE.DirectionalLight("#FF4D64", 3.1);
+    const key = new THREE.DirectionalLight("#8B1E2D", 2.2);
     key.position.set(4.8, 7.2, 5.4);
     key.castShadow = true;
     scene.add(key);
 
-    const softTop = new THREE.SpotLight("#f8fbff", 16, 20, Math.PI / 5, 0.65, 1.5);
+    const softTop = new THREE.SpotLight("#A42B3A", 4.4, 20, Math.PI / 5, 0.65, 1.5);
     softTop.position.set(-1.6, 6.4, 3.2);
     softTop.target.position.set(0, 0, 0);
     scene.add(softTop);
     scene.add(softTop.target);
 
-    const rim = new THREE.PointLight("#FF123A", 18, 18);
+    const rim = new THREE.PointLight("#5C131D", 6.4, 18);
     rim.position.set(-4.6, 1.2, 5.2);
     scene.add(rim);
 
-    const coolEdge = new THREE.PointLight("#ffffff", 3.5, 12);
+    const coolEdge = new THREE.PointLight("#120608", 2.2, 12);
     coolEdge.position.set(3.8, -1.6, -3.2);
     scene.add(coolEdge);
 
     const glow = new THREE.Mesh(
       new THREE.CircleGeometry(4.6, 96),
-      new THREE.MeshBasicMaterial({ color: "#7A0715", transparent: true, opacity: 0.012, depthWrite: false })
+      new THREE.MeshBasicMaterial({ color: "#5C131D", transparent: true, opacity: 0.01, depthWrite: false })
     );
     glow.rotation.x = -Math.PI / 2;
     glow.position.y = -2.25;

@@ -17,6 +17,7 @@ from .io import read_trade_file
 from .schema import Trade
 from .sector_strength import build_sector_signal
 from .trade_rounds import TradeRound, split_trade_rounds
+from .trade_execution_chain import build_trade_execution_chain
 from .presenter_agent import build_presenter_data
 from .workbench_agents import research_model_metadata
 from .workbench_report_renderer import render_workbench_report
@@ -71,6 +72,9 @@ def _write_first_report_json_aliases(output_dir: Path, results: list[VisualRepor
         return
     _copy_first_json_alias(results[0].output.with_suffix(".presenter.json"), output_dir / "research_presenter_data.json")
     _copy_first_json_alias(results[0].output.with_suffix(".workbench.json"), output_dir / "research_workbench_data.json")
+    _copy_first_json_alias(results[0].output.with_suffix(".trade_execution.json"), output_dir / "trade_execution_analysis.json")
+    _copy_first_json_alias(results[0].output.with_suffix(".execution_data_context.json"), output_dir / "execution_data_context.json")
+    _copy_first_json_alias(results[0].output.with_suffix(".trade_execution_agent_output.json"), output_dir / "trade_execution_agent_output.json")
 
 
 def _copy_first_json_alias(source: Path, target: Path) -> None:
@@ -107,6 +111,7 @@ def build_round_html(
     profile: IndustryProfile | None = None,
     research_model_tier: str = "standard",
 ) -> VisualReportResult:
+    output = Path(output)
     profile = profile or get_profile(trade_round.code, trade_round.name)
     start = trade_round.start_date - timedelta(days=25)
     end = max(trade_round.end_date + timedelta(days=15), start + timedelta(days=45))
@@ -122,6 +127,7 @@ def build_round_html(
     trade_frame = pd.DataFrame([trade.__dict__ for trade in trade_round.trades])
     trade_frame["trade_date"] = pd.to_datetime(trade_frame["trade_date"])
     analysis = _analyze(trade_round, profile, stock, sector, benchmark)
+    _write_trade_execution_artifacts(output, provider, profile, trade_round)
     workbench_data = _write_round_workbench_data(output, profile, analysis, trade_round, stock, sector, benchmark, research_model_tier)
     presenter_data = build_presenter_data(
         workbench=workbench_data,
@@ -131,7 +137,6 @@ def build_round_html(
     )
     write_workbench_json(Path(output).with_suffix(".presenter.json"), presenter_data)
     market_html = _premium_market_context_html(stock, sh_index, benchmark, growth_index, sector, analysis)
-    output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(render_workbench_report(presenter_data), encoding="utf-8")
     research_model = workbench_data.get("research_model") if isinstance(workbench_data, dict) else {}
@@ -151,6 +156,49 @@ def build_round_html(
         wang_model=str(research_model.get("wang_model") or research_model.get("model") or "gpt-4.1"),
         public_equity_model=str(research_model.get("public_equity_model") or research_model.get("model") or "gpt-4.1"),
     )
+
+
+def _write_trade_execution_artifacts(
+    output: Path,
+    provider: MarketDataProvider,
+    profile: IndustryProfile,
+    trade_round: TradeRound,
+) -> dict:
+    try:
+        return build_trade_execution_chain(provider=provider, profile=profile, trade_round=trade_round, output=output)
+    except Exception as exc:
+        fallback = {
+            "trade_timing": {"buy_points": [], "sell_points": []},
+            "relative_strength": {
+                "benchmark": "510300",
+                "stock_vs_benchmark": "unknown",
+                "stock_vs_sector": "unknown",
+                "conclusion": "执行分析链路失败，暂不能判断相对强弱。",
+            },
+            "peer_comparison": {"concept": "unknown", "leader": "unknown", "rows": [], "conclusion": "执行分析链路失败，暂不能判断同概念位置。"},
+            "trade_execution_notes": {"buy_verdict": "unknown", "sell_verdict": "unknown", "main_lesson": "执行分析链路失败，请查看 data_source_status.errors。"},
+            "execution_advice": {
+                "summary": "执行分析链路失败，暂不能给出买卖点评价。",
+                "buy_issue": "unknown",
+                "sell_issue": "unknown",
+                "next_time_rules": [],
+                "confirmation_signals": [],
+            },
+            "data_source_status": {
+                "stock_quote": "missing",
+                "stock_quote_source": "missing",
+                "benchmark_quote": "missing",
+                "benchmark_quote_source": "missing",
+                "sector_quote": "missing",
+                "sector_quote_source": "missing",
+                "peer_quotes": "missing",
+                "peer_quote_source": "missing",
+                "fallback_used": [],
+                "errors": [f"trade_execution_chain_failed: {exc}"],
+            },
+        }
+        write_workbench_json(output.with_suffix(".trade_execution.json"), fallback)
+        return fallback
 
 
 def _write_round_workbench_data(
