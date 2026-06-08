@@ -6222,6 +6222,26 @@ button.radar-core,
   font-size: 22px;
 }
 
+.trade-timing-card {
+  border-color: rgba(242, 190, 76, 0.24);
+}
+
+.trade-timing-sections {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.trade-timing-side {
+  min-width: 0;
+}
+
+.trade-timing-side h4 {
+  margin: 0 0 12px;
+  color: var(--rw-cyan);
+  font-size: 16px;
+}
+
 .trade-execution-point-stack {
   display: grid;
   gap: 14px;
@@ -6261,8 +6281,7 @@ button.radar-core,
 
 .trade-execution-judgment span,
 .trade-execution-reason span,
-.trade-advice-summary span,
-.trade-execution-metric span {
+.trade-advice-summary span {
   color: rgba(104, 217, 205, 0.82);
   font-size: 12px;
   font-weight: 900;
@@ -6286,26 +6305,150 @@ button.radar-core,
   line-height: 1.7;
 }
 
-.trade-execution-metrics {
+.trade-buy-chart {
+  background:
+    radial-gradient(circle at 0% 0%, rgba(242, 190, 76, 0.08), transparent 28%),
+    rgba(3, 10, 11, 0.58);
+}
+
+.trade-buy-bars {
+  display: grid;
+  gap: 14px;
+}
+
+.trade-buy-bar-row {
+  display: grid;
+  grid-template-columns: 128px minmax(180px, 1fr) 76px;
+  gap: 14px;
+  align-items: center;
+}
+
+.trade-buy-bar-label {
+  color: rgba(244, 247, 241, 0.72);
+  font-weight: 900;
+}
+
+.trade-buy-bar-track {
+  position: relative;
+  height: 28px;
+  border-radius: 8px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.trade-buy-bar-track i {
+  position: absolute;
+  inset-block: 0;
+  left: 50%;
+  width: 1px;
+  background: rgba(244, 247, 241, 0.34);
+}
+
+.trade-buy-bar {
+  position: absolute;
+  top: 6px;
+  height: 16px;
+  border-radius: 6px;
+}
+
+.trade-buy-bar.is-positive {
+  left: 50%;
+  background: linear-gradient(90deg, rgba(242, 190, 76, 0.55), rgba(242, 207, 103, 0.96));
+}
+
+.trade-buy-bar.is-negative {
+  right: 50%;
+  background: linear-gradient(90deg, rgba(104, 217, 205, 0.96), rgba(104, 217, 205, 0.42));
+}
+
+.trade-buy-bar-row strong {
+  color: #fff8e4;
+  font-size: 15px;
+  text-align: right;
+}
+
+.trade-peer-basis {
+  margin: -4px 0 16px;
+  color: rgba(244, 247, 241, 0.68);
+  line-height: 1.7;
+}
+
+.trade-peer-recommendation-list {
+  display: grid;
+  gap: 14px;
+}
+
+.trade-peer-recommendation-card {
+  padding: 16px;
+  border: 1px solid rgba(104, 217, 205, 0.15);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.026);
+}
+
+.trade-peer-recommendation-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.trade-peer-recommendation-head > span {
+  width: 38px;
+  height: 38px;
+  border: 1px solid rgba(242, 190, 76, 0.28);
+  border-radius: 9px;
+  display: grid;
+  place-items: center;
+  color: var(--rw-gold);
+  background: rgba(242, 190, 76, 0.08);
+  font-weight: 900;
+}
+
+.trade-peer-recommendation-head strong {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  color: #fff8e4;
+  font-size: 20px;
+}
+
+.trade-peer-recommendation-head small {
+  color: rgba(244, 247, 241, 0.48);
+  font-size: 13px;
+}
+
+.trade-peer-copy {
   margin-top: 14px;
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
+  gap: 6px;
 }
 
-.trade-execution-metric {
-  min-width: 0;
-  padding: 10px 12px;
-  border: 1px solid rgba(104, 217, 205, 0.12);
+.trade-peer-copy b,
+.trade-peer-detail-grid span {
+  color: rgba(104, 217, 205, 0.82);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.trade-peer-copy p,
+.trade-peer-detail-grid p {
+  margin: 0;
+  color: rgba(244, 247, 241, 0.76);
+  line-height: 1.7;
+}
+
+.trade-peer-detail-grid {
+  margin-top: 14px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.trade-peer-detail-grid div {
+  padding: 12px;
+  border: 1px solid rgba(104, 217, 205, 0.11);
   border-radius: 8px;
-  background: rgba(3, 10, 11, 0.52);
-}
-
-.trade-execution-metric strong {
-  display: block;
-  margin-top: 4px;
-  color: var(--rw-gold);
-  font-size: 16px;
+  background: rgba(3, 10, 11, 0.42);
 }
 
 .trade-advice-card {
@@ -6313,6 +6456,11 @@ button.radar-core,
   background:
     radial-gradient(circle at 100% 0%, rgba(242, 190, 76, 0.08), transparent 28%),
     rgba(3, 10, 11, 0.64);
+}
+
+.trade-advice-card.is-subtle {
+  border-color: rgba(104, 217, 205, 0.14);
+  background: rgba(3, 10, 11, 0.42);
 }
 
 .trade-advice-summary {
@@ -6422,37 +6570,6 @@ button.radar-core,
   min-width: 0;
   margin: 0;
   color: #fff8e4;
-}
-
-.trade-peer-table-wrap {
-  width: 100%;
-  overflow-x: auto;
-}
-
-.trade-peer-table {
-  width: 100%;
-  min-width: 680px;
-  border-collapse: collapse;
-  color: rgba(244, 247, 241, 0.76);
-}
-
-.trade-peer-table th,
-.trade-peer-table td {
-  padding: 12px 10px;
-  border-bottom: 1px solid rgba(104, 217, 205, 0.14);
-  text-align: left;
-  vertical-align: top;
-}
-
-.trade-peer-table th {
-  color: var(--rw-cyan);
-  font-size: 13px;
-  font-weight: 900;
-}
-
-.trade-peer-table td {
-  color: #fff8e4;
-  font-size: 14px;
 }
 
 .trade-execution-state {
@@ -6565,12 +6682,22 @@ button.radar-core,
   }
 
   .trade-advice-grid,
-  .trade-execution-metrics {
+  .trade-timing-sections,
+  .trade-peer-detail-grid {
     grid-template-columns: 1fr;
   }
 
   .trade-execution-point-head {
     display: grid;
+  }
+
+  .trade-buy-bar-row {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .trade-buy-bar-row strong {
+    text-align: left;
   }
 
   .structured-flow-bars div {
@@ -6877,8 +7004,16 @@ button.radar-core,
   min-width: 116px;
   gap: 8px;
   padding: 0 12px 0 10px;
-  border-color: rgba(245, 215, 122, 0.36);
-  background: rgba(7, 7, 7, 0.86);
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.music-toggle:hover {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
 }
 
 .music-toggle__label {
@@ -6889,10 +7024,8 @@ button.radar-core,
 }
 
 .music-toggle.is-blocked {
-  border-color: rgba(245, 215, 122, 0.68);
-  box-shadow:
-    0 0 24px rgba(201, 166, 70, 0.22),
-    inset 0 0 12px rgba(245, 215, 122, 0.08);
+  border-color: transparent;
+  box-shadow: none;
 }
 
 .review-workbench-page,

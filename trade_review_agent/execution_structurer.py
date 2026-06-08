@@ -27,6 +27,7 @@ def structure_trade_execution_payload(
         "peer_comparison": _normalize_peer_comparison(analysis.get("peer_comparison")),
         "trade_execution_notes": _normalize_execution_notes(analysis.get("trade_execution_notes")),
         "execution_advice": _normalize_execution_advice(analysis.get("execution_advice")),
+        "peer_recommendations": _normalize_peer_recommendations(analysis.get("peer_recommendations")),
         "data_source_status": _normalize_source_status(data_source_status),
     }
     if trade_facts:
@@ -144,6 +145,30 @@ def _normalize_execution_advice(value: Any) -> dict[str, Any]:
         "sell_issue": _text(value.get("sell_issue"), "unknown"),
         "next_time_rules": _str_list(value.get("next_time_rules")),
         "confirmation_signals": _str_list(value.get("confirmation_signals")),
+    }
+
+
+def _normalize_peer_recommendations(value: Any) -> dict[str, Any]:
+    value = value if isinstance(value, dict) else {}
+    return {
+        "basis": _text(
+            value.get("basis"),
+            "从壁垒、利润流向和相对表现综合筛选，不等于投资建议。若缺少真实壁垒数据，则使用行情强度和产业链位置 proxy。",
+        ),
+        "items": [_normalize_peer_recommendation_item(item, idx + 1) for idx, item in enumerate(_dict_list(value.get("items"))[:3])],
+    }
+
+
+def _normalize_peer_recommendation_item(value: Any, fallback_rank: int) -> dict[str, Any]:
+    value = value if isinstance(value, dict) else {}
+    return {
+        "rank": int(_num(value.get("rank"), fallback_rank)),
+        "name": _text(value.get("name")),
+        "code": _text(value.get("code")),
+        "why_strong": _text(value.get("why_strong"), "unknown"),
+        "moat_reason": _text(value.get("moat_reason"), "unknown"),
+        "profit_flow_reason": _text(value.get("profit_flow_reason"), "unknown"),
+        "risk_note": _text(value.get("risk_note"), "unknown"),
     }
 
 

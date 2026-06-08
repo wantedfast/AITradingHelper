@@ -18,12 +18,35 @@ DEFAULT_TTS_VOICE = "alloy"
 _CLIENT: OpenAI | None = None
 
 
+class OpenAIAgentError(RuntimeError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        retryable: bool = False,
+        code: str = "openai_agent_failed",
+        user_message: str = "AI 服务暂时不可用，请稍后重试",
+    ):
+        super().__init__(message)
+        self.status_code = status_code
+        self.retryable = retryable
+        self.code = code
+        self.user_message = user_message
+
+
 def get_openai_client() -> OpenAI:
     global _CLIENT
     if _CLIENT is None:
         api_key = os.getenv("OPENAI_API_KEY", "").strip()
         if not api_key or "your-openai-api-key" in api_key:
-            raise RuntimeError("OPENAI_API_KEY is required")
+            raise OpenAIAgentError(
+                "OpenAI API key is not configured",
+                status_code=503,
+                retryable=False,
+                code="openai_not_configured",
+                user_message="AI 服务尚未配置，请检查本地环境变量",
+            )
         base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").strip().rstrip("/")
         proxy_url = _openai_proxy_url()
         timeout_seconds = _openai_timeout_seconds()
@@ -67,15 +90,20 @@ def run_json_agent(
 ) -> tuple[dict[str, Any], str]:
     client = get_openai_client()
     user_text = user_payload if isinstance(user_payload, str) else json.dumps(user_payload, ensure_ascii=False, indent=2)
-    response = client.responses.create(
-        model=model or agent_model(),
-        previous_response_id=previous_response_id,
-        temperature=0.2,
-        max_output_tokens=max_output_tokens,
-        instructions=system_prompt,
-        input=user_text,
-    )
-    parsed = _parse_json_output(response.output_text)
+    try:
+        response = client.responses.create(
+            model=model or agent_model(),
+            previous_response_id=previous_response_id,
+            temperature=0.2,
+            max_output_tokens=max_output_tokens,
+            instructions=system_prompt,
+            input=user_text,
+        )
+        parsed = _parse_json_output(response.output_text)
+    except OpenAIAgentError:
+        raise
+    except Exception as exc:
+        raise _coerce_openai_agent_error(exc) from exc
     return parsed, response.id
 
 
@@ -239,7 +267,13 @@ def _openai_max_retries() -> int:
 def _parse_json_output(text: str) -> dict[str, Any]:
     raw = (text or "").strip()
     if not raw:
-        raise RuntimeError("OpenAI returned empty output")
+        raise OpenAIAgentError(
+            "OpenAI returned empty output",
+            status_code=502,
+            retryable=True,
+            code="openai_invalid_response",
+            user_message="AI 服务返回空结果，请稍后重试",
+        )
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
@@ -248,5 +282,59 @@ def _parse_json_output(text: str) -> dict[str, Any]:
     start = raw.find("{")
     end = raw.rfind("}")
     if start >= 0 and end > start:
-        return json.loads(raw[start : end + 1])
-    raise RuntimeError(f"OpenAI returned non-JSON output: {raw[:240]}")
+        try:
+            return json.loads(raw[start : end + 1])
+        except json.JSONDecodeError as exc:
+            raise OpenAIAgentError(
+                "OpenAI returned invalid JSON output",
+                status_code=502,
+                retryable=True,
+                code="openai_invalid_response",
+                user_message="AI 服务返回格式异常，请稍后重试",
+            ) from exc
+    raise OpenAIAgentError(
+        "OpenAI returned non-JSON output",
+        status_code=502,
+        retryable=True,
+        code="openai_invalid_response",
+        user_message="AI 服务返回格式异常，请稍后重试",
+    )
+
+
+def _coerce_openai_agent_error(exc: Exception) -> OpenAIAgentError:
+    status_code = getattr(exc, "status_code", None)
+    if status_code is None:
+        response = getattr(exc, "response", None)
+        status_code = getattr(response, "status_code", None)
+
+    if status_code == 429:
+        return OpenAIAgentError(
+            "OpenAI agent request was rate limited",
+            status_code=429,
+            retryable=True,
+            code="openai_rate_limited",
+            user_message="AI 服务请求过于频繁，请稍后重试",
+        )
+    if status_code in {500, 502, 503, 504}:
+        return OpenAIAgentError(
+            f"OpenAI agent request failed with HTTP {status_code}",
+            status_code=status_code,
+            retryable=True,
+            code="openai_unavailable",
+            user_message="AI 服务临时异常，请稍后重试",
+        )
+    if status_code:
+        return OpenAIAgentError(
+            f"OpenAI agent request failed with HTTP {status_code}",
+            status_code=status_code,
+            retryable=False,
+            code="openai_request_failed",
+            user_message="AI 服务请求失败，请检查模型、网络或服务配置",
+        )
+    return OpenAIAgentError(
+        "OpenAI agent request failed",
+        status_code=503,
+        retryable=True,
+        code="openai_unavailable",
+        user_message="AI 服务网络暂时不可用，请稍后重试",
+    )

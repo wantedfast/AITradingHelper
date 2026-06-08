@@ -176,6 +176,10 @@ def _write_trade_execution_artifacts(
                 "conclusion": "执行分析链路失败，暂不能判断相对强弱。",
             },
             "peer_comparison": {"concept": "unknown", "leader": "unknown", "rows": [], "conclusion": "执行分析链路失败，暂不能判断同概念位置。"},
+            "peer_recommendations": {
+                "basis": "执行分析链路失败，暂不能从壁垒、利润流向和相对表现筛选同行推荐。",
+                "items": [],
+            },
             "trade_execution_notes": {"buy_verdict": "unknown", "sell_verdict": "unknown", "main_lesson": "执行分析链路失败，请查看 data_source_status.errors。"},
             "execution_advice": {
                 "summary": "执行分析链路失败，暂不能给出买卖点评价。",
