@@ -36,7 +36,7 @@ export default function Page() {
             <Image src="/brand-logo.png" width={42} height={42} alt="盈航 logo" priority />
             <span>盈航</span>
           </Link>
-          <nav className="nav-links" aria-label="Main navigation">
+          <nav className="nav-links" aria-label="主导航">
             <a href="#features">功能</a>
             <Link href="/review">AI 复盘</Link>
             <Link href="/watch">AI 盯盘</Link>
@@ -56,7 +56,7 @@ export default function Page() {
             <p className="headline-sub">Stop Guessing. Start Trading With Your Best Strategy.</p>
             <p className="cn-slogan">摆脱盲从，依托优策。</p>
             <p className="description">
-              从交割单开始，AI 自动还原你的交易现场，市场情绪、板块方向、个股强度、产业链位置和最佳执行方案一目了然。
+              从交割单开始，AI 自动还原你的交易现场：市场情绪、板块方向、个股强度、产业链位置和下一步执行方案一目了然。
             </p>
             <div className="actions">
               <Link className="primary" href="/review">
@@ -76,6 +76,16 @@ export default function Page() {
 
         <section id="features" className="features">
           <div className="feature-shell">
+            <div className="feature-top-edge" aria-hidden="true" />
+            <Image
+              className="feature-cat-mark"
+              src="/brand-logo-transparent.png"
+              width={136}
+              height={136}
+              alt=""
+              aria-hidden="true"
+            />
+            <h2 className="feature-section-title">看懂市场涨跌</h2>
             <div className="feature-shell__glow" />
             <div className="feature-grid">
               {features.map((feature) => {
@@ -108,7 +118,6 @@ export default function Page() {
             </div>
           </div>
         </section>
-
       </div>
     </main>
   );

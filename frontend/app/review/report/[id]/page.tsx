@@ -64,14 +64,56 @@ type PresenterData = {
   presenter_copy?: Record<string, string>;
 };
 
+type ReportManifest = {
+  trade_execution_url?: string;
+  reports?: Array<{
+    trade_execution_url?: string;
+  }>;
+};
+
+type TradeExecutionData = {
+  trade_timing?: {
+    buy_points?: unknown;
+    sell_points?: unknown;
+    [key: string]: unknown;
+  };
+  execution_advice?: {
+    summary?: unknown;
+    buy_issue?: unknown;
+    sell_issue?: unknown;
+    next_time_rules?: unknown;
+    confirmation_signals?: unknown;
+    [key: string]: unknown;
+  };
+  peer_comparison?: {
+    rows?: Array<Record<string, unknown>>;
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
+};
+
+type TradeExecutionState = {
+  data: TradeExecutionData | null;
+  status: "loading" | "ready" | "unavailable";
+  message: string;
+  src: string;
+};
+
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "";
 
 export default function ReviewReportPage({ params }: ReviewReportPageProps) {
   const reportId = decodeURIComponent(params.id);
   const safeReportId = encodeURIComponent(reportId);
   const presenterSrc = `${API_BASE}/api/reports/${safeReportId}/research_presenter_data.json`;
+  const manifestSrc = `${API_BASE}/api/reports/${safeReportId}/report_manifest.json`;
   const htmlSrc = `${API_BASE}/api/reports/${safeReportId}/index.html`;
   const [data, setData] = useState<PresenterData | null>(null);
+  const [tradeExecution, setTradeExecution] = useState<TradeExecutionState>({
+    data: null,
+    status: "loading",
+    message: "",
+    src: "",
+  });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -96,6 +138,66 @@ export default function ReviewReportPage({ params }: ReviewReportPageProps) {
       cancelled = true;
     };
   }, [presenterSrc]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadTradeExecutionData() {
+      setTradeExecution({ data: null, status: "loading", message: "", src: "" });
+      try {
+        const manifestResponse = await fetch(manifestSrc, { cache: "no-store" });
+        if (!manifestResponse.ok) {
+          throw new Error(`report_manifest.json \u52a0\u8f7d\u5931\u8d25\uff1a${manifestResponse.status}`);
+        }
+
+        const manifest = (await manifestResponse.json()) as ReportManifest;
+        const tradeExecutionUrl = manifest.reports?.[0]?.trade_execution_url || manifest.trade_execution_url || "";
+        if (!tradeExecutionUrl) {
+          if (!cancelled) {
+            setTradeExecution({
+              data: null,
+              status: "unavailable",
+              message: "\u4e70\u5356\u70b9\u6570\u636e\u672a\u751f\u6210/\u4e0d\u53ef\u7528",
+              src: "",
+            });
+          }
+          return;
+        }
+
+        const executionSrc = resolveReportAssetUrl(tradeExecutionUrl, safeReportId);
+        const executionResponse = await fetch(executionSrc, { cache: "no-store" });
+        if (!executionResponse.ok) {
+          throw new Error(`Trade Execution JSON \u52a0\u8f7d\u5931\u8d25\uff1a${executionResponse.status}`);
+        }
+
+        const payload = (await executionResponse.json()) as TradeExecutionData;
+        if (!cancelled) {
+          setTradeExecution({
+            data: payload,
+            status: "ready",
+            message: "",
+            src: executionSrc,
+          });
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setTradeExecution({
+            data: null,
+            status: "unavailable",
+            message:
+              err instanceof Error
+                ? err.message
+                : "\u4e70\u5356\u70b9\u6570\u636e\u672a\u751f\u6210/\u4e0d\u53ef\u7528",
+            src: "",
+          });
+        }
+      }
+    }
+
+    loadTradeExecutionData();
+    return () => {
+      cancelled = true;
+    };
+  }, [manifestSrc, safeReportId]);
 
   return (
     <main className="review-report-detail-page">
@@ -133,12 +235,29 @@ export default function ReviewReportPage({ params }: ReviewReportPageProps) {
         </section>
       )}
 
-      {!loading && !error && data && <StructuredWorkbench data={data} htmlSrc={htmlSrc} presenterSrc={presenterSrc} />}
+      {!loading && !error && data && (
+        <StructuredWorkbench
+          data={data}
+          htmlSrc={htmlSrc}
+          presenterSrc={presenterSrc}
+          tradeExecution={tradeExecution}
+        />
+      )}
     </main>
   );
 }
 
-function StructuredWorkbench({ data, htmlSrc, presenterSrc }: { data: PresenterData; htmlSrc: string; presenterSrc: string }) {
+function StructuredWorkbench({
+  data,
+  htmlSrc,
+  presenterSrc,
+  tradeExecution,
+}: {
+  data: PresenterData;
+  htmlSrc: string;
+  presenterSrc: string;
+  tradeExecution: TradeExecutionState;
+}) {
   const company = data.company || {};
   const hero = data.hero || {};
   const profit = data.profit_flow || {};
@@ -197,6 +316,8 @@ function StructuredWorkbench({ data, htmlSrc, presenterSrc }: { data: PresenterD
           <p className="structured-body-text">{data.newbie_summary}</p>
         </section>
       )}
+
+      <TradeExecutionAdvicePanel tradeExecution={tradeExecution} />
 
       <section className="structured-section">
         <div className="structured-section-head">
@@ -323,6 +444,204 @@ function StructuredWorkbench({ data, htmlSrc, presenterSrc }: { data: PresenterD
   );
 }
 
+function TradeExecutionAdvicePanel({ tradeExecution }: { tradeExecution: TradeExecutionState }) {
+  const data = tradeExecution.data;
+  const peerRows = useMemo(
+    () => (Array.isArray(data?.peer_comparison?.rows) ? data.peer_comparison.rows : []),
+    [data?.peer_comparison?.rows],
+  );
+  const peerTableColumns = useMemo(() => peerColumns(peerRows), [peerRows]);
+
+  return (
+    <section className="structured-section trade-execution-section">
+      <div className="structured-section-head">
+        <div>
+          <h2>{"\u4e70\u5356\u70b9\u8bc4\u4ef7"}</h2>
+          <p>
+            {
+              "\u57fa\u4e8e\u72ec\u7acb Trade Execution \u6570\u636e\uff0c\u805a\u7126\u8fd9\u7b14\u4ea4\u6613\u7684\u4e70\u70b9\u3001\u5356\u70b9\u548c\u4e0b\u6b21\u6267\u884c\u89c4\u5219\u3002"
+            }
+          </p>
+        </div>
+        <span>{"\u590d\u76d8\u5efa\u8bae"}</span>
+      </div>
+
+      {tradeExecution.status === "loading" && (
+        <div className="trade-execution-state">
+          <Loader2 className="spin-icon" />
+          <span>{"\u6b63\u5728\u8bfb\u53d6\u4e70\u5356\u70b9\u590d\u76d8\u6570\u636e..."}</span>
+        </div>
+      )}
+
+      {tradeExecution.status !== "loading" && !data && (
+        <div className="trade-execution-state is-unavailable">
+          <b>{"\u4e70\u5356\u70b9\u6570\u636e\u672a\u751f\u6210/\u4e0d\u53ef\u7528"}</b>
+          {tradeExecution.message && <span>{tradeExecution.message}</span>}
+        </div>
+      )}
+
+      {tradeExecution.status === "ready" && data && (
+        <div className="trade-execution-layout">
+          <div className="trade-execution-grid">
+            <TradePointGroup
+              title={"\u4e70\u70b9\u8bc4\u4ef7"}
+              points={pointList(data.trade_timing?.buy_points)}
+              fallback={"\u4e70\u70b9\u8bc4\u4ef7\u6682\u672a\u751f\u6210"}
+              tone="buy"
+            />
+            <TradePointGroup
+              title={"\u5356\u70b9\u8bc4\u4ef7"}
+              points={pointList(data.trade_timing?.sell_points)}
+              fallback={"\u5356\u70b9\u8bc4\u4ef7\u6682\u672a\u751f\u6210"}
+              tone="sell"
+            />
+          </div>
+
+          <ExecutionAdvicePanel advice={data.execution_advice} />
+
+          <article className="trade-execution-card">
+            <h3>{"\u540c\u4e1a\u8868\u73b0\u53c2\u8003"}</h3>
+            {peerRows.length && peerTableColumns.length ? (
+              <div className="trade-peer-table-wrap">
+                <table className="trade-peer-table">
+                  <thead>
+                    <tr>
+                      {peerTableColumns.map((column) => (
+                        <th key={column}>{labelize(column)}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {peerRows.map((row, index) => (
+                      <tr key={`peer-${index}`}>
+                        {peerTableColumns.map((column) => (
+                          <td key={`${column}-${index}`}>{formatValue(row[column])}</td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p className="trade-execution-muted">{"\u540c\u4e1a\u8868\u73b0\u6570\u636e\u6682\u672a\u751f\u6210"}</p>
+            )}
+          </article>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function TradePointGroup({
+  title,
+  points,
+  fallback,
+  tone,
+}: {
+  title: string;
+  points: Array<Record<string, unknown>>;
+  fallback: string;
+  tone: "buy" | "sell";
+}) {
+  return (
+    <article className="trade-execution-card">
+      <h3>{title}</h3>
+      {points.length ? (
+        <div className="trade-execution-point-stack">
+          {points.map((point, index) => (
+            <div className={`trade-execution-point-card is-${tone}`} key={`${title}-${index}`}>
+              <div className="trade-execution-point-head">
+                <span>{tradePointTitle(point, index)}</span>
+                <small>{tradePointMeta(point)}</small>
+              </div>
+              <div className="trade-execution-judgment">
+                <span>{"\u5224\u65ad"}</span>
+                <strong>{formatValue(point.judgment || point["\u5224\u65ad"])}</strong>
+              </div>
+              <div className="trade-execution-reason">
+                <span>{"\u539f\u56e0"}</span>
+                <p>{formatValue(point.reason || point["\u539f\u56e0"])}</p>
+              </div>
+              <TradeMetricStrip point={point} />
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="trade-execution-muted">{fallback}</p>
+      )}
+    </article>
+  );
+}
+
+function TradeMetricStrip({ point }: { point: Record<string, unknown> }) {
+  const metrics = tradeMetrics(point);
+  if (!metrics.length) return null;
+
+  return (
+    <div className="trade-execution-metrics">
+      {metrics.map((metric) => (
+        <div className="trade-execution-metric" key={metric.label}>
+          <span>{metric.label}</span>
+          <strong>{metric.value}</strong>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ExecutionAdvicePanel({ advice }: { advice?: TradeExecutionData["execution_advice"] }) {
+  const hasAdvice = Boolean(
+    advice &&
+      ["summary", "buy_issue", "sell_issue", "next_time_rules", "confirmation_signals"].some((key) =>
+        hasMeaningfulValue(advice[key]),
+      ),
+  );
+
+  return (
+    <article className="trade-execution-card trade-advice-card">
+      <h3>{"\u4e70\u5356\u70b9\u590d\u76d8\u5efa\u8bae"}</h3>
+      {!hasAdvice || !advice ? (
+        <p className="trade-execution-muted">{"\u590d\u76d8\u5efa\u8bae\u6682\u672a\u751f\u6210"}</p>
+      ) : (
+        <>
+          {hasMeaningfulValue(advice.summary) && (
+            <div className="trade-advice-summary">
+              <span>{"\u6838\u5fc3\u5efa\u8bae"}</span>
+              <p>{formatValue(advice.summary)}</p>
+            </div>
+          )}
+          <div className="trade-advice-grid">
+            <AdviceItem title={"\u4e70\u70b9\u95ee\u9898"} value={advice.buy_issue} />
+            <AdviceItem title={"\u5356\u70b9\u95ee\u9898"} value={advice.sell_issue} />
+            <AdviceItem title={"\u4e0b\u6b21\u89c4\u5219"} value={advice.next_time_rules} />
+            <AdviceItem title={"\u786e\u8ba4\u4fe1\u53f7"} value={advice.confirmation_signals} />
+          </div>
+        </>
+      )}
+    </article>
+  );
+}
+
+function AdviceItem({ title, value }: { title: string; value: unknown }) {
+  if (!hasMeaningfulValue(value)) return null;
+  const items = adviceList(value);
+
+  return (
+    <div className="trade-advice-item">
+      <h4>{title}</h4>
+      {items.length > 1 ? (
+        <ul className="trade-advice-list">
+          {items.map((item, index) => (
+            <li key={`${title}-${index}`}>{item}</li>
+          ))}
+        </ul>
+      ) : (
+        <p>{items[0] || formatValue(value)}</p>
+      )}
+    </div>
+  );
+}
+
 function InfoCard({ title, items, fallback }: { title: string; items: string[]; fallback: string }) {
   return (
     <article className="structured-info-card">
@@ -347,7 +666,161 @@ function list<T>(value?: T[] | T | null): T[] {
   return [];
 }
 
+function pointList(value: unknown): Array<Record<string, unknown>> {
+  if (Array.isArray(value)) return value.filter(isPlainObject);
+  if (isPlainObject(value)) return [value];
+  return [];
+}
+
 function number(value: unknown, fallback: number) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function tradePointTitle(point: Record<string, unknown>, index: number) {
+  const date = formatValue(point.date || point["\u65e5\u671f"]);
+  if (date !== "-") return date;
+  return `\u7b2c ${index + 1} \u7b14`;
+}
+
+function tradePointMeta(point: Record<string, unknown>) {
+  const price = formatValue(point.price || point["\u6210\u4ea4\u4ef7"]);
+  return price === "-" ? "\u6210\u4ea4\u4ef7\u5f85\u8865\u5145" : `\u6210\u4ea4\u4ef7 ${price}`;
+}
+
+function tradeMetrics(point: Record<string, unknown>) {
+  const stockPctKey = "stock" + " pct";
+  const hs300PctKey = "hs300 etf" + " pct";
+  const sectorPctKey = "sector" + " pct";
+  const vsHs300PctKey = "vs hs300" + " pct";
+  const vsSectorPctKey = "vs sector" + " pct";
+  const metricKeys: Array<{ label: string; keys: string[] }> = [
+    { label: "\u4e2a\u80a1\u6da8\u8dcc\u5e45", keys: ["stock_pct", stockPctKey] },
+    { label: "\u6caa\u6df1300ETF\u6da8\u8dcc\u5e45", keys: ["hs300_etf_pct", hs300PctKey] },
+    { label: "\u677f\u5757\u6da8\u8dcc\u5e45", keys: ["sector_pct", sectorPctKey] },
+    {
+      label: "\u76f8\u5bf9\u6caa\u6df1300ETF",
+      keys: ["vs_hs300_pct", vsHs300PctKey, "excess_vs_hs300_pct", "excess vs hs300" + " pct"],
+    },
+    {
+      label: "\u76f8\u5bf9\u677f\u5757",
+      keys: ["vs_sector_pct", vsSectorPctKey, "excess_vs_sector_pct", "excess vs sector" + " pct"],
+    },
+  ];
+
+  return metricKeys.flatMap(({ label, keys }) => {
+    const value = pickValue(point, keys);
+    if (!hasMeaningfulValue(value)) return [];
+    return [{ label, value: formatPercent(value) }];
+  });
+}
+
+function pickValue(source: Record<string, unknown>, keys: string[]) {
+  return keys.map((key) => source[key]).find(hasMeaningfulValue);
+}
+
+function formatPercent(value: unknown) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return formatValue(value);
+  const sign = parsed > 0 ? "+" : "";
+  return `${sign}${parsed.toFixed(2)}%`;
+}
+
+function hasMeaningfulValue(value: unknown): boolean {
+  if (value === null || value === undefined || value === "") return false;
+  if (Array.isArray(value)) return value.some(hasMeaningfulValue);
+  if (isPlainObject(value)) return Object.values(value).some(hasMeaningfulValue);
+  return true;
+}
+
+function adviceList(value: unknown): string[] {
+  if (!hasMeaningfulValue(value)) return [];
+  if (Array.isArray(value)) return value.flatMap((item) => adviceList(item)).filter((item) => item !== "-");
+  if (isPlainObject(value)) return Object.values(value).flatMap((item) => adviceList(item)).filter((item) => item !== "-");
+  return [formatValue(value)];
+}
+
+function resolveReportAssetUrl(url: string, safeReportId: string) {
+  const trimmed = url.trim();
+  if (!trimmed) return "";
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  if (trimmed.startsWith("/")) return `${API_BASE}${trimmed}`;
+  const cleaned = trimmed.replace(/^\.?\//, "");
+  return `${API_BASE}/api/reports/${safeReportId}/${cleaned}`;
+}
+
+function peerColumns(rows: Array<Record<string, unknown>>) {
+  const preferred = ["code", "name", "stock_name", "day_pct", "five_day_pct", "twenty_day_pct", "advantage", "weakness"];
+  const seen = new Set<string>();
+  const columns: string[] = [];
+
+  preferred.forEach((key) => {
+    if (rows.some((row) => row[key] !== undefined)) {
+      seen.add(key);
+      columns.push(key);
+    }
+  });
+
+  rows.forEach((row) => {
+    Object.keys(row).forEach((key) => {
+      if (!seen.has(key) && labelize(key) !== "\u5176\u4ed6") {
+        seen.add(key);
+        columns.push(key);
+      }
+    });
+  });
+
+  return columns.slice(0, 8);
+}
+
+function labelize(key: string) {
+  const labels: Record<string, string> = {
+    code: "\u4ee3\u7801",
+    name: "\u540d\u79f0",
+    symbol: "\u4ee3\u7801",
+    stock_name: "\u540d\u79f0",
+    day_pct: "\u5f53\u65e5\u6da8\u8dcc\u5e45",
+    five_day_pct: "5\u65e5\u6da8\u8dcc\u5e45",
+    twenty_day_pct: "20\u65e5\u6da8\u8dcc\u5e45",
+    pct_chg: "\u6da8\u8dcc\u5e45",
+    change_pct: "\u6da8\u8dcc\u5e45",
+    score: "\u8bc4\u5206",
+    note: "\u8bf4\u660e",
+    advantage: "\u4f18\u52bf",
+    weakness: "\u77ed\u677f",
+    judgment: "\u5224\u65ad",
+    reason: "\u539f\u56e0",
+    stock_pct: "\u4e2a\u80a1\u6da8\u8dcc\u5e45",
+    hs300_etf_pct: "\u6caa\u6df1300ETF\u6da8\u8dcc\u5e45",
+    sector_pct: "\u677f\u5757\u6da8\u8dcc\u5e45",
+    vs_hs300_pct: "\u76f8\u5bf9\u6caa\u6df1300ETF",
+    excess_vs_hs300_pct: "\u76f8\u5bf9\u6caa\u6df1300ETF",
+    vs_sector_pct: "\u76f8\u5bf9\u677f\u5757",
+    excess_vs_sector_pct: "\u76f8\u5bf9\u677f\u5757",
+    buy_issue: "\u4e70\u70b9\u95ee\u9898",
+    sell_issue: "\u5356\u70b9\u95ee\u9898",
+    next_time_rules: "\u4e0b\u6b21\u89c4\u5219",
+    confirmation_signals: "\u786e\u8ba4\u4fe1\u53f7",
+    summary: "\u6838\u5fc3\u5efa\u8bae",
+    date: "\u65e5\u671f",
+    price: "\u6210\u4ea4\u4ef7",
+  };
+  return labels[key] || "\u5176\u4ed6";
+}
+
+function formatValue(value: unknown): string {
+  if (value === null || value === undefined || value === "") return "-";
+  if (typeof value === "number") return Number.isInteger(value) ? String(value) : value.toFixed(2);
+  if (typeof value === "boolean") return value ? "\u662f" : "\u5426";
+  if (Array.isArray(value)) return value.map((item) => formatValue(item)).filter((item) => item !== "-").join("\uff1b");
+  if (isPlainObject(value)) {
+    return Object.entries(value)
+      .map(([key, item]) => `${labelize(key)}\uff1a${formatValue(item)}`)
+      .join("\uff1b");
+  }
+  return String(value);
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
