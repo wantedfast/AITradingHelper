@@ -22,6 +22,7 @@ HS300_ETF_NAME = "沪深300ETF"
 SOURCE_TENCENT = "tencent_finance"
 SOURCE_AKSHARE = "akshare"
 SOURCE_FALLBACK = "fallback_existing"
+SOURCE_PREFETCHED = "prefetched"
 SOURCE_MISSING = "missing"
 
 
@@ -55,10 +56,12 @@ def build_trade_execution_data_context(
     trade_round: TradeRound,
     start: date | None = None,
     end: date | None = None,
+    prefetched_quotes: dict[str, pd.DataFrame] | None = None,
 ) -> dict[str, Any]:
     start = start or trade_round.start_date - timedelta(days=25)
     end = end or max(trade_round.end_date + timedelta(days=20), trade_round.start_date + timedelta(days=45))
-    stock_fetch = fetch_daily_with_source(
+    prefetched_quotes = prefetched_quotes if isinstance(prefetched_quotes, dict) else {}
+    stock_fetch = _prefetched_fetch(prefetched_quotes.get("stock"), start, end) or fetch_daily_with_source(
         provider=provider,
         table="stock_daily",
         symbol=trade_round.code,
@@ -66,7 +69,7 @@ def build_trade_execution_data_context(
         end=end,
         kind="stock",
     )
-    benchmark_fetch = fetch_daily_with_source(
+    benchmark_fetch = _prefetched_fetch(prefetched_quotes.get("benchmark"), start, end) or fetch_daily_with_source(
         provider=provider,
         table="index_daily",
         symbol=HS300_ETF_SYMBOL,
@@ -75,7 +78,7 @@ def build_trade_execution_data_context(
         kind="etf",
     )
     sector_name, sector_symbol = _sector_identity(profile, trade_round.code)
-    sector_fetch = fetch_daily_with_source(
+    sector_fetch = _prefetched_fetch(prefetched_quotes.get("sector"), start, end) or fetch_daily_with_source(
         provider=provider,
         table="index_daily" if _looks_like_index_symbol(sector_symbol) else "stock_daily",
         symbol=sector_symbol,
@@ -139,6 +142,17 @@ def build_trade_execution_data_context(
         },
     }
     return normalize_execution_data_context(data)
+
+
+def _prefetched_fetch(frame: pd.DataFrame | None, start: date, end: date) -> QuoteFetch | None:
+    if frame is None or frame.empty:
+        return None
+    if "trade_date" not in frame.columns:
+        return None
+    dates = pd.to_datetime(frame["trade_date"], errors="coerce").dropna().dt.date
+    if dates.empty or min(dates) > start or max(dates) < end:
+        return None
+    return QuoteFetch(frame=frame.copy(), source=SOURCE_PREFETCHED, status="ok")
 
 
 def fetch_daily_with_source(

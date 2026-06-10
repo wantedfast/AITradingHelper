@@ -5,6 +5,7 @@ import os
 import re
 import urllib.error
 import urllib.request
+import time
 from typing import Any
 
 
@@ -295,12 +296,14 @@ def _call_responses_json(
     if max_output:
         body["max_output_tokens"] = max_output
     data = _post_json(f"{base_url}/responses", api_key, body, timeout=180)
-    return _loads_json_object(
+    parsed = _loads_json_object(
         _extract_response_text(data),
         repair_api_key=api_key,
         model_override=model_override,
         schema_hint=system_prompt,
     )
+    _attach_api_usage(parsed, data)
+    return parsed
 
 
 def _call_responses_text(
@@ -350,12 +353,14 @@ def _call_chat_json(
     if max_output:
         body["max_tokens"] = max_output
     data = _post_json(f"{base_url}/chat/completions", api_key, body, timeout=140)
-    return _loads_json_object(
+    parsed = _loads_json_object(
         data["choices"][0]["message"]["content"],
         repair_api_key=api_key,
         model_override=model_override,
         schema_hint=system_prompt,
     )
+    _attach_api_usage(parsed, data)
+    return parsed
 
 
 def _call_chat_text(
@@ -430,6 +435,16 @@ def _extract_response_text(data: dict[str, Any]) -> str:
     if parts:
         return "\n".join(parts)
     raise RuntimeError("OpenAI response did not contain text")
+
+
+def _attach_api_usage(parsed: dict[str, Any], response_data: dict[str, Any]) -> None:
+    usage = response_data.get("usage") if isinstance(response_data, dict) else None
+    if isinstance(parsed, dict) and isinstance(usage, dict):
+        parsed["_api_usage"] = {
+            key: usage.get(key)
+            for key in ("input_tokens", "output_tokens", "total_tokens", "prompt_tokens", "completion_tokens")
+            if usage.get(key) is not None
+        }
 
 
 def _loads_json_object(
@@ -662,42 +677,223 @@ def _public_user_prompt(context: dict[str, Any]) -> str:
     return f"{note}\n{prompt}"
 
 
-# Memo-first research agents. Market Catalyst still uses _call_json_agent with web
-# search; WANG/Public only write research memo text and never use web tools.
+# Research agents return the workbench contract directly. Standard mode keeps the
+# payload short for fast report generation; better mode adds a longer deep_memo.
 def run_wang_workbench_agent(context: dict[str, Any]) -> dict[str, Any]:
     model = _research_model(context)
-    memo = _call_text_agent(
-        _wang_memo_system_prompt(),
-        _wang_memo_user_prompt(context),
+    include_memo = _research_model_tier(context) == "better"
+    system_prompt = _research_json_system_prompt("WANG industry-chain", include_memo=include_memo)
+    user_prompt = _wang_research_json_user_prompt(context, include_memo=include_memo)
+    started = time.perf_counter()
+    payload = _call_json_agent(
+        system_prompt,
+        user_prompt,
         model_override=model,
+        max_output_tokens=_research_json_max_output_tokens(include_memo),
         allow_web=False,
     )
-    return _memo_agent_payload("wang", memo, model=model, context=context)
+    return _research_agent_payload(
+        "wang",
+        payload,
+        model=model,
+        context=context,
+        include_memo=include_memo,
+        input_text=f"{system_prompt}\n{user_prompt}",
+        seconds=time.perf_counter() - started,
+    )
 
 
 def run_public_equity_workbench_agent(context: dict[str, Any]) -> dict[str, Any]:
     model = _research_model(context)
-    memo = _call_text_agent(
-        _public_memo_system_prompt(),
-        _public_memo_user_prompt(context),
+    include_memo = _research_model_tier(context) == "better"
+    system_prompt = _research_json_system_prompt("Public Equity", include_memo=include_memo)
+    user_prompt = _public_research_json_user_prompt(context, include_memo=include_memo)
+    started = time.perf_counter()
+    payload = _call_json_agent(
+        system_prompt,
+        user_prompt,
         model_override=model,
+        max_output_tokens=_research_json_max_output_tokens(include_memo),
         allow_web=False,
     )
-    return _memo_agent_payload("public_equity", memo, model=model, context=context)
+    return _research_agent_payload(
+        "public_equity",
+        payload,
+        model=model,
+        context=context,
+        include_memo=include_memo,
+        input_text=f"{system_prompt}\n{user_prompt}",
+        seconds=time.perf_counter() - started,
+    )
 
 
-def _memo_agent_payload(agent_type: str, memo: object, *, model: str, context: dict[str, Any]) -> dict[str, Any]:
-    text = str(memo or "").strip()
-    if not text:
-        return {"agent_type": agent_type, "model": model, "_agent_error": f"{agent_type} memo is empty"}
-    return {
-        "agent_type": agent_type,
-        "model": model,
-        "research_model_tier": _research_model_tier(context),
-        "deep_memo": text,
-        "memo": text,
-        "raw_text": text,
+def _research_json_system_prompt(agent_name: str, *, include_memo: bool) -> str:
+    memo_rule = (
+        "Also include deep_memo, 700-1000 Chinese characters, explaining the full reasoning."
+        if include_memo
+        else "Do not include deep_memo or long memo text. Keep reasoning_summary within 180 Chinese characters."
+    )
+    return f"""
+You are the {agent_name} research agent for an A-share trade review product.
+Return valid JSON only. Do not use Markdown. Use Chinese values.
+Use only stock_context facts, market_catalyst, evidence, news, and trade context. If evidence is insufficient, write "待验证".
+{memo_rule}
+""".strip()
+
+
+def _wang_research_json_user_prompt(context: dict[str, Any], *, include_memo: bool) -> str:
+    memo_field = ',\n  "deep_memo": "700-1000字产业链研究长文"' if include_memo else ""
+    return f"""
+Return this exact WANG JSON contract:
+{{
+  "industry_rating": "S/A/B/C",
+  "sector": "行业或主题方向",
+  "theme": "市场交易主线或待验证主题",
+  "market_hype_reason": "最近市场为什么交易这家公司",
+  "recent_catalysts": ["催化或异动证据"],
+  "traded_business_line": "被交易的业务线或主题",
+  "what_market_is_pricing": "市场正在定价的预期",
+  "evidence_quality": "high/medium/low",
+  "unknowns": ["仍需验证的关键点"],
+  "industry_tags": ["标签"],
+  "claims": ["3-4条首页结论"],
+  "profit_flow": {{
+    "value_pool": "价值池名称",
+    "items": [{{"name": "产业环节", "share_pct": 0, "highlight": false}}],
+    "company_position": "公司所处位置",
+    "why_profit_flows_here": "利润为什么可能流向这里"
+  }},
+  "moat_radar": {{
+    "company_score": 0,
+    "industry_average": 0,
+    "dimensions": [{{"name": "技术/认证/良率/规模/客户", "company": 0, "average": 0}}],
+    "explanation": "壁垒解释"
+  }},
+  "logic_tree": [{{"node": "产业逻辑节点", "certainty_pct": 0}}],
+  "weakest_link": "最弱逻辑链",
+  "sector_symbol": "相关ETF或指数代码，无法判断则空",
+  "peer_ranking": ["同赛道公司排序和理由"],
+  "reasoning_summary": "180字以内依据摘要"{memo_field}
+}}
+
+stock_context:
+{json.dumps(context, ensure_ascii=False)}
+""".strip()
+
+
+def _public_research_json_user_prompt(context: dict[str, Any], *, include_memo: bool) -> str:
+    memo_field = ',\n  "deep_memo": "700-1000字投资判断长文"' if include_memo else ""
+    return f"""
+Return this exact Public Equity JSON contract:
+{{
+  "investment_rating": "A+/A/B/C",
+  "one_sentence_conclusion": "一句话投资结论",
+  "market_hype_reason": "最近市场为什么交易这家公司",
+  "recent_catalysts": ["催化或异动证据"],
+  "traded_business_line": "当前股价交易的业务线或主题",
+  "what_market_is_pricing": "市场正在定价的预期",
+  "evidence_quality": "high/medium/low",
+  "unknowns": ["仍需验证的关键点"],
+  "expectation_gap": {{
+    "market_believes": ["市场认为"],
+    "analyst_view": ["研究判断"],
+    "gap_score": 0,
+    "underestimated": "市场可能低估什么",
+    "overestimated": "市场可能高估什么"
+  }},
+  "validation_panel": [{{"status": "已验证/待确认/风险", "item": "验证项", "evidence": "证据或待验证"}}],
+  "catalysts": [{{"time": "时间", "event": "催化剂", "impact": "高/中/低"}}],
+  "risks": [{{"name": "风险", "why_it_matters": "为什么重要", "impact_pct": 0, "downgrade_action": "降级动作"}}],
+  "action": {{
+    "status_tags": ["状态标签"],
+    "current_action": "加入观察池/谨慎配置/等待回调/规避",
+    "suitable_for": "适合谁",
+    "not_suitable_for": "不适合谁",
+    "recheck_conditions": ["复查条件"]
+  }},
+  "financial_validation": ["财务或经营验证点"],
+  "valuation_odds": "估值赔率判断",
+  "position_sizing": "仓位/交易含义",
+  "trading_implication": "对本次交易复盘的含义",
+  "sources": ["来源或待验证来源"],
+  "reasoning_summary": "180字以内依据摘要"{memo_field}
+}}
+
+stock_context:
+{json.dumps(context, ensure_ascii=False)}
+""".strip()
+
+
+def _research_json_max_output_tokens(include_memo: bool) -> int:
+    env_name = "WORKBENCH_DETAIL_MAX_OUTPUT_TOKENS" if include_memo else "WORKBENCH_FAST_MAX_OUTPUT_TOKENS"
+    default = 3200 if include_memo else 1400
+    try:
+        value = int(os.getenv(env_name, str(default)).strip())
+    except Exception:
+        return default
+    return value if value > 0 else default
+
+
+def _research_agent_payload(
+    agent_type: str,
+    payload: object,
+    *,
+    model: str,
+    context: dict[str, Any],
+    include_memo: bool,
+    input_text: str,
+    seconds: float,
+) -> dict[str, Any]:
+    data = payload if isinstance(payload, dict) else {}
+    if data.get("_agent_error"):
+        return data
+    data = dict(data)
+    api_usage = data.pop("_api_usage", None)
+    output_text = json.dumps(data, ensure_ascii=False, default=str)
+    data["agent_type"] = agent_type
+    data["model"] = model
+    data["research_model_tier"] = _research_model_tier(context)
+    data["research_output_mode"] = "json_memo" if include_memo else "json_only"
+    data["research_metrics"] = _research_metrics(input_text, output_text, seconds=seconds, api_usage=api_usage)
+    if not include_memo:
+        data.pop("deep_memo", None)
+        data.pop("memo", None)
+        data.pop("raw_text", None)
+    elif isinstance(data.get("deep_memo"), str):
+        data["memo"] = data["deep_memo"]
+        data["raw_text"] = data["deep_memo"]
+    return data
+
+
+def _research_metrics(input_text: str, output_text: str, *, seconds: float, api_usage: object = None) -> dict[str, Any]:
+    input_chars = len(input_text or "")
+    output_chars = len(output_text or "")
+    input_tokens = _estimate_tokens(input_text)
+    output_tokens = _estimate_tokens(output_text)
+    metrics = {
+        "seconds": round(max(0.0, seconds), 4),
+        "input_chars": input_chars,
+        "output_chars": output_chars,
+        "estimated_input_tokens": input_tokens,
+        "estimated_output_tokens": output_tokens,
+        "estimated_total_tokens": input_tokens + output_tokens,
     }
+    if isinstance(api_usage, dict):
+        metrics["api_usage"] = api_usage
+        actual_input = api_usage.get("input_tokens", api_usage.get("prompt_tokens"))
+        actual_output = api_usage.get("output_tokens", api_usage.get("completion_tokens"))
+        actual_total = api_usage.get("total_tokens")
+        if actual_input is not None:
+            metrics["actual_input_tokens"] = actual_input
+        if actual_output is not None:
+            metrics["actual_output_tokens"] = actual_output
+        if actual_total is not None:
+            metrics["actual_total_tokens"] = actual_total
+    return metrics
+
+
+def _estimate_tokens(text: str) -> int:
+    return max(1, round(len(text or "") / 2))
 
 
 def _wang_memo_system_prompt() -> str:

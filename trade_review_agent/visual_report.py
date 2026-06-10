@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import timedelta
 from html import escape
+import json
+import os
 from pathlib import Path
 import shutil
+import time
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -17,7 +21,7 @@ from .io import read_trade_file
 from .schema import Trade
 from .sector_strength import build_sector_signal
 from .trade_rounds import TradeRound, split_trade_rounds
-from .trade_execution_chain import build_trade_execution_chain
+from .trade_execution_chain import build_trade_execution_chain, enhance_trade_execution_with_llm
 from .presenter_agent import build_presenter_data
 from .workbench_agents import research_model_metadata
 from .workbench_report_renderer import render_workbench_report
@@ -44,27 +48,54 @@ def build_all_reports(
     cache_db: str | Path = "work/real_trade_review_cache.sqlite",
     benchmark_symbol: str = "sh000300",
     research_model_tier: str = "standard",
+    max_workers: int | None = None,
 ) -> list[VisualReportResult]:
     trades = read_trade_file(trades_path)
     rounds = split_trade_rounds(trades)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    results: list[VisualReportResult] = []
-    for trade_round in rounds:
-        if not any(trade.side == "buy" for trade in trade_round.trades):
-            continue
-        slug = f"{trade_round.code}_{trade_round.start_date:%Y%m%d}_r{trade_round.round_id}.html"
-        result = build_round_html(
-            trade_round=trade_round,
-            output=output_dir / slug,
-            cache_db=cache_db,
-            benchmark_symbol=benchmark_symbol,
-            research_model_tier=research_model_tier,
-        )
-        results.append(result)
+    runnable_rounds = [trade_round for trade_round in rounds if any(trade.side == "buy" for trade in trade_round.trades)]
+    workers = _report_build_workers(max_workers, len(runnable_rounds))
+    if workers <= 1:
+        results = [
+            build_round_html(
+                trade_round=trade_round,
+                output=output_dir / f"{trade_round.code}_{trade_round.start_date:%Y%m%d}_r{trade_round.round_id}.html",
+                cache_db=cache_db,
+                benchmark_symbol=benchmark_symbol,
+                research_model_tier=research_model_tier,
+            )
+            for trade_round in runnable_rounds
+        ]
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = [
+                executor.submit(
+                    build_round_html,
+                    trade_round=trade_round,
+                    output=output_dir / f"{trade_round.code}_{trade_round.start_date:%Y%m%d}_r{trade_round.round_id}.html",
+                    cache_db=cache_db,
+                    benchmark_symbol=benchmark_symbol,
+                    research_model_tier=research_model_tier,
+                )
+                for trade_round in runnable_rounds
+            ]
+            results = [future.result() for future in futures]
     _write_first_report_json_aliases(output_dir, results)
     _write_index(output_dir / "index.html", results)
     return results
+
+
+def _report_build_workers(max_workers: int | None, round_count: int) -> int:
+    if round_count <= 1:
+        return 1
+    value = max_workers
+    if value is None:
+        try:
+            value = int(os.getenv("REPORT_BUILD_MAX_WORKERS", "2").strip())
+        except Exception:
+            value = 2
+    return max(1, min(int(value), round_count))
 
 
 def _write_first_report_json_aliases(output_dir: Path, results: list[VisualReportResult]) -> None:
@@ -111,11 +142,13 @@ def build_round_html(
     profile: IndustryProfile | None = None,
     research_model_tier: str = "standard",
 ) -> VisualReportResult:
+    timings: dict[str, float] = {}
     output = Path(output)
     profile = profile or get_profile(trade_round.code, trade_round.name)
     start = trade_round.start_date - timedelta(days=25)
-    end = max(trade_round.end_date + timedelta(days=15), start + timedelta(days=45))
+    end = max(trade_round.end_date + timedelta(days=20), trade_round.start_date + timedelta(days=45))
     provider = MarketDataProvider(cache_db=cache_db, adjust="qfq")
+    market_started = time.perf_counter()
     stock = _with_ma(provider.stock_daily(trade_round.code, start, end))
     if stock.empty:
         raise ValueError(f"No stock daily data found for {trade_round.code}")
@@ -123,22 +156,61 @@ def build_round_html(
     benchmark = _relative_close(provider.index_daily(benchmark_symbol, start, end))
     growth_index = _relative_close(provider.index_daily("sz399006", start, end))
     sector = _relative_close(_sector_daily(provider, profile.sector_symbol, start, end))
+    timings["market_fetch_seconds"] = _elapsed_seconds(market_started)
 
     trade_frame = pd.DataFrame([trade.__dict__ for trade in trade_round.trades])
     trade_frame["trade_date"] = pd.to_datetime(trade_frame["trade_date"])
+    analysis_started = time.perf_counter()
     analysis = _analyze(trade_round, profile, stock, sector, benchmark)
-    _write_trade_execution_artifacts(output, provider, profile, trade_round)
-    workbench_data = _write_round_workbench_data(output, profile, analysis, trade_round, stock, sector, benchmark, research_model_tier)
+    timings["analysis_seconds"] = _elapsed_seconds(analysis_started)
+    prefetched_quotes = {"stock": stock, "sector": sector}
+    if benchmark_symbol == "510300":
+        prefetched_quotes["benchmark"] = benchmark
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        execution_future = executor.submit(
+            _write_trade_execution_artifacts,
+            output,
+            provider,
+            profile,
+            trade_round,
+            prefetched_quotes,
+            timings,
+        )
+        workbench_data = _write_round_workbench_data(
+            output,
+            profile,
+            analysis,
+            trade_round,
+            stock,
+            sector,
+            benchmark,
+            research_model_tier,
+            timings,
+        )
+        execution_payload = execution_future.result()
+    execution_llm_started = time.perf_counter()
+    enhance_trade_execution_with_llm(
+        execution_payload=execution_payload,
+        workbench=workbench_data,
+        output=output,
+        research_model_tier=research_model_tier,
+    )
+    timings["trade_execution_llm_seconds"] = _elapsed_seconds(execution_llm_started)
+    presenter_started = time.perf_counter()
     presenter_data = build_presenter_data(
         workbench=workbench_data,
         profile=profile,
         analysis=analysis,
         trade_frame=trade_frame,
     )
+    timings["presenter_seconds"] = _elapsed_seconds(presenter_started)
+    write_started = time.perf_counter()
     write_workbench_json(Path(output).with_suffix(".presenter.json"), presenter_data)
     market_html = _premium_market_context_html(stock, sh_index, benchmark, growth_index, sector, analysis)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(render_workbench_report(presenter_data), encoding="utf-8")
+    timings["write_artifacts_seconds"] = _elapsed_seconds(write_started)
+    _write_timings(output.with_suffix(".timings.json"), timings)
     research_model = workbench_data.get("research_model") if isinstance(workbench_data, dict) else {}
     if not isinstance(research_model, dict):
         research_model = research_model_metadata("standard")
@@ -163,9 +235,18 @@ def _write_trade_execution_artifacts(
     provider: MarketDataProvider,
     profile: IndustryProfile,
     trade_round: TradeRound,
+    prefetched_quotes: dict[str, pd.DataFrame] | None = None,
+    timings: dict[str, float] | None = None,
 ) -> dict:
+    started = time.perf_counter()
     try:
-        return build_trade_execution_chain(provider=provider, profile=profile, trade_round=trade_round, output=output)
+        return build_trade_execution_chain(
+            provider=provider,
+            profile=profile,
+            trade_round=trade_round,
+            output=output,
+            prefetched_quotes=prefetched_quotes,
+        )
     except Exception as exc:
         fallback = {
             "trade_timing": {"buy_points": [], "sell_points": []},
@@ -203,6 +284,9 @@ def _write_trade_execution_artifacts(
         }
         write_workbench_json(output.with_suffix(".trade_execution.json"), fallback)
         return fallback
+    finally:
+        if timings is not None:
+            timings["trade_execution_seconds"] = _elapsed_seconds(started)
 
 
 def _write_round_workbench_data(
@@ -214,7 +298,9 @@ def _write_round_workbench_data(
     sector: pd.DataFrame,
     benchmark: pd.DataFrame,
     research_model_tier: str = "standard",
+    timings: dict[str, float] | None = None,
 ) -> dict:
+    started = time.perf_counter()
     output = Path(output)
     agent_errors: list[str] = []
     requested_research_model = research_model_metadata(research_model_tier)
@@ -258,7 +344,17 @@ def _write_round_workbench_data(
     )
     write_workbench_json(output.parent / "research_workbench_data.json", data)
     write_workbench_json(output.with_suffix(".workbench.json"), data)
+    if timings is not None:
+        timings["workbench_agents_seconds"] = _elapsed_seconds(started)
     return data
+
+
+def _elapsed_seconds(started: float) -> float:
+    return round(time.perf_counter() - started, 4)
+
+
+def _write_timings(path: Path, timings: dict[str, float]) -> None:
+    path.write_text(json.dumps(timings, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _select_round(rounds: list[TradeRound], trade_date: str | None) -> TradeRound:

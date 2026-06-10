@@ -80,6 +80,12 @@ def compose_workbench_data(context: dict[str, Any], wang: dict[str, Any], equity
         "trade_review": context.get("trade") or {},
         "research_model": context.get("research_model") or {},
         "sources": _list(equity.get("sources"), []) + _list(context.get("evidence"), []) + _list(context.get("news"), []),
+        "research_metrics": {
+            "wang": _dict(wang.get("research_metrics")),
+            "public_equity": _dict(equity.get("research_metrics")),
+            "wang_output_mode": wang.get("research_output_mode") or "",
+            "public_equity_output_mode": equity.get("research_output_mode") or "",
+        },
         "wang_agent": wang,
         "public_equity_agent": equity,
         "deep_memos": {
