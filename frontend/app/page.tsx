@@ -4,6 +4,9 @@ import { BellRing, FileSearch, ShieldCheck, Sparkles } from "lucide-react";
 import { GoldMagicCube } from "@/components/gold-magic-cube";
 import { HomeMusic } from "@/components/home-music";
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 const features = [
   {
     href: "/review",
