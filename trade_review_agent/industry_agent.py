@@ -68,7 +68,7 @@ def get_workbench_profile_data(
     context["requested_research_model"] = requested_research_model
     cache = _load_cache()
     key = f"{PROFILE_CACHE_VERSION}:{code}:{name}{_context_cache_suffix(context)}"
-    if not _refresh_enabled():
+    if _cache_read_enabled() and not _refresh_enabled():
         cached = cache.get(key)
         if isinstance(cached, dict):
             return cached
@@ -188,6 +188,11 @@ def _context_cache_suffix(context: dict[str, Any]) -> str:
 def _refresh_enabled() -> bool:
     value = os.getenv("INDUSTRY_AGENT_REFRESH") or os.getenv("WORKBENCH_AGENT_REFRESH") or ""
     return value.strip().lower() in {"1", "true", "yes"}
+
+
+def _cache_read_enabled() -> bool:
+    value = os.getenv("INDUSTRY_AGENT_CACHE_READ") or os.getenv("WORKBENCH_AGENT_CACHE_READ") or ""
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _clean_code(code: str) -> str:

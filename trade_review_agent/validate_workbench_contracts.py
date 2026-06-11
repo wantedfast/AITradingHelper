@@ -53,6 +53,7 @@ def main() -> None:
     test_market_catalyst_model_isolated()
     test_workbench_market_hype_schema()
     test_research_model_tier_contract()
+    test_industry_cache_read_disabled_by_default_contract()
     test_better_fallback_cache_key_contract()
     test_research_agents_run_concurrently_contract()
     test_research_agents_json_contract()
@@ -476,6 +477,58 @@ def test_better_fallback_cache_key_contract() -> None:
         finally:
             industry_agent.CACHE_PATH = original_cache_path
             industry_agent._refresh_enabled = original_refresh_enabled
+            industry_agent.build_stock_context = original_build_context
+            industry_agent.run_wang_workbench_agent = original_wang
+            industry_agent.run_public_equity_workbench_agent = original_equity
+
+
+def test_industry_cache_read_disabled_by_default_contract() -> None:
+    original_cache_path = industry_agent.CACHE_PATH
+    original_build_context = industry_agent.build_stock_context
+    original_wang = industry_agent.run_wang_workbench_agent
+    original_equity = industry_agent.run_public_equity_workbench_agent
+    original_env = {
+        "INDUSTRY_AGENT_CACHE_READ": os.environ.get("INDUSTRY_AGENT_CACHE_READ"),
+        "WORKBENCH_AGENT_CACHE_READ": os.environ.get("WORKBENCH_AGENT_CACHE_READ"),
+        "INDUSTRY_AGENT_REFRESH": os.environ.get("INDUSTRY_AGENT_REFRESH"),
+        "WORKBENCH_AGENT_REFRESH": os.environ.get("WORKBENCH_AGENT_REFRESH"),
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            for key in original_env:
+                os.environ.pop(key, None)
+            industry_agent.CACHE_PATH = original_cache_path.__class__(tmp) / "cache.json"
+            industry_agent.build_stock_context = lambda **kwargs: {
+                "company": {"code": kwargs.get("code"), "name": kwargs.get("name"), "market": "A-share"},
+                "trade": {},
+                "market": {},
+            }
+            industry_agent.CACHE_PATH.write_text(
+                json.dumps({"workbench-json-v3-structured:600000:TestCo:tier:standard": {"company": {"name": "cached"}}}),
+                encoding="utf-8",
+            )
+            calls = {"wang": 0, "equity": 0}
+
+            def fake_wang(context):
+                calls["wang"] += 1
+                return {"profit_flow": {"items": []}, "reasoning_summary": "fresh wang"}
+
+            def fake_equity(context):
+                calls["equity"] += 1
+                return {"expectation_gap": {"gap_score": 50}, "reasoning_summary": "fresh equity"}
+
+            industry_agent.run_wang_workbench_agent = fake_wang
+            industry_agent.run_public_equity_workbench_agent = fake_equity
+            data = industry_agent.get_workbench_profile_data("600000", "TestCo", research_model_tier="standard")
+            assert data["company"]["name"] != "cached"
+            assert calls == {"wang": 1, "equity": 1}
+        finally:
+            for key, value in original_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+            industry_agent.CACHE_PATH = original_cache_path
             industry_agent.build_stock_context = original_build_context
             industry_agent.run_wang_workbench_agent = original_wang
             industry_agent.run_public_equity_workbench_agent = original_equity

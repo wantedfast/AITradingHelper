@@ -72,7 +72,7 @@ function Import-DotEnv {
     $parts = $line.Split("=", 2)
     $key = $parts[0].Trim().TrimStart([char]0xFEFF)
     $value = $parts[1].Trim().Trim('"').Trim("'")
-    if ($key -and -not [System.Environment]::GetEnvironmentVariable($key, "Process")) {
+    if ($key) {
       [System.Environment]::SetEnvironmentVariable($key, $value, "Process")
     }
   }
