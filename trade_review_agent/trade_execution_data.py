@@ -187,9 +187,10 @@ def fetch_daily_with_source(
         _safe_write_cache(provider, table, frame)
         return QuoteFetch(frame=frame, source=SOURCE_AKSHARE, status="fallback", errors=tuple(errors))
 
-    cached = _safe_read_cache(provider, table, symbol, start, end)
-    if not cached.empty:
-        return QuoteFetch(frame=cached, source=SOURCE_FALLBACK, status="fallback", errors=tuple(errors))
+    if _provider_cache_read_enabled(provider):
+        cached = _safe_read_cache(provider, table, symbol, start, end)
+        if not cached.empty:
+            return QuoteFetch(frame=cached, source=SOURCE_FALLBACK, status="fallback", errors=tuple(errors))
 
     if not errors:
         errors.append(f"{symbol}: no quote rows from Tencent, AkShare, or existing fallback cache")
@@ -419,6 +420,13 @@ def _safe_read_cache(provider: MarketDataProvider, table: str, symbol: str, star
         return provider._read_cache(table, symbol, start, end)
     except Exception:
         return pd.DataFrame()
+
+
+def _provider_cache_read_enabled(provider: MarketDataProvider) -> bool:
+    checker = getattr(provider, "cache_read_enabled", None)
+    if callable(checker):
+        return bool(checker())
+    return False
 
 
 def _dedupe(values: list[str] | tuple[str, ...]) -> list[str]:
