@@ -2,16 +2,37 @@ $ErrorActionPreference = "Stop"
 
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Frontend = Join-Path $Root "frontend"
-$Node = "C:\Users\wantedfast\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe"
-$Python = "D:\an\python.exe"
+$RuntimeRoot = Join-Path $env:USERPROFILE ".cache\codex-runtimes\codex-primary-runtime\dependencies"
+$BundledNode = Join-Path $RuntimeRoot "node\bin\node.exe"
+$BundledPython = Join-Path $RuntimeRoot "python\python.exe"
+$Node = $null
+$Python = $null
 $BackendBase = "http://127.0.0.1:8600"
 
-if (-not (Test-Path $Node)) {
-  throw "Node runtime not found: $Node"
+if (Test-Path $BundledNode) {
+  $Node = $BundledNode
+} else {
+  $NodeCommand = Get-Command node -ErrorAction SilentlyContinue
+  if ($NodeCommand) {
+    $Node = $NodeCommand.Source
+  }
 }
 
-if (-not (Test-Path $Python)) {
-  $Python = "python"
+if (-not $Node -or -not (Test-Path $Node)) {
+  throw "Node runtime not found. Checked bundled runtime and system node."
+}
+
+if (Test-Path $BundledPython) {
+  $Python = $BundledPython
+} elseif (Test-Path "D:\an\python.exe") {
+  $Python = "D:\an\python.exe"
+} else {
+  $PythonCommand = Get-Command python -ErrorAction SilentlyContinue
+  if ($PythonCommand) {
+    $Python = $PythonCommand.Source
+  } else {
+    $Python = "python"
+  }
 }
 
 function Stop-PortListeners {

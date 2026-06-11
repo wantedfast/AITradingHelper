@@ -19,6 +19,7 @@ from . import trade_execution_chain
 from . import visual_report
 from . import watch_agent
 from . import workbench_agents
+from . import workbench_context
 from . import workbench_news
 from .ai_trade_parser import OpenAITradeParsingError
 from .data_provider import MarketDataProvider
@@ -47,6 +48,8 @@ def main() -> None:
     test_presenter_error_visible_contract()
     test_presenter_memo_conclusion_contract()
     test_market_catalyst_context_contract()
+    test_structured_market_context_hoisted_contract()
+    test_structured_market_context_failure_fallback_contract()
     test_market_catalyst_model_isolated()
     test_workbench_market_hype_schema()
     test_research_model_tier_contract()
@@ -320,8 +323,12 @@ def test_market_catalyst_context_contract() -> None:
 def test_market_catalyst_model_isolated() -> None:
     captured: dict[str, object] = {}
     original_call = workbench_news._call_json_agent
-    original_env = {key: os.environ.get(key) for key in ["NEWS_CONTEXT_MODEL", "WORKBENCH_NEWS_CONTEXT_MODEL", "OPENAI_RESEARCH_MODEL", "OPENAI_MODEL"]}
+    original_env = {
+        key: os.environ.get(key)
+        for key in ["NEWS_CONTEXT_MODEL", "WORKBENCH_NEWS_CONTEXT_MODEL", "OPENAI_RESEARCH_MODEL", "OPENAI_MODEL", "WORKBENCH_NEWS_CONTEXT_MODE"]
+    }
     try:
+        os.environ["WORKBENCH_NEWS_CONTEXT_MODE"] = "web"
         os.environ.pop("NEWS_CONTEXT_MODEL", None)
         os.environ.pop("WORKBENCH_NEWS_CONTEXT_MODEL", None)
         os.environ["OPENAI_RESEARCH_MODEL"] = "gpt-5.5"
@@ -351,6 +358,49 @@ def test_market_catalyst_model_isolated() -> None:
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = value
+
+
+def test_structured_market_context_hoisted_contract() -> None:
+    original_builder = workbench_news.build_structured_research_context
+    try:
+        workbench_news.build_structured_research_context = lambda code, name: {
+            "market_catalyst": {
+                "market_hype_reason": "AI 光通信异动",
+                "recent_catalysts": ["龙虎榜"],
+                "traded_business_line": "光通信",
+                "what_market_is_pricing": "AI 算力链",
+                "evidence_quality": "medium",
+                "unknowns": ["订单待验证"],
+                "evidence": ["新闻 A"],
+                "source_status": {"akshare_stock_news_em": "ok"},
+            },
+            "market_event_context": {"news_headlines": ["新闻 A"]},
+            "industry_chain_context": {"theme_mapping": {"inferred_chain_node": "光纤光缆"}},
+            "public_equity_context": {"financial_snapshot": [{"报告期": "2025", "净利润": "-1亿"}]},
+        }
+        context = workbench_context.build_stock_context(code="002491", name="TestCo")
+        assert context["market_hype_reason"] == "AI 光通信异动"
+        assert context["industry_chain_context"]["theme_mapping"]["inferred_chain_node"] == "光纤光缆"
+        assert context["public_equity_context"]["financial_snapshot"][0]["报告期"] == "2025"
+        assert context["financials"] == context["public_equity_context"]
+        assert context["source_status"]["akshare_stock_news_em"] == "ok"
+    finally:
+        workbench_news.build_structured_research_context = original_builder
+
+
+def test_structured_market_context_failure_fallback_contract() -> None:
+    original_builder = workbench_news.build_structured_research_context
+    try:
+        def bad_builder(code, name):
+            raise RuntimeError("akshare down")
+
+        workbench_news.build_structured_research_context = bad_builder
+        context = workbench_news.build_market_catalyst_context("002491", "TestCo")
+        assert context["evidence_quality"] == "low"
+        assert context["source_status"]["structured_context"] == "error"
+        assert "structured_market_context_failed" in context["agent_error"]
+    finally:
+        workbench_news.build_structured_research_context = original_builder
 
 
 def test_workbench_market_hype_schema() -> None:

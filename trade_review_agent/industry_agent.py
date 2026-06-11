@@ -18,7 +18,7 @@ from .trade_rounds import TradeRound
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 CACHE_PATH = BASE_DIR / "work" / "industry_profile_cache.json"
-PROFILE_CACHE_VERSION = "workbench-json-v2-catalyst"
+PROFILE_CACHE_VERSION = "workbench-json-v3-structured"
 
 
 SECTOR_PROXY_HINTS = {

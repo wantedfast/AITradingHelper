@@ -31,7 +31,7 @@ def build_stock_context(
     analysis = analysis or {}
     optimal = analysis.get("optimal") or {}
     catalyst = build_market_catalyst_context(code, name)
-    return {
+    context = {
         "company": {
             "code": code,
             "name": name or code,
@@ -73,6 +73,15 @@ def build_stock_context(
         "evidence": catalyst.get("evidence", []),
         "news": catalyst.get("recent_catalysts", []),
     }
+    for key in ("market_event_context", "industry_chain_context", "public_equity_context"):
+        value = catalyst.get(key)
+        if isinstance(value, dict) and value:
+            context[key] = value
+    if isinstance(catalyst.get("source_status"), dict):
+        context["source_status"] = catalyst["source_status"]
+    if isinstance(catalyst.get("public_equity_context"), dict):
+        context["financials"] = catalyst["public_equity_context"]
+    return context
 
 
 def _frame_snapshot(frame: pd.DataFrame | None) -> str:

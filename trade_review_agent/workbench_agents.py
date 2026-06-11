@@ -826,7 +826,7 @@ stock_context:
 
 def _research_json_max_output_tokens(include_memo: bool) -> int:
     env_name = "WORKBENCH_DETAIL_MAX_OUTPUT_TOKENS" if include_memo else "WORKBENCH_FAST_MAX_OUTPUT_TOKENS"
-    default = 3200 if include_memo else 1400
+    default = 3200 if include_memo else 3000
     try:
         value = int(os.getenv(env_name, str(default)).strip())
     except Exception:
