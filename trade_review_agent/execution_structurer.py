@@ -4,7 +4,7 @@ from copy import deepcopy
 from typing import Any
 
 
-SOURCE_VALUES = {"tencent_finance", "akshare", "fallback_existing", "missing"}
+SOURCE_VALUES = {"tencent_finance", "akshare", "fallback_existing", "prefetched", "missing"}
 QUOTE_STATUS_VALUES = {"ok", "fallback", "missing"}
 PEER_STATUS_VALUES = {"ok", "partial", "fallback", "missing"}
 STRENGTH_VALUES = {"strong", "weak", "similar", "unknown"}

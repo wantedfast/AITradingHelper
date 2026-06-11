@@ -96,9 +96,9 @@ type WorkbenchData = {
 };
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "";
-const STANDARD_REPORT_LABEL = "\u6807\u51c6\u62a5\u544a";
-const BETTER_REPORT_LABEL = "\u66f4\u597d\u7684\u62a5\u544a";
-const BETTER_FALLBACK_LABEL = "\u66f4\u597d\u7684\u62a5\u544a\u5931\u8d25\uff0c\u5df2\u4f7f\u7528\u6807\u51c6\u62a5\u544a";
+const STANDARD_REPORT_LABEL = "快速报告";
+const BETTER_REPORT_LABEL = "更详细的报告";
+const BETTER_FALLBACK_LABEL = "更详细的报告失败，已使用快速报告";
 
 const copy = {
   navLabel: "\u6838\u5fc3\u529f\u80fd",
@@ -115,7 +115,7 @@ const copy = {
     "\u4e0a\u4f20\u4ea4\u5272\u5355\u6216\u622a\u56fe\uff0c\u7cfb\u7edf\u4f1a\u8bc6\u522b\u4e70\u5356\u8bb0\u5f55\uff0c\u8c03\u7528\u884c\u60c5\u4e0e\u6295\u7814 Agent\uff0c\u751f\u6210\u80fd\u770b\u61c2\u3001\u80fd\u590d\u76d8\u3001\u80fd\u6c89\u6dc0\u89c4\u5219\u7684\u62a5\u544a\u3002",
   workflowTitle: "\u4ea4\u5272\u5355 \u2192 \u4ea4\u6613\u4e8b\u5b9e \u2192 \u5e02\u573a\u73af\u5883 \u2192 \u590d\u76d8\u7ed3\u8bba",
   workflowDesc:
-    "\u4e0a\u4f20\u540e\u7cfb\u7edf\u4f1a\u8bc6\u522b\u4ea4\u6613\u4e8b\u5b9e\uff0c\u8c03\u7528\u4ea7\u4e1a\u94fe\u548c\u4e0a\u5e02\u516c\u53f8\u6295\u7814 Agent\uff0c\u6700\u540e\u7531 Presenter Agent \u63d0\u70bc\u6210\u53ef\u89c6\u5316\u62a5\u544a\u3002",
+    "上传后系统会识别交易事实，调用产业链和上市公司投研 Agent，Workbench 会把研究 JSON 合并成可视化报告。",
   uploadTitle: "\u4e0a\u4f20\u4ea4\u5272\u5355 / \u4ea4\u6613\u622a\u56fe",
   uploadReady: "\u4ea4\u5272\u5355\u5df2\u5c31\u7eea",
   uploadDesc:
@@ -136,6 +136,10 @@ const copy = {
   openBrowser: "\u6253\u5f00\u62a5\u544a",
   accepted: "\u4ea4\u5272\u5355\u5df2\u63a5\u6536\uff0c\u53ef\u4ee5\u751f\u6210\u62a5\u544a\u3002",
   calling: "\u6b63\u5728\u8c03\u7528\u540e\u7aef Agent \u751f\u6210\u771f\u5b9e\u62a5\u544a\u3002",
+  modeFast: "快速报告",
+  modeFastDesc: "只生成前端需要的研究 JSON，速度优先。",
+  modeDetail: "更详细的报告",
+  modeDetailDesc: "生成研究 JSON，并附加更长 memo。",
   done: "\u62a5\u544a\u5df2\u751f\u6210\uff0c\u6b63\u5728\u8fdb\u5165\u8be6\u60c5\u9875\u3002",
   reset: "\u5df2\u56de\u5230\u4e0a\u4f20\u72b6\u6001\u3002",
   noUrl: "\u540e\u7aef\u5df2\u8fd4\u56de\u7ed3\u679c\uff0c\u4f46\u6ca1\u6709\u62a5\u544a URL\u3002",
@@ -515,16 +519,44 @@ export default function ReviewPage() {
               </div>
             </div>
             {selectedFile && (
-              <div className="upload-action-row">
-                <button className="primary-gold-action" type="button" onClick={generateReport} disabled={generating}>
-                  {generating ? <Loader2 className="spin-icon" /> : <Upload />}
-                  {generating ? copy.generating : copy.generate}
-                </button>
-                <button className="ghost-action" type="button" onClick={resetUpload} disabled={generating}>
-                  <RefreshCw />
-                  {copy.reselect}
-                </button>
-              </div>
+              <>
+                <div className="report-mode-toggle" aria-label="报告详细程度">
+                  <button
+                    className={researchModelTier === "standard" ? "active" : ""}
+                    type="button"
+                    onClick={() => setResearchModelTier("standard")}
+                    disabled={generating}
+                  >
+                    <FileText />
+                    <span>
+                      <b>{copy.modeFast}</b>
+                      <small>{copy.modeFastDesc}</small>
+                    </span>
+                  </button>
+                  <button
+                    className={researchModelTier === "better" ? "active" : ""}
+                    type="button"
+                    onClick={() => setResearchModelTier("better")}
+                    disabled={generating}
+                  >
+                    <ClipboardCheck />
+                    <span>
+                      <b>{copy.modeDetail}</b>
+                      <small>{copy.modeDetailDesc}</small>
+                    </span>
+                  </button>
+                </div>
+                <div className="upload-action-row">
+                  <button className="primary-gold-action" type="button" onClick={generateReport} disabled={generating}>
+                    {generating ? <Loader2 className="spin-icon" /> : <Upload />}
+                    {generating ? copy.generating : copy.generate}
+                  </button>
+                  <button className="ghost-action" type="button" onClick={resetUpload} disabled={generating}>
+                    <RefreshCw />
+                    {copy.reselect}
+                  </button>
+                </div>
+              </>
             )}
             {errorText && (
               <div className="upload-error">

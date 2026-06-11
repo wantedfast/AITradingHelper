@@ -58,8 +58,8 @@ def build_presenter_fallback_data(
     code = _first(company.get("code"), profile.code, "")
     theme = _first_non_pending(company.get("theme"), workbench.get("traded_business_line"), profile.theme, "待验证")
     node = _first_non_pending(profit.get("company_position"), workbench.get("traded_business_line"), profile.node, company.get("sector"), "待验证")
-    claims = _str_list(hero.get("claims")) or _split_claims(_first(memo_conclusion, profile.one_sentence_thesis, analysis.get("headline"), "研究结论待验证"))
-    tags = _str_list(hero.get("tags")) or _str_list(action.get("status_tags")) or [theme, node]
+    claims = _meaningful_str_list(hero.get("claims")) or _split_claims(_first(memo_conclusion, profile.one_sentence_thesis, analysis.get("headline"), "研究结论待验证"))
+    tags = _meaningful_str_list(hero.get("tags")) or _meaningful_str_list(action.get("status_tags")) or _derive_tags(workbench, theme, node)
 
     data = {
         "company": {
@@ -734,7 +734,7 @@ def _compact_trade_analysis(analysis: dict[str, Any]) -> dict[str, Any]:
 
 
 def _presenter_agent_enabled() -> bool:
-    return os.getenv("PRESENTER_AGENT_ENABLED", "1").strip().lower() not in {"0", "false", "no"}
+    return os.getenv("PRESENTER_AGENT_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _presenter_max_output_tokens() -> int:
@@ -872,6 +872,39 @@ def _str_list(value: Any) -> list[str]:
     return [str(item) for item in _list(value)]
 
 
+def _meaningful_str_list(value: Any) -> list[str]:
+    return [item for item in _str_list(value) if not _is_pending_text(item)]
+
+
+def _derive_tags(workbench: dict[str, Any], theme: str, node: str) -> list[str]:
+    tags: list[str] = []
+    for item in [
+        theme,
+        node,
+        workbench.get("traded_business_line"),
+        workbench.get("what_market_is_pricing"),
+        workbench.get("market_hype_reason"),
+    ]:
+        text = str(item or "").strip()
+        if not text or _is_pending_text(text):
+            continue
+        if "光纤" in text or "光缆" in text or "光通信" in text:
+            tags.append("光纤光缆")
+        if "新能源" in text:
+            tags.append("新能源概念")
+        if "质押" in text:
+            tags.append("高质押风险")
+        if "业绩" in text or "盈利" in text:
+            tags.append("业绩反转待确认")
+    tags.extend([theme, node])
+    result: list[str] = []
+    for tag in tags:
+        text = str(tag or "").strip()
+        if text and not _is_pending_text(text) and text not in result:
+            result.append(text)
+    return result[:5] or ["待验证"]
+
+
 def _first(*values: Any) -> str:
     for value in values:
         if isinstance(value, str) and value.strip():
@@ -891,7 +924,16 @@ def _first_non_pending(*values: Any) -> str:
 
 def _is_pending_text(text: str) -> bool:
     normalized = str(text or "").strip().lower()
-    return normalized in {"待验证", "pending", "pending verification", "research pending", "conclusion pending verification."}
+    return normalized in {
+        "待验证",
+        "结论待验证",
+        "研究结论待验证",
+        "近期炒作原因待验证",
+        "pending",
+        "pending verification",
+        "research pending",
+        "conclusion pending verification.",
+    }
 
 
 def _memo_conclusion(text: Any) -> str:

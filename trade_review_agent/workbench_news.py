@@ -4,6 +4,7 @@ import os
 from typing import Any
 
 from .workbench_agents import _call_json_agent
+from .structured_research_context import build_structured_research_context
 
 NEWS_CONTEXT_MODEL = "gpt-4.1"
 
@@ -11,11 +12,30 @@ NEWS_CONTEXT_MODEL = "gpt-4.1"
 def build_market_catalyst_context(code: str, name: str) -> dict[str, Any]:
     """Fetch a compact market-catalyst context for WANG/Public agents.
 
-    This is intentionally small: it gives the research agents a current-market
-    question to answer without bloating their prompts.
+    Structured market/news/financial inputs are preferred because they are
+    faster and keep downstream agents grounded in explicit evidence. The legacy
+    web-search scout is opt-in for compatibility/debugging only.
     """
     if os.getenv("WORKBENCH_NEWS_CONTEXT_ENABLED", "1").strip().lower() in {"0", "false", "no"}:
         return _fallback_market_catalyst(code, name)
+
+    if os.getenv("WORKBENCH_NEWS_CONTEXT_MODE", "structured").strip().lower() != "web":
+        try:
+            structured = build_structured_research_context(code, name)
+            catalyst = structured.get("market_catalyst") if isinstance(structured, dict) else {}
+            normalized = _normalize_market_catalyst(catalyst, code, name, [])
+            if isinstance(structured, dict):
+                normalized["market_event_context"] = structured.get("market_event_context", {})
+                normalized["industry_chain_context"] = structured.get("industry_chain_context", {})
+                normalized["public_equity_context"] = structured.get("public_equity_context", {})
+                normalized["source_status"] = structured.get("market_catalyst", {}).get("source_status", {})
+            return normalized
+        except Exception as exc:
+            data = _fallback_market_catalyst(code, name, [])
+            data["agent_error"] = f"structured_market_context_failed: {exc}"
+            data["source_status"] = {"structured_context": "error"}
+            data["unknowns"].append("结构化市场/财务上下文获取失败，已降级为轻量 fallback。")
+            return data
 
     queries = _market_catalyst_queries(code, name)
     try:
