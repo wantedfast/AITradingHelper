@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import pandas as pd
 
 from . import industry_agent
+from . import data_provider
 from . import presenter_agent
 from . import trade_execution_data
 from . import trade_execution_chain
@@ -72,8 +73,10 @@ def main() -> None:
     test_trade_execution_prefetched_quotes_contract()
     test_trade_execution_short_prefetch_falls_back_contract()
     test_build_all_reports_preserves_round_order_with_workers()
+    test_market_data_cache_read_disabled_by_default_contract()
     test_trade_execution_tencent_success_contract()
     test_trade_execution_akshare_fallback_contract()
+    test_trade_execution_existing_fallback_disabled_by_default_contract()
     test_trade_execution_existing_fallback_contract()
     test_watch_plan_fetches_market_frames_concurrently_contract()
     print("workbench contract validation passed")
@@ -1200,6 +1203,44 @@ def test_build_all_reports_preserves_round_order_with_workers() -> None:
         visual_report.build_round_html = original_build
 
 
+def test_market_data_cache_read_disabled_by_default_contract() -> None:
+    original_tencent = data_provider._fetch_tencent_daily
+    original_stock = data_provider._fetch_akshare_stock_daily
+    original_env = {
+        "MARKET_DATA_CACHE_READ": os.environ.get("MARKET_DATA_CACHE_READ"),
+        "TRADE_REVIEW_CACHE_READ": os.environ.get("TRADE_REVIEW_CACHE_READ"),
+    }
+    calls: list[str] = []
+    try:
+        os.environ.pop("MARKET_DATA_CACHE_READ", None)
+        os.environ.pop("TRADE_REVIEW_CACHE_READ", None)
+
+        def fake_tencent(symbol, *args, **kwargs):
+            calls.append(str(symbol))
+            return _sample_daily_frame(symbol)
+
+        data_provider._fetch_tencent_daily = fake_tencent
+        data_provider._fetch_akshare_stock_daily = lambda *args, **kwargs: pd.DataFrame()
+        with tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False) as handle:
+            cache_db = handle.name
+        try:
+            provider = MarketDataProvider(cache_db)
+            provider._write_cache("stock_daily", _sample_daily_frame("600000"))
+            frame = provider.stock_daily("600000", date(2026, 6, 1), date(2026, 6, 5))
+            assert calls == ["600000"]
+            assert not frame.empty
+        finally:
+            _remove_if_possible(cache_db)
+    finally:
+        data_provider._fetch_tencent_daily = original_tencent
+        data_provider._fetch_akshare_stock_daily = original_stock
+        for key, value in original_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
 def test_trade_execution_tencent_success_contract() -> None:
     original_tencent = trade_execution_data._fetch_tencent_daily
     original_stock = trade_execution_data._fetch_akshare_stock_daily
@@ -1254,10 +1295,52 @@ def test_trade_execution_akshare_fallback_contract() -> None:
         trade_execution_data._fetch_akshare_stock_daily = original_stock
 
 
+def test_trade_execution_existing_fallback_disabled_by_default_contract() -> None:
+    original_tencent = trade_execution_data._fetch_tencent_daily
+    original_stock = trade_execution_data._fetch_akshare_stock_daily
+    original_env = {
+        "MARKET_DATA_CACHE_READ": os.environ.get("MARKET_DATA_CACHE_READ"),
+        "TRADE_REVIEW_CACHE_READ": os.environ.get("TRADE_REVIEW_CACHE_READ"),
+    }
+    try:
+        os.environ.pop("MARKET_DATA_CACHE_READ", None)
+        os.environ.pop("TRADE_REVIEW_CACHE_READ", None)
+        trade_execution_data._fetch_tencent_daily = lambda *args, **kwargs: pd.DataFrame()
+        trade_execution_data._fetch_akshare_stock_daily = lambda *args, **kwargs: pd.DataFrame()
+        with tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False) as handle:
+            cache_db = handle.name
+        try:
+            provider = MarketDataProvider(cache_db)
+            provider._write_cache("stock_daily", _sample_daily_frame("600000"))
+            fetch = trade_execution_data.fetch_daily_with_source(
+                provider=provider,
+                table="stock_daily",
+                symbol="600000",
+                start=date(2026, 6, 1),
+                end=date(2026, 6, 5),
+                kind="stock",
+            )
+            assert fetch.source == "missing"
+            assert fetch.status == "missing"
+            assert fetch.frame.empty
+        finally:
+            _remove_if_possible(cache_db)
+    finally:
+        trade_execution_data._fetch_tencent_daily = original_tencent
+        trade_execution_data._fetch_akshare_stock_daily = original_stock
+        for key, value in original_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
 def test_trade_execution_existing_fallback_contract() -> None:
     original_tencent = trade_execution_data._fetch_tencent_daily
     original_stock = trade_execution_data._fetch_akshare_stock_daily
+    original_env = os.environ.get("MARKET_DATA_CACHE_READ")
     try:
+        os.environ["MARKET_DATA_CACHE_READ"] = "1"
         trade_execution_data._fetch_tencent_daily = lambda *args, **kwargs: pd.DataFrame()
         trade_execution_data._fetch_akshare_stock_daily = lambda *args, **kwargs: pd.DataFrame()
         with tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False) as handle:
@@ -1281,6 +1364,10 @@ def test_trade_execution_existing_fallback_contract() -> None:
     finally:
         trade_execution_data._fetch_tencent_daily = original_tencent
         trade_execution_data._fetch_akshare_stock_daily = original_stock
+        if original_env is None:
+            os.environ.pop("MARKET_DATA_CACHE_READ", None)
+        else:
+            os.environ["MARKET_DATA_CACHE_READ"] = original_env
 
 
 def test_watch_plan_fetches_market_frames_concurrently_contract() -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sqlite3
 import sys
 from datetime import date, timedelta
@@ -22,9 +23,12 @@ class MarketDataProvider:
         self.offline = offline
         self.cache_db.parent.mkdir(parents=True, exist_ok=True)
 
+    def cache_read_enabled(self) -> bool:
+        return self.offline or _cache_read_enabled()
+
     def stock_daily(self, code: str, start: date, end: date) -> pd.DataFrame:
-        cached = self._read_cache("stock_daily", code, start, end)
-        if self.offline or _covers(cached, start, end):
+        cached = self._read_cache("stock_daily", code, start, end) if self.cache_read_enabled() else pd.DataFrame()
+        if self.offline or (self.cache_read_enabled() and _covers(cached, start, end)):
             return cached
 
         frame = _fetch_tencent_daily(code, start, end, self.adjust, is_index=False)
@@ -34,11 +38,11 @@ class MarketDataProvider:
             return cached
 
         self._write_cache("stock_daily", frame)
-        return self._read_cache("stock_daily", code, start, end)
+        return self._read_cache("stock_daily", code, start, end) if self.cache_read_enabled() else frame
 
     def index_daily(self, symbol: str, start: date, end: date) -> pd.DataFrame:
-        cached = self._read_cache("index_daily", symbol, start, end)
-        if self.offline or _covers(cached, start, end):
+        cached = self._read_cache("index_daily", symbol, start, end) if self.cache_read_enabled() else pd.DataFrame()
+        if self.offline or (self.cache_read_enabled() and _covers(cached, start, end)):
             return cached
 
         frame = _fetch_tencent_daily(symbol, start, end, self.adjust, is_index=True)
@@ -48,7 +52,7 @@ class MarketDataProvider:
             return cached
 
         self._write_cache("index_daily", frame)
-        return self._read_cache("index_daily", symbol, start, end)
+        return self._read_cache("index_daily", symbol, start, end) if self.cache_read_enabled() else frame
 
     def _read_cache(self, table: str, symbol: str, start: date, end: date) -> pd.DataFrame:
         if not self.cache_db.exists():
@@ -116,6 +120,11 @@ def _covers(frame: pd.DataFrame, start: date, end: date) -> bool:
         return False
     dates = sorted(frame["trade_date"])
     return dates[0] <= start and dates[-1] >= end
+
+
+def _cache_read_enabled() -> bool:
+    value = os.getenv("MARKET_DATA_CACHE_READ") or os.getenv("TRADE_REVIEW_CACHE_READ") or ""
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _fetch_tencent_daily(symbol: str, start: date, end: date, adjust: str, is_index: bool) -> pd.DataFrame:
