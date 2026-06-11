@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 from pathlib import Path
@@ -17,7 +18,7 @@ from .trade_rounds import TradeRound
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 CACHE_PATH = BASE_DIR / "work" / "industry_profile_cache.json"
-PROFILE_CACHE_VERSION = "workbench-json-v2-catalyst"
+PROFILE_CACHE_VERSION = "workbench-json-v3-structured"
 
 
 SECTOR_PROXY_HINTS = {
@@ -100,35 +101,45 @@ def get_workbench_profile_data(
 
 def _run_research_agents(context: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
     errors: list[str] = []
-    wang: dict[str, Any] = {}
-    equity: dict[str, Any] = {}
     tier = normalize_research_model_tier(context.get("research_model_tier") if isinstance(context, dict) else "")
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        wang_future = executor.submit(_run_wang_research_agent, context, tier)
+        equity_future = executor.submit(_run_public_equity_research_agent, context, tier)
+        wang, wang_errors = wang_future.result()
+        equity, equity_errors = equity_future.result()
+    errors.extend(wang_errors)
+    errors.extend(equity_errors)
+    return wang, equity, errors
+
+
+def _run_wang_research_agent(context: dict[str, Any], tier: str) -> tuple[dict[str, Any], list[str]]:
     try:
         candidate = run_wang_workbench_agent(context)
         if isinstance(candidate, dict) and candidate.get("_agent_error"):
-            errors.append(f"WANG agent failed ({tier}): {candidate.get('_agent_error')}")
-        elif isinstance(candidate, dict) and _memo_text(candidate):
-            wang = candidate
+            return {}, [f"WANG agent failed ({tier}): {candidate.get('_agent_error')}"]
+        elif isinstance(candidate, dict) and _research_payload_present(candidate):
+            return candidate, []
         elif isinstance(candidate, dict):
-            errors.append(f"WANG agent returned empty memo ({tier})")
+            return {}, [f"WANG agent returned empty research payload ({tier})"]
         else:
-            errors.append(f"WANG agent returned non-object data ({tier})")
+            return {}, [f"WANG agent returned non-object data ({tier})"]
     except Exception as exc:
-        errors.append(f"WANG agent failed ({tier}): {exc}")
+        return {}, [f"WANG agent failed ({tier}): {exc}"]
 
+
+def _run_public_equity_research_agent(context: dict[str, Any], tier: str) -> tuple[dict[str, Any], list[str]]:
     try:
-        candidate = run_public_equity_workbench_agent(_context_with_wang_pre_read(context, wang))
+        candidate = run_public_equity_workbench_agent(context)
         if isinstance(candidate, dict) and candidate.get("_agent_error"):
-            errors.append(f"Public Equity agent failed ({tier}): {candidate.get('_agent_error')}")
-        elif isinstance(candidate, dict) and _memo_text(candidate):
-            equity = candidate
+            return {}, [f"Public Equity agent failed ({tier}): {candidate.get('_agent_error')}"]
+        elif isinstance(candidate, dict) and _research_payload_present(candidate):
+            return candidate, []
         elif isinstance(candidate, dict):
-            errors.append(f"Public Equity agent returned empty memo ({tier})")
+            return {}, [f"Public Equity agent returned empty research payload ({tier})"]
         else:
-            errors.append(f"Public Equity agent returned non-object data ({tier})")
+            return {}, [f"Public Equity agent returned non-object data ({tier})"]
     except Exception as exc:
-        errors.append(f"Public Equity agent failed ({tier}): {exc}")
-    return wang, equity, errors
+        return {}, [f"Public Equity agent failed ({tier}): {exc}"]
 
 
 def _memo_text(agent_data: dict[str, Any]) -> str:
@@ -137,6 +148,22 @@ def _memo_text(agent_data: dict[str, Any]) -> str:
         if isinstance(value, str) and value.strip():
             return value.strip()
     return ""
+
+
+def _research_payload_present(agent_data: dict[str, Any]) -> bool:
+    if _memo_text(agent_data):
+        return True
+    keys = {
+        "industry_rating",
+        "investment_rating",
+        "claims",
+        "profit_flow",
+        "expectation_gap",
+        "action",
+        "one_sentence_conclusion",
+        "reasoning_summary",
+    }
+    return any(key in agent_data and agent_data.get(key) not in (None, "", [], {}) for key in keys)
 
 
 def _context_cache_suffix(context: dict[str, Any]) -> str:

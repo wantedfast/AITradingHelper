@@ -516,16 +516,16 @@ function CombinedTradeTimingCard({
 }) {
   return (
     <article className="trade-execution-card trade-timing-card">
-      <h3>{"\u4e70\u5356\u70b9\u8bc4\u4ef7"}</h3>
+      <h3>{"\u4e70\u5356\u70b9\u4f9d\u636e"}</h3>
       <div className="trade-timing-sections">
-        <TradePointSection title={"\u4e70\u70b9"} points={buyPoints} fallback={"\u4e70\u70b9\u8bc4\u4ef7\u6682\u672a\u751f\u6210"} tone="buy" />
-        <TradePointSection title={"\u5356\u70b9"} points={sellPoints} fallback={"\u5356\u70b9\u8bc4\u4ef7\u6682\u672a\u751f\u6210"} tone="sell" />
+        <TradePointSummaryCard title={"\u4e70\u70b9"} points={buyPoints} fallback={"\u4e70\u70b9\u8bc4\u4ef7\u6682\u672a\u751f\u6210"} tone="buy" />
+        <TradePointSummaryCard title={"\u5356\u70b9"} points={sellPoints} fallback={"\u5356\u70b9\u8bc4\u4ef7\u6682\u672a\u751f\u6210"} tone="sell" />
       </div>
     </article>
   );
 }
 
-function TradePointSection({
+function TradePointSummaryCard({
   title,
   points,
   fallback,
@@ -536,28 +536,38 @@ function TradePointSection({
   fallback: string;
   tone: "buy" | "sell";
 }) {
+  const summary = tradePointSummary(points, tone);
+
   return (
-    <section className={`trade-timing-side is-${tone}`}>
-      <h4>{title}</h4>
-      {points.length ? (
-        <div className="trade-execution-point-stack">
-          {points.map((point, index) => (
-            <div className={`trade-execution-point-card is-${tone}`} key={`${title}-${index}`}>
-              <div className="trade-execution-point-head">
-                <span>{tradePointTitle(point, index)}</span>
-                <small>{tradePointMeta(point)}</small>
+    <section className={`trade-point-summary-card is-${tone}`}>
+      <div className="trade-point-summary-head">
+        <h4>{title}</h4>
+        <span>{summary.count ? `${summary.count} \u7b14\u6210\u4ea4` : "\u6682\u65e0\u6570\u636e"}</span>
+      </div>
+      {summary.count ? (
+        <>
+          <div className="trade-point-deals">
+            {summary.deals.map((deal) => (
+              <span key={deal}>{deal}</span>
+            ))}
+          </div>
+          <div className="trade-point-verdict">
+            <span>{"\u6838\u5fc3\u5224\u65ad"}</span>
+            <strong>{summary.verdict}</strong>
+          </div>
+          <div className="trade-point-reason">
+            <span>{"\u5224\u65ad\u4f9d\u636e"}</span>
+            <p>{summary.reason}</p>
+          </div>
+          <dl className="trade-point-condition-grid">
+            {summary.conditions.map((item) => (
+              <div key={item.label}>
+                <dt>{item.label}</dt>
+                <dd>{item.value}</dd>
               </div>
-              <div className="trade-execution-judgment">
-                <span>{"\u5224\u65ad"}</span>
-                <strong>{formatValue(point.judgment || point["\u5224\u65ad"])}</strong>
-              </div>
-              <div className="trade-execution-reason">
-                <span>{"\u539f\u56e0"}</span>
-                <p>{formatValue(point.reason || point["\u539f\u56e0"])}</p>
-              </div>
-            </div>
-          ))}
-        </div>
+            ))}
+          </dl>
+        </>
       ) : (
         <p className="trade-execution-muted">{fallback}</p>
       )}
@@ -648,32 +658,35 @@ function PeerReason({ title, value }: { title: string; value: unknown }) {
 }
 
 function ExecutionAdvicePanel({ advice }: { advice?: TradeExecutionData["execution_advice"] }) {
+  const hasRuleAdvice = Boolean(
+    advice && (hasMeaningfulValue(advice.next_time_rules) || hasMeaningfulValue(advice.confirmation_signals)),
+  );
   const hasAdvice = Boolean(
     advice &&
-      ["summary", "buy_issue", "sell_issue", "next_time_rules", "confirmation_signals"].some((key) =>
+      ["summary", "next_time_rules", "confirmation_signals"].some((key) =>
         hasMeaningfulValue(advice[key]),
       ),
   );
 
   return (
     <article className="trade-execution-card trade-advice-card is-subtle">
-      <h3>{"\u4e70\u5356\u70b9\u590d\u76d8\u5efa\u8bae"}</h3>
+      <h3>{"\u4e0b\u6b21\u6267\u884c\u89c4\u5219"}</h3>
       {!hasAdvice || !advice ? (
-        <p className="trade-execution-muted">{"\u590d\u76d8\u5efa\u8bae\u6682\u672a\u751f\u6210"}</p>
+        <p className="trade-execution-muted">{"\u4e0b\u6b21\u6267\u884c\u89c4\u5219\u6682\u672a\u751f\u6210"}</p>
       ) : (
         <>
           {hasMeaningfulValue(advice.summary) && (
             <div className="trade-advice-summary">
-              <span>{"\u6838\u5fc3\u5efa\u8bae"}</span>
+              <span>{"\u6267\u884c\u5907\u6ce8"}</span>
               <p>{formatValue(advice.summary)}</p>
             </div>
           )}
-          <div className="trade-advice-grid">
-            <AdviceItem title={"\u4e70\u70b9\u95ee\u9898"} value={advice.buy_issue} />
-            <AdviceItem title={"\u5356\u70b9\u95ee\u9898"} value={advice.sell_issue} />
-            <AdviceItem title={"\u4e0b\u6b21\u89c4\u5219"} value={advice.next_time_rules} />
-            <AdviceItem title={"\u786e\u8ba4\u4fe1\u53f7"} value={advice.confirmation_signals} />
-          </div>
+          {hasRuleAdvice && (
+            <div className="trade-advice-grid">
+              <AdviceItem title={"\u4e0b\u6b21\u6267\u884c\u89c4\u5219"} value={advice.next_time_rules} />
+              <AdviceItem title={"\u786e\u8ba4\u4fe1\u53f7"} value={advice.confirmation_signals} />
+            </div>
+          )}
         </>
       )}
     </article>
@@ -744,6 +757,58 @@ function tradePointTitle(point: Record<string, unknown>, index: number) {
 function tradePointMeta(point: Record<string, unknown>) {
   const price = formatValue(point.price || point["\u6210\u4ea4\u4ef7"]);
   return price === "-" ? "\u6210\u4ea4\u4ef7\u5f85\u8865\u5145" : `\u6210\u4ea4\u4ef7 ${price}`;
+}
+
+function tradePointSummary(points: Array<Record<string, unknown>>, tone: "buy" | "sell") {
+  const first = points[0];
+  const fallbackVerdict = tone === "buy" ? "\u4e70\u70b9\u5224\u65ad\u5f85\u8865\u5145" : "\u5356\u70b9\u5224\u65ad\u5f85\u8865\u5145";
+  const fallbackReason = tone === "buy" ? "\u7f3a\u5c11\u4e70\u70b9\u6761\u4ef6\u4f9d\u636e\u3002" : "\u7f3a\u5c11\u5356\u70b9\u6761\u4ef6\u4f9d\u636e\u3002";
+  return {
+    count: points.length,
+    deals: points.map((point, index) => `${tradePointTitle(point, index)} \u00b7 ${tradePointMeta(point)}`),
+    verdict: uniqueFormattedValues(points, ["judgment", "\u5224\u65ad"])[0] || fallbackVerdict,
+    reason: uniqueFormattedValues(points, ["reason", "\u539f\u56e0"]).join("\uff1b") || fallbackReason,
+    conditions: first ? tradePointConditions(first) : [],
+  };
+}
+
+function tradePointConditions(point: Record<string, unknown>) {
+  return [
+    { label: "\u4e2a\u80a1\u5f53\u65e5", value: formatPercent(pointValue(point, ["stock_pct", "stock pct"])) },
+    { label: "\u6caa\u6df1300", value: formatPercent(pointValue(point, ["hs300_etf_pct", "hs300 etf pct"])) },
+    { label: "\u677f\u5757/\u6982\u5ff5", value: formatPercent(pointValue(point, ["sector_pct", "sector pct"])) },
+    { label: "\u76f8\u5bf9\u6caa\u6df1300", value: formatPercent(pointValue(point, ["excess_vs_hs300_pct", "vs_hs300_pct"])) },
+    { label: "\u76f8\u5bf9\u677f\u5757", value: formatPercent(pointValue(point, ["excess_vs_sector_pct", "vs_sector_pct"])) },
+    { label: "\u65e5\u5185\u4f4d\u7f6e", value: intradayPositionText(point.intraday_position) },
+  ].filter((item) => item.value !== "-");
+}
+
+function pointValue(point: Record<string, unknown>, keys: string[]) {
+  return keys.map((key) => point[key]).find((value) => value !== null && value !== undefined && value !== "");
+}
+
+function uniqueFormattedValues(points: Array<Record<string, unknown>>, keys: string[]) {
+  const seen = new Set<string>();
+  const values: string[] = [];
+  for (const point of points) {
+    const value = keys.map((key) => point[key]).find(hasMeaningfulValue);
+    const text = formatValue(value);
+    if (text === "-" || seen.has(text)) continue;
+    seen.add(text);
+    values.push(text);
+  }
+  return values;
+}
+
+function intradayPositionText(value: unknown) {
+  const text = formatValue(value);
+  const labels: Record<string, string> = {
+    low: "\u65e5\u5185\u4f4e\u4f4d",
+    middle: "\u65e5\u5185\u4e2d\u4f4d",
+    high: "\u65e5\u5185\u9ad8\u4f4d",
+    unknown: "\u6682\u65e0\u65e5\u5185\u4f4d\u7f6e",
+  };
+  return labels[text] || text;
 }
 
 function buyDayChartItems(point?: Record<string, unknown>) {
@@ -849,9 +914,9 @@ function labelize(key: string) {
     excess_vs_sector_pct: "\u76f8\u5bf9\u677f\u5757",
     buy_issue: "\u4e70\u70b9\u95ee\u9898",
     sell_issue: "\u5356\u70b9\u95ee\u9898",
-    next_time_rules: "\u4e0b\u6b21\u89c4\u5219",
+    next_time_rules: "\u4e0b\u6b21\u6267\u884c\u89c4\u5219",
     confirmation_signals: "\u786e\u8ba4\u4fe1\u53f7",
-    summary: "\u6838\u5fc3\u5efa\u8bae",
+    summary: "\u6267\u884c\u5907\u6ce8",
     date: "\u65e5\u671f",
     price: "\u6210\u4ea4\u4ef7",
   };

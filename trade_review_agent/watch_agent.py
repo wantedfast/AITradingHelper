@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -48,11 +49,16 @@ def build_watch_plan(
     start = trade_day - timedelta(days=20)
     end = trade_day + timedelta(days=20)
 
-    stock = provider.stock_daily(code, start, end)
-    benchmark = provider.index_daily("sh000300", start, end)
-    index_main = provider.index_daily("sh000001", start, end)
     profile = get_profile(code, stock_name)
-    sector = provider.stock_daily(profile.sector_symbol, start, end)
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        stock_future = executor.submit(provider.stock_daily, code, start, end)
+        benchmark_future = executor.submit(provider.index_daily, "sh000300", start, end)
+        index_main_future = executor.submit(provider.index_daily, "sh000001", start, end)
+        sector_future = executor.submit(provider.stock_daily, profile.sector_symbol, start, end)
+        stock = stock_future.result()
+        benchmark = benchmark_future.result()
+        index_main = index_main_future.result()
+        sector = sector_future.result()
 
     if stock.empty:
         raise ValueError(f"无法取得 {stock_name} {code} 的历史行情")
