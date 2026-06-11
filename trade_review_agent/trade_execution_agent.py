@@ -317,6 +317,36 @@ def _peer_proxy(name: str, code: str) -> dict[str, Any]:
             "moat_reason": "通信相关业务具备题材相关性，但规模和行业位置 proxy 偏弱。",
             "profit_flow_reason": "更偏主题弹性承接，利润流确定性弱于核心光纤光缆标的。",
         },
+        "600183": {
+            "score": 28,
+            "moat_reason": "覆铜板和电子基材龙头 proxy 较强，客户、规模和产品认证壁垒更清晰。",
+            "profit_flow_reason": "更接近高端电子材料和 PCB 上游利润池，可作为东材科技同赛道强弱锚。",
+        },
+        "603186": {
+            "score": 23,
+            "moat_reason": "覆铜板/复合材料业务与电子材料链条相关，产品结构 proxy 较贴近。",
+            "profit_flow_reason": "可承接电子基材景气修复带来的部分利润流，但持续性需要订单验证。",
+        },
+        "002636": {
+            "score": 21,
+            "moat_reason": "覆铜板及电子材料相关业务具备横向对比意义，行业位置 proxy 中等。",
+            "profit_flow_reason": "更偏 PCB 上游材料链利润流，适合观察板块修复是否扩散。",
+        },
+        "688299": {
+            "score": 22,
+            "moat_reason": "光学膜材料属性较强，与东材科技功能膜方向具备可比性。",
+            "profit_flow_reason": "可观察显示/光学膜材料景气和国产替代利润流是否同步改善。",
+        },
+        "300806": {
+            "score": 20,
+            "moat_reason": "功能性涂层和胶膜材料 proxy 相关，但下游结构与东材科技不完全一致。",
+            "profit_flow_reason": "适合观察功能膜材料链的资金强度扩散，不宜直接等同基本面替代。",
+        },
+        "688300": {
+            "score": 19,
+            "moat_reason": "电子级功能材料 proxy 相关，材料认证和客户结构具备观察价值。",
+            "profit_flow_reason": "可作为电子材料上游景气扩散观察，但与东材科技主营差异需要复核。",
+        },
     }
     if key in proxies:
         return proxies[key]

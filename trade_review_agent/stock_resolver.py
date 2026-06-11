@@ -8,6 +8,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 CACHE_PATH = BASE_DIR / "work" / "stock_code_name_cache.json"
 
 KNOWN_CODES = {
+    "东材科技": "601208",
     "黄河旋风": "600172",
     "长电科技": "600584",
     "风华高科": "000636",

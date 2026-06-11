@@ -29,6 +29,7 @@ from .industry_profiles import IndustryProfile
 from .presenter_agent import build_presenter_fallback_data, _compact_presenter_payload, _memo_conclusion, _merge_presenter_data, _normalize_presenter_data, _presenter_json_schema, _presenter_user_prompt
 from .schema import Trade
 from .simple_api import _api_error_payload, _recover_report_manifest, _report_manifest, _report_status_payload, _write_report_status_payload
+from .stock_resolver import resolve_stock_code
 from .trade_execution_agent import analyze_trade_execution
 from .trade_rounds import TradeRound
 from .workbench_agents import _loads_json_object, _research_model, research_model_metadata
@@ -74,6 +75,7 @@ def main() -> None:
     test_trade_execution_short_prefetch_falls_back_contract()
     test_build_all_reports_preserves_round_order_with_workers()
     test_market_data_cache_read_disabled_by_default_contract()
+    test_dongcai_peer_recommendations_contract()
     test_trade_execution_tencent_success_contract()
     test_trade_execution_akshare_fallback_contract()
     test_trade_execution_existing_fallback_disabled_by_default_contract()
@@ -1234,6 +1236,75 @@ def test_market_data_cache_read_disabled_by_default_contract() -> None:
     finally:
         data_provider._fetch_tencent_daily = original_tencent
         data_provider._fetch_akshare_stock_daily = original_stock
+        for key, value in original_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+def test_dongcai_peer_recommendations_contract() -> None:
+    original_tencent = trade_execution_data._fetch_tencent_daily
+    original_stock = trade_execution_data._fetch_akshare_stock_daily
+    original_index = trade_execution_data._fetch_akshare_index_daily
+    original_env = {
+        "MARKET_DATA_CACHE_READ": os.environ.get("MARKET_DATA_CACHE_READ"),
+        "TRADE_REVIEW_CACHE_READ": os.environ.get("TRADE_REVIEW_CACHE_READ"),
+    }
+    try:
+        os.environ.pop("MARKET_DATA_CACHE_READ", None)
+        os.environ.pop("TRADE_REVIEW_CACHE_READ", None)
+        assert resolve_stock_code("东材科技") == "601208"
+
+        def fake_tencent(symbol, *args, **kwargs):
+            return _sample_daily_frame(str(symbol), days=60)
+
+        trade_execution_data._fetch_tencent_daily = fake_tencent
+        trade_execution_data._fetch_akshare_stock_daily = lambda *args, **kwargs: pd.DataFrame()
+        trade_execution_data._fetch_akshare_index_daily = lambda *args, **kwargs: pd.DataFrame()
+        profile = IndustryProfile(
+            code="601208",
+            name="东材科技",
+            theme="电子材料/功能膜材料",
+            core_driver="高端电子材料国产替代",
+            node="功能膜材料",
+            sector_symbol="sh000300",
+            chain_nodes=(),
+            barriers=(),
+            profit_levers=(),
+            peers=(),
+        )
+        trade_round = TradeRound(
+            code="601208",
+            name="东材科技",
+            round_id=1,
+            trades=(
+                Trade(code="601208", name="东材科技", trade_date=date(2026, 6, 9), side="buy", price=58.71, quantity=100, amount=5871.0, fee=1.06),
+                Trade(code="601208", name="东材科技", trade_date=date(2026, 6, 9), side="buy", price=59.62, quantity=100, amount=5962.0, fee=1.06),
+            ),
+        )
+        with tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False) as handle:
+            cache_db = handle.name
+        try:
+            context = trade_execution_data.build_trade_execution_data_context(
+                provider=MarketDataProvider(cache_db),
+                profile=profile,
+                trade_round=trade_round,
+            )
+            analysis = analyze_trade_execution(context)
+            peer_rows = analysis["peer_comparison"]["rows"]
+            recommendations = analysis["peer_recommendations"]["items"]
+            assert len(peer_rows) >= 3
+            assert len(recommendations) >= 3
+            assert recommendations[0]["name"] == "生益科技"
+            assert recommendations[0]["code"] == "600183"
+            assert context["data_source_status"]["peer_quotes"] in {"ok", "partial"}
+        finally:
+            _remove_if_possible(cache_db)
+    finally:
+        trade_execution_data._fetch_tencent_daily = original_tencent
+        trade_execution_data._fetch_akshare_stock_daily = original_stock
+        trade_execution_data._fetch_akshare_index_daily = original_index
         for key, value in original_env.items():
             if value is None:
                 os.environ.pop(key, None)
