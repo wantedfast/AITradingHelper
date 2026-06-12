@@ -40,6 +40,7 @@ type PresenterData = {
   schema_version?: string;
   ai_final_answer?: {
     score?: number | null;
+    ai_score?: number | null;
     verdict?: string;
     better_choice?: string;
     main_reason?: string;
@@ -331,7 +332,7 @@ function StructuredWorkbench({
   const whyMoved = evidence.why_stock_moved || {};
   const thesis = evidence.investment_thesis || {};
   const diagnosis = evidence.mistake_diagnosis || {};
-  const answerScore = validScore(finalAnswer.score);
+  const answerScore = validScore(finalAnswer.score ?? finalAnswer.ai_score);
   const betterCandidates = list(evidence.better_candidates).slice(0, 4);
   const futureRules = meaningfulStrings(evidence.future_rules).slice(0, 6);
   const whyMovedItems = evidenceRows(whyMoved);
@@ -358,6 +359,7 @@ function StructuredWorkbench({
   );
   const answerTrace = (field: string) =>
     sourceTraceFor(data.source_trace, `ai_final_answer.${field}`);
+  const answerScoreTrace = answerTrace("score") || answerTrace("ai_score");
 
   return (
     <section className="structured-report-shell v3-report-shell">
@@ -387,7 +389,7 @@ function StructuredWorkbench({
           <span>AI 评分</span>
           <strong>{answerScore === null ? "尚未生成" : Math.round(answerScore)}</strong>
           <small>{answerScore === null ? "等待 AI 教练完成综合判断" : "满分 100"}</small>
-          <ProvenanceDisclosure trace={answerTrace("score")} compact />
+          <ProvenanceDisclosure trace={answerScoreTrace} compact />
         </aside>
 
         <div className="v3-answer-grid">
@@ -400,7 +402,7 @@ function StructuredWorkbench({
           <AnswerCard
             icon={<CircleAlert />}
             label="问题在哪里"
-            value={answerText(finalAnswer.mistake_source)}
+            value={mistakeSourceText(finalAnswer.mistake_source)}
             trace={answerTrace("mistake_source")}
           />
           <AnswerCard
@@ -467,7 +469,7 @@ function StructuredWorkbench({
         icon={<CircleAlert />}
         eyebrow="DIAGNOSIS"
         title="问题在哪里"
-        summary={answerText(finalAnswer.mistake_source)}
+        summary={mistakeSourceText(finalAnswer.mistake_source)}
       >
         <EvidenceList
           items={diagnosisItems.length ? diagnosisItems : legacyDiagnosis}
@@ -1265,6 +1267,18 @@ function meaningfulStrings(value: unknown): string[] {
 
 function answerText(value: unknown, fallback = "尚未生成"): string {
   return meaningfulText(value) || fallback;
+}
+
+function mistakeSourceText(value: unknown): string {
+  const text = typeof value === "string" ? value.trim().toLowerCase() : "";
+  const labels: Record<string, string> = {
+    selection: "选股问题",
+    execution: "执行问题",
+    both: "选股和执行都有问题",
+    none: "未发现明确问题",
+    insufficient_data: "证据不足，待验证",
+  };
+  return labels[text] || answerText(value);
 }
 
 function pickMeaningful(...values: unknown[]): unknown {
