@@ -270,10 +270,6 @@ def _logic_cards(items: list[Any]) -> str:
     return "".join(rows)
 
 
-def _metric(label: str, value: str) -> str:
-    return f'<div class="metric"><span>{escape(label)}</span><b>{escape(value)}</b></div>'
-
-
 def _final_answer_hero(
     answer: dict[str, Any],
     source_trace: dict[str, Any],
@@ -328,45 +324,8 @@ def _source_chips(source_trace: dict[str, Any], fields: list[str]) -> str:
     return "".join(chips)
 
 
-def _has_final_answer(answer: dict[str, Any]) -> bool:
-    if not answer:
-        return False
-    fields = (
-        answer.get("score") if answer.get("score") is not None else answer.get("ai_score"),
-        answer.get("verdict"),
-        answer.get("better_choice"),
-        answer.get("main_reason"),
-        answer.get("mistake_source"),
-        answer.get("next_action"),
-    )
-    return any(_s(value, "").strip().lower() not in {"", "missing"} for value in fields)
 
 
-def _hero_answer_card(answer: dict[str, Any], claims: list[Any], *, hero_note: str, has_final_answer: bool) -> str:
-    if not has_final_answer:
-        return f"""
-      <div class="hero-card">
-        <h2>一句话结论</h2>
-        <div class="claim-list">{_claims(claims)}</div>
-        <p class="hero-note">{escape(hero_note)}</p>
-      </div>
-"""
-    score = answer.get("score") if answer.get("score") is not None else answer.get("ai_score")
-    return f"""
-      <div class="hero-card v3-answer-card">
-        <div class="answer-head">
-          <span class="pill">AI 最终结论</span>
-          <div class="answer-score"><span>AI评分</span><b>{escape(_score_text(score))}</b></div>
-        </div>
-        <div class="answer-verdict">{escape(_s(answer.get("verdict"), "missing"))}</div>
-        <div class="answer-grid">
-          {_answer_item("如果重来一次", answer.get("better_choice"))}
-          {_answer_item("主要原因", answer.get("main_reason"))}
-          {_answer_item("问题来源", answer.get("mistake_source"))}
-          {_answer_item("下次动作", answer.get("next_action"))}
-        </div>
-      </div>
-"""
 
 
 def _answer_item(label: str, value: Any, *, testid: str = "") -> str:
@@ -395,32 +354,6 @@ def _mistake_source_label(value: Any) -> str:
     return labels.get(text, _answer_value(value))
 
 
-def _final_answer_panel(answer: dict[str, Any], *, render: bool = True) -> str:
-    if not render:
-        return ""
-    if not answer:
-        return ""
-    score = answer.get("score") if answer.get("score") is not None else answer.get("ai_score")
-    fields = [
-        ("AI Score", _s(score, "missing")),
-        ("Verdict", _s(answer.get("verdict"), "missing")),
-        ("Better Choice", _s(answer.get("better_choice"), "missing")),
-        ("Main Reason", _s(answer.get("main_reason"), "missing")),
-        ("Mistake Source", _s(answer.get("mistake_source"), "missing")),
-        ("Next Action", _s(answer.get("next_action"), "missing")),
-    ]
-    if all(value.lower() == "missing" for _, value in fields):
-        return ""
-    cards = "".join(_metric(label, value) for label, value in fields)
-    return f"""
-    <section class="section">
-      <div class="section-head">
-        <div><h2>AI 最终结论</h2><p>首页答案字段，由上游 V3 Agent 生成；前端只展示，不重新推理。</p></div>
-        <span class="pill">V3 Answer</span>
-      </div>
-      <div class="three">{cards}</div>
-    </section>
-"""
 
 
 def _diagnostic_panel(diagnostics: dict[str, Any], trade: dict[str, Any]) -> str:
