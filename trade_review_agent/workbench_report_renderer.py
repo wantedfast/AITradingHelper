@@ -12,6 +12,7 @@ def render_workbench_report(data: dict[str, Any]) -> str:
     trade = _d(data.get("trade_review"))
     action = _d(data.get("next_action"))
     memos = _d(data.get("deep_memos"))
+    diagnostics = _d(data.get("generation_diagnostics"))
 
     name = _s(company.get("name"), "个股")
     subtitle = _s(company.get("subtitle"), "")
@@ -106,6 +107,11 @@ def render_workbench_report(data: dict[str, Any]) -> str:
     .metric {{ border: 1px solid rgba(242,207,103,.22); background: rgba(242,207,103,.06); border-radius: 8px; padding: 18px; }}
     .metric span {{ color: var(--muted); font-size: 14px; }}
     .metric b {{ display: block; color: var(--gold); font-size: 30px; margin-top: 8px; }}
+    .status-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }}
+    .alert {{ border: 1px solid rgba(255,141,123,.42); background: rgba(255,141,123,.08); border-radius: 8px; padding: 18px; }}
+    .alert h3 {{ margin: 0 0 10px; color: var(--red); font-size: 22px; }}
+    .kv {{ display: grid; grid-template-columns: 150px 1fr; gap: 10px; color: #d7ded9; line-height: 1.65; }}
+    .kv b {{ color: var(--gold); }}
     .memo {{ white-space: pre-wrap; color: #d7ded9; line-height: 1.8; font-size: 16px; max-height: 520px; overflow: auto; }}
     .trade-table {{ width: 100%; border-collapse: collapse; }}
     .trade-table th, .trade-table td {{ border-bottom: 1px solid rgba(242,207,103,.14); padding: 12px 10px; text-align: left; }}
@@ -139,6 +145,8 @@ def render_workbench_report(data: dict[str, Any]) -> str:
         <p class="hero-note">{escape(_s(hero.get("note"), ""))}</p>
       </div>
     </section>
+
+    {_diagnostic_panel(diagnostics, trade)}
 
     <section class="section">
       <div class="section-head">
@@ -246,14 +254,65 @@ def _metric(label: str, value: str) -> str:
     return f'<div class="metric"><span>{escape(label)}</span><b>{escape(value)}</b></div>'
 
 
+def _diagnostic_panel(diagnostics: dict[str, Any], trade: dict[str, Any]) -> str:
+    status = _s(diagnostics.get("status"), "unknown")
+    errors = _list(diagnostics.get("errors"))
+    timings = _d(diagnostics.get("timings"))
+    rows = _list(trade.get("rows"))
+    timing_items = [
+        ("行情拉取", timings.get("market_fetch_seconds")),
+        ("Workbench Agents", timings.get("workbench_agents_seconds")),
+        ("交易执行", timings.get("trade_execution_seconds")),
+        ("交易执行 LLM", timings.get("trade_execution_llm_seconds")),
+        ("V3 Pipeline", timings.get("v3_pipeline_seconds")),
+        ("Presenter", timings.get("presenter_seconds")),
+    ]
+    timing_html = "".join(
+        f"<div><b>{escape(label)}</b><span>{_format_seconds(value)}</span></div>"
+        for label, value in timing_items
+        if value not in (None, "")
+    )
+    error_html = _li(errors) if errors else "<li>未记录到 Agent 错误。</li>"
+    return f"""
+    <section class="section">
+      <div class="section-head">
+        <div><h2>生成状态</h2><p>如果 AI 供应商失败，报告会保留交易事实和错误原因，避免生成空报告。</p></div>
+        <span class="pill">{escape(status)}</span>
+      </div>
+      <div class="status-grid">
+        <article class="alert">
+          <h3>失败或降级原因</h3>
+          <ul class="list">{error_html}</ul>
+        </article>
+        <article class="mini-card">
+          <h3>环节耗时</h3>
+          <div class="kv">{timing_html or '<div><b>暂无</b><span>未记录</span></div>'}</div>
+        </article>
+      </div>
+      <div style="margin-top:18px">
+        <h2>交易记录</h2>
+        <table class="trade-table"><thead><tr><th>日期</th><th>方向</th><th>价格</th><th>数量</th><th>金额</th></tr></thead><tbody>{_trade_rows(rows)}</tbody></table>
+      </div>
+    </section>
+"""
+
+
+def _format_seconds(value: Any) -> str:
+    try:
+        return f"{float(value):.2f}s"
+    except Exception:
+        return "未记录"
+
+
 def _trade_rows(items: list[Any]) -> str:
     if not items:
         return '<tr><td colspan="5">交易记录待识别</td></tr>'
     rows = []
     for item in items:
         item = _d(item)
+        trade_date = _s(item.get("date") or item.get("trade_date"), "")
         rows.append(
-            f"<tr><td>{escape(_s(item.get('date'), ''))}</td><td>{escape(_s(item.get('side'), ''))}</td><td>{_num(item.get('price'), 0):.3f}</td><td>{_num(item.get('quantity'), 0):.0f}</td><td>{_num(item.get('amount'), 0):.2f}</td></tr>"
+            f"<tr><td>{escape(trade_date[:10])}</td><td>{escape(_s(item.get('side'), ''))}</td><td>{_num(item.get('price'), 0):.3f}</td><td>{_num(item.get('quantity'), 0):.0f}</td><td>{_num(item.get('amount'), 0):.2f}</td></tr>"
         )
     return "".join(rows)
 

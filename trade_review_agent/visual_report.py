@@ -248,6 +248,11 @@ def build_round_html(
         trade_frame=trade_frame,
     )
     timings["presenter_seconds"] = _elapsed_seconds(presenter_started)
+    presenter_data["generation_diagnostics"] = _report_generation_diagnostics(
+        workbench=workbench_data,
+        execution_payload=execution_payload,
+        timings=timings,
+    )
     write_started = time.perf_counter()
     write_workbench_json(Path(output).with_suffix(".presenter.json"), presenter_data)
     market_html = _premium_market_context_html(stock, sh_index, benchmark, growth_index, sector, analysis)
@@ -568,6 +573,29 @@ def _v3_llm_enabled() -> bool:
 
 def _elapsed_seconds(started: float) -> float:
     return round(time.perf_counter() - started, 4)
+
+
+def _report_generation_diagnostics(
+    *,
+    workbench: dict[str, Any],
+    execution_payload: dict[str, Any],
+    timings: dict[str, float],
+) -> dict[str, Any]:
+    errors = list(workbench.get("agent_errors") if isinstance(workbench.get("agent_errors"), list) else [])
+    execution_llm = execution_payload.get("llm_output") if isinstance(execution_payload, dict) else None
+    if isinstance(execution_llm, dict) and execution_llm.get("_agent_error"):
+        errors.append(str(execution_llm["_agent_error"]))
+    final_answer = workbench.get("ai_final_answer") if isinstance(workbench.get("ai_final_answer"), dict) else {}
+    status = "ok"
+    if errors:
+        status = "partial"
+    if not final_answer or str(final_answer.get("verdict") or "").strip().lower() in {"", "missing"}:
+        status = "partial"
+    return {
+        "status": status,
+        "errors": errors[:8],
+        "timings": dict(timings),
+    }
 
 
 def _write_timings(path: Path, timings: dict[str, float]) -> None:
