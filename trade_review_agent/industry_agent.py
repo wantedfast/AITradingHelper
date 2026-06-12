@@ -54,6 +54,13 @@ def get_workbench_profile_data(
     name = str(name or code).strip()
     requested_research_model = research_model_metadata(research_model_tier)
     research_model = dict(requested_research_model)
+    cache = _load_cache()
+    key = f"{PROFILE_CACHE_VERSION}:{code}:{name}{_request_cache_suffix(trade_round=trade_round, analysis=analysis, research_model_tier=research_model['tier'])}"
+    if not _refresh_enabled():
+        cached = cache.get(key)
+        if isinstance(cached, dict):
+            return cached
+
     context = build_stock_context(
         code=code,
         name=name,
@@ -67,7 +74,6 @@ def get_workbench_profile_data(
     context["research_model_tier"] = research_model["tier"]
     context["research_model"] = research_model
     context["requested_research_model"] = requested_research_model
-    cache = _load_cache()
     key = f"{PROFILE_CACHE_VERSION}:{code}:{name}{_context_cache_suffix(context)}"
     if not _refresh_enabled():
         cached = cache.get(key)
@@ -82,8 +88,12 @@ def get_workbench_profile_data(
         research_model = research_model_metadata("standard")
         context["research_model_tier"] = research_model["tier"]
         context["research_model"] = research_model
-        wang, equity, retry_errors = _run_research_agents(context)
-        agent_errors.extend(retry_errors)
+        if not _research_payload_present(wang):
+            wang, retry_errors = _run_wang_research_agent(context, "standard")
+            agent_errors.extend(retry_errors)
+        if not _research_payload_present(equity):
+            equity, retry_errors = _run_public_equity_research_agent(context, "standard")
+            agent_errors.extend(retry_errors)
         key = f"{PROFILE_CACHE_VERSION}:{code}:{name}{_context_cache_suffix(context)}"
     workbench = compose_workbench_data(context, wang, equity)
     workbench["wang_agent"] = wang
@@ -184,6 +194,36 @@ def _context_cache_suffix(context: dict[str, Any]) -> str:
     ]
     safe = "_".join(part.replace(":", "").replace("/", "").replace("\\", "") for part in parts)
     return f":trade:{safe}"
+
+
+def _request_cache_suffix(
+    *,
+    trade_round: TradeRound | None,
+    analysis: dict[str, Any] | None,
+    research_model_tier: object,
+) -> str:
+    tier = normalize_research_model_tier(research_model_tier)
+    if trade_round is None or not getattr(trade_round, "trades", None):
+        return f":tier:{tier}"
+    analysis = analysis if isinstance(analysis, dict) else {}
+    parts = [
+        tier,
+        str(getattr(trade_round, "start_date", "") or ""),
+        str(getattr(trade_round, "end_date", "") or ""),
+        str(_number_for_cache(analysis.get("return"))),
+        str(_number_for_cache(analysis.get("score"))),
+        str(_number_for_cache(analysis.get("day_pct"))),
+        str(_number_for_cache(analysis.get("sector_pct"))),
+    ]
+    safe = "_".join(part.replace(":", "").replace("/", "").replace("\\", "") for part in parts)
+    return f":trade:{safe}"
+
+
+def _number_for_cache(value: Any) -> float:
+    try:
+        return round(float(value), 4)
+    except Exception:
+        return 0.0
 
 
 def _refresh_enabled() -> bool:

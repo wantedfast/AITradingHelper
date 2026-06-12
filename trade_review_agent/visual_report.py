@@ -16,7 +16,7 @@ from plotly.subplots import make_subplots
 
 from .data_provider import MarketDataProvider
 from .industry_agent import get_workbench_profile_data
-from .industry_profiles import DEFAULT_PROFILE, IndustryProfile, get_profile
+from .industry_profiles import DEFAULT_PROFILE, IndustryProfile
 from .io import read_trade_file
 from .peer_snapshot import build_peer_snapshot
 from .schema import Trade
@@ -162,7 +162,7 @@ def build_single_stock_html(
         raise ValueError(f"No trades found for stock code {code}")
     rounds = split_trade_rounds(trades)
     selected = _select_round(rounds, trade_date)
-    profile = get_profile(code, selected.name)
+    profile = _base_report_profile(code, selected.name)
     if sector_symbol:
         profile = _with_sector(profile, sector_symbol)
     result = build_round_html(selected, output, cache_db, benchmark_symbol, profile)
@@ -251,6 +251,7 @@ def build_round_html(
     presenter_data["generation_diagnostics"] = _report_generation_diagnostics(
         workbench=workbench_data,
         execution_payload=execution_payload,
+        presenter_data=presenter_data,
         timings=timings,
     )
     write_started = time.perf_counter()
@@ -579,12 +580,16 @@ def _report_generation_diagnostics(
     *,
     workbench: dict[str, Any],
     execution_payload: dict[str, Any],
+    presenter_data: dict[str, Any],
     timings: dict[str, float],
 ) -> dict[str, Any]:
     errors = list(workbench.get("agent_errors") if isinstance(workbench.get("agent_errors"), list) else [])
     execution_llm = execution_payload.get("llm_output") if isinstance(execution_payload, dict) else None
     if isinstance(execution_llm, dict) and execution_llm.get("_agent_error"):
         errors.append(str(execution_llm["_agent_error"]))
+    presenter_errors = presenter_data.get("agent_errors") if isinstance(presenter_data, dict) else None
+    if isinstance(presenter_errors, list):
+        errors.extend(str(error) for error in presenter_errors if error)
     final_answer = workbench.get("ai_final_answer") if isinstance(workbench.get("ai_final_answer"), dict) else {}
     status = "ok"
     if errors:

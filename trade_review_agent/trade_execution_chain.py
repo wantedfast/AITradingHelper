@@ -85,6 +85,8 @@ def enhance_trade_execution_with_llm(
             "research_metrics": {"seconds": round(time.perf_counter() - started, 4), "model": model},
         }
         _write_json(output.with_suffix(".trade_execution_llm_output.json"), error_payload)
+        execution_payload = dict(execution_payload if isinstance(execution_payload, dict) else {})
+        execution_payload["llm_output"] = error_payload
         return execution_payload
 
 
