@@ -9,7 +9,7 @@ from typing import Any
 import pandas as pd
 
 from .config import load_env
-from .industry_profiles import IndustryProfile
+from .industry_profiles import IndustryProfile, get_profile
 from .workbench_agents import normalize_research_model_tier, research_model_metadata, run_public_equity_workbench_agent, run_wang_workbench_agent
 from .workbench_composer import compose_workbench_data, profile_from_workbench
 from .workbench_context import build_stock_context
@@ -62,6 +62,7 @@ def get_workbench_profile_data(
         stock=stock,
         sector=sector,
         benchmark=benchmark,
+        profile=get_profile(code, name),
     )
     context["research_model_tier"] = research_model["tier"]
     context["research_model"] = research_model

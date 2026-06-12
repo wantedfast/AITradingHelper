@@ -12,6 +12,8 @@ The findings below preserve the audited pre-remediation behavior. Current status
 | Missing production `peer_snapshot.metrics` | Partially fixed using verified peer quote returns only |
 | WANG unsupported numeric precision | Contained by sufficiency gates and hypothesis-only retention |
 | News string-to-fact loss | Fixed with structured fact preservation and legacy compatibility |
+| Final answer has generator-only lineage | Fixed with dependency and missing-dependency trace |
+| Frontend hides provenance | Fixed with expandable field-level audit details |
 
 The validator now includes semantic checks (`V3-SEM-001` through `V3-SEM-005`) rather than checking source enums alone.
 

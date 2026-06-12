@@ -87,6 +87,19 @@ def validate_v3_pipeline_contract(payload: Any) -> list[str]:
         ):
             if not isinstance(layers.get(layer), dict):
                 errors.append(f"research layer must be an object: {layer}")
+    source_trace = payload.get("source_trace")
+    if isinstance(source_trace, dict):
+        for field in (
+            "score",
+            "verdict",
+            "better_choice",
+            "main_reason",
+            "mistake_source",
+            "next_action",
+        ):
+            entry = source_trace.get(f"ai_final_answer.{field}")
+            if not isinstance(entry, dict):
+                errors.append(f"final answer source trace must be an object: {field}")
     return errors
 
 

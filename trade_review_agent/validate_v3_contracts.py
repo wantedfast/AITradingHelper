@@ -370,6 +370,7 @@ def _validate_provenance_semantics(
     issues: list[ContractIssue] = []
     layers = payload.get("research_layers")
     layers = layers if isinstance(layers, dict) else {}
+    issues.extend(_validate_final_answer_lineage(payload, trace, label=label))
     public = layers.get("public_equity")
     public = public if isinstance(public, dict) else {}
     sufficiency = public.get("data_sufficiency")
@@ -518,6 +519,85 @@ def _validate_provenance_semantics(
             )
         )
     return issues
+
+
+def _validate_final_answer_lineage(
+    payload: dict[str, Any],
+    trace: dict[str, Any],
+    *,
+    label: str,
+) -> list[ContractIssue]:
+    issues: list[ContractIssue] = []
+    for field in FINAL_ANSWER_FIELDS:
+        path = f"ai_final_answer.{field}"
+        entry = trace.get(path)
+        if not isinstance(entry, dict):
+            continue
+        source = entry.get("source")
+        if source == "llm":
+            if entry.get("agent") != "trade_coach":
+                issues.append(
+                    ContractIssue(
+                        "V3-SEM-010",
+                        f"{label}.source_trace.{path}",
+                        "LLM final answer must identify trade_coach as the generating agent",
+                    )
+                )
+            confidence = entry.get("confidence")
+            if confidence not in {"low", "medium", "high"}:
+                issues.append(
+                    ContractIssue(
+                        "V3-SEM-011",
+                        f"{label}.source_trace.{path}",
+                        "LLM final answer confidence must be low, medium, or high",
+                    )
+                )
+        for dependency in _trace_list(entry.get("depends_on")):
+            if _coach_dependency_value(payload, dependency) is None:
+                issues.append(
+                    ContractIssue(
+                        "V3-SEM-012",
+                        f"{label}.source_trace.{path}.depends_on",
+                        f"dependency does not resolve to an available payload value: {dependency}",
+                    )
+                )
+        if field == "better_choice" and source == "llm":
+            dependencies = set(_trace_list(entry.get("depends_on")))
+            if "better_opportunity.better_candidates" not in dependencies:
+                issues.append(
+                    ContractIssue(
+                        "V3-SEM-013",
+                        f"{label}.source_trace.{path}",
+                        "better_choice must depend on verified better_candidates",
+                    )
+                )
+    return issues
+
+
+def _coach_dependency_value(payload: dict[str, Any], dependency: str) -> Any:
+    root, _, suffix = dependency.partition(".")
+    if root in {"trade_execution", "wang_industry", "public_equity", "market_scout"}:
+        mapped = f"research_layers.{root}.{suffix}" if suffix else f"research_layers.{root}"
+        value = _get_path(payload, mapped)
+    elif root == "better_opportunity":
+        evidence_field = {
+            "better_candidates": "answer_evidence.better_candidates",
+            "superiority_reason": "answer_evidence.better_candidates",
+            "replacement_thesis": "answer_evidence.better_candidates",
+            "confidence": "answer_evidence.better_candidates",
+        }.get(suffix)
+        value = _get_path(payload, evidence_field) if evidence_field else None
+    else:
+        value = None
+    return value if not _is_missing_value(value) else None
+
+
+def _trace_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value] if value else []
+    if isinstance(value, list):
+        return [str(item) for item in value if isinstance(item, str) and item]
+    return []
 
 
 def _is_execution_judgment_path(path: str) -> bool:
@@ -886,6 +966,32 @@ def run_self_test() -> list[ContractIssue]:
                 "V3-SELF-005",
                 "self_test.semantic",
                 "semantic fixtures did not reject unsupported Public Equity or execution provenance",
+            )
+        )
+
+    lineage = _valid_fixture()
+    lineage["ai_final_answer"]["verdict"] = "unsupported conclusion"
+    lineage["source_trace"]["ai_final_answer.verdict"] = {
+        "source": "llm",
+        "agent": "presenter",
+        "depends_on": ["wang_industry.nonexistent_field"],
+        "missing_dependencies": [],
+        "confidence": "certain",
+    }
+    lineage_codes = {
+        issue.code
+        for issue in _validate_final_answer_lineage(
+            lineage,
+            lineage["source_trace"],
+            label="self_test.lineage",
+        )
+    }
+    if not {"V3-SEM-010", "V3-SEM-011", "V3-SEM-012"}.issubset(lineage_codes):
+        failures.append(
+            ContractIssue(
+                "V3-SELF-006",
+                "self_test.lineage",
+                "final-answer lineage fixtures did not reject fake agent/confidence/dependencies",
             )
         )
 

@@ -25,6 +25,17 @@ type ReviewReportPageProps = {
   };
 };
 
+type SourceKind = "missing" | "fallback" | "hardcode" | "llm" | "real_data" | "unknown";
+
+type SourceTraceEntry = {
+  source?: string;
+  agent?: string;
+  detail?: string;
+  depends_on?: string[] | string;
+  missing_dependencies?: string[] | string;
+  confidence?: number | string | null;
+};
+
 type PresenterData = {
   schema_version?: string;
   ai_final_answer?: {
@@ -48,7 +59,7 @@ type PresenterData = {
     public_equity?: Record<string, unknown>;
     trade_execution?: Record<string, unknown>;
   };
-  source_trace?: Record<string, { source?: string; detail?: string } | string>;
+  source_trace?: Record<string, unknown>;
   company?: {
     name?: string;
     code?: string;
@@ -345,6 +356,8 @@ function StructuredWorkbench({
     data.research_layers &&
       Object.values(data.research_layers).some((layer) => layer && Object.keys(layer).length > 0),
   );
+  const answerTrace = (field: string) =>
+    sourceTraceFor(data.source_trace, `ai_final_answer.${field}`);
 
   return (
     <section className="structured-report-shell v3-report-shell">
@@ -362,9 +375,11 @@ function StructuredWorkbench({
           </div>
           <h1>{company.name || hero.title || "标的公司待验证"}</h1>
           <p className="v3-answer-verdict">{answerText(finalAnswer.verdict)}</p>
+          <ProvenanceDisclosure trace={answerTrace("verdict")} />
           <div className="v3-answer-reason">
             <span>核心原因</span>
             <strong>{answerText(finalAnswer.main_reason, "待验证")}</strong>
+            <ProvenanceDisclosure trace={answerTrace("main_reason")} />
           </div>
         </div>
 
@@ -372,12 +387,28 @@ function StructuredWorkbench({
           <span>AI 评分</span>
           <strong>{answerScore === null ? "尚未生成" : Math.round(answerScore)}</strong>
           <small>{answerScore === null ? "等待 AI 教练完成综合判断" : "满分 100"}</small>
+          <ProvenanceDisclosure trace={answerTrace("score")} compact />
         </aside>
 
         <div className="v3-answer-grid">
-          <AnswerCard icon={<Target />} label="如果重来一次买谁" value={answerText(finalAnswer.better_choice)} />
-          <AnswerCard icon={<CircleAlert />} label="问题在哪里" value={answerText(finalAnswer.mistake_source)} />
-          <AnswerCard icon={<Compass />} label="下次怎么办" value={answerText(finalAnswer.next_action)} />
+          <AnswerCard
+            icon={<Target />}
+            label="如果重来一次买谁"
+            value={answerText(finalAnswer.better_choice)}
+            trace={answerTrace("better_choice")}
+          />
+          <AnswerCard
+            icon={<CircleAlert />}
+            label="问题在哪里"
+            value={answerText(finalAnswer.mistake_source)}
+            trace={answerTrace("mistake_source")}
+          />
+          <AnswerCard
+            icon={<Compass />}
+            label="下次怎么办"
+            value={answerText(finalAnswer.next_action)}
+            trace={answerTrace("next_action")}
+          />
         </div>
       </section>
 
@@ -473,15 +504,100 @@ function StructuredWorkbench({
   );
 }
 
-function AnswerCard({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) {
+function AnswerCard({
+  icon,
+  label,
+  value,
+  trace,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+  trace?: SourceTraceEntry;
+}) {
   return (
     <article className="v3-answer-card">
       <span>{icon}</span>
       <div>
         <small>{label}</small>
         <strong>{value}</strong>
+        <ProvenanceDisclosure trace={trace} compact />
       </div>
     </article>
+  );
+}
+
+function ProvenanceDisclosure({
+  trace,
+  compact = false,
+}: {
+  trace?: SourceTraceEntry;
+  compact?: boolean;
+}) {
+  const source = normalizeSourceKind(trace?.source);
+  const sourceMeta = SOURCE_LABELS[source];
+  const dependencies = traceList(trace?.depends_on);
+  const missingDependencies = traceList(trace?.missing_dependencies);
+  const confidence = formatConfidence(trace?.confidence);
+  const hasDetails = Boolean(
+    trace?.agent ||
+      trace?.detail ||
+      dependencies.length ||
+      missingDependencies.length ||
+      confidence,
+  );
+
+  return (
+    <details className={`v3-provenance ${compact ? "is-compact" : ""}`}>
+      <summary>
+        <span className={`v3-source-badge is-${source}`}>{sourceMeta.label}</span>
+        <span className="v3-provenance-action">依据/来源</span>
+        <ChevronDown />
+      </summary>
+      <div className="v3-provenance-body">
+        <p className="v3-source-explanation">{sourceMeta.description}</p>
+        {trace?.agent && <ProvenanceRow label="生成 Agent" value={trace.agent} />}
+        {confidence && <ProvenanceRow label="置信度" value={confidence} />}
+        {dependencies.length > 0 && <ProvenanceList label="依赖数据" items={dependencies} />}
+        {missingDependencies.length > 0 && (
+          <ProvenanceList label="缺失依赖" items={missingDependencies} tone="warning" />
+        )}
+        {trace?.detail && <ProvenanceRow label="审计备注" value={trace.detail} />}
+        {!hasDetails && (
+          <p className="v3-provenance-empty">
+            {trace ? "当前仅提供来源类型，暂无更多审计说明。" : "旧版报告未提供该字段的数据血缘。"}
+          </p>
+        )}
+      </div>
+    </details>
+  );
+}
+
+function ProvenanceRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="v3-provenance-row">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function ProvenanceList({
+  label,
+  items,
+  tone,
+}: {
+  label: string;
+  items: string[];
+  tone?: "warning";
+}) {
+  return (
+    <div className={`v3-provenance-list ${tone === "warning" ? "is-warning" : ""}`}>
+      <span>{label}</span>
+      <ul>
+        {items.map((item) => <li key={item}>{item}</li>)}
+      </ul>
+    </div>
   );
 }
 
@@ -1043,6 +1159,80 @@ function BulletList({ items, fallback }: { items: string[]; fallback: string }) 
       {rows.map((item, index) => <li key={`${item}-${index}`}>{item}</li>)}
     </ul>
   );
+}
+
+const SOURCE_LABELS: Record<SourceKind, { label: string; description: string }> = {
+  real_data: {
+    label: "真实数据",
+    description: "该字段基于已接入的数据源生成，仍应结合具体依赖项核验。",
+  },
+  llm: {
+    label: "AI 推理",
+    description: "该字段由大模型推理生成，不等同于已验证事实。",
+  },
+  fallback: {
+    label: "降级结果",
+    description: "该字段来自数据不足或链路异常时的保守降级处理。",
+  },
+  hardcode: {
+    label: "固定规则",
+    description: "该字段包含预设规则或固定逻辑，不是模型自主研究结论。",
+  },
+  missing: {
+    label: "数据缺失",
+    description: "生成该字段所需的关键数据尚未提供或未通过验证。",
+  },
+  unknown: {
+    label: "血缘未提供",
+    description: "当前报告没有提供可识别的数据来源类型。",
+  },
+};
+
+function sourceTraceFor(
+  sourceTrace: Record<string, unknown> | undefined,
+  path: string,
+): SourceTraceEntry | undefined {
+  if (!sourceTrace) return undefined;
+  const direct = sourceTrace[path];
+  const nested = path.split(".").reduce<unknown>((value, key) => {
+    return isPlainObject(value) ? value[key] : undefined;
+  }, sourceTrace);
+  const value = direct ?? nested;
+  if (typeof value === "string") return { source: value };
+  return isPlainObject(value) ? (value as SourceTraceEntry) : undefined;
+}
+
+function normalizeSourceKind(value: unknown): SourceKind {
+  return value === "missing" ||
+    value === "fallback" ||
+    value === "hardcode" ||
+    value === "llm" ||
+    value === "real_data"
+    ? value
+    : "unknown";
+}
+
+function traceList(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return uniqueStrings(value.flatMap((item) => traceList(item)));
+  }
+  if (typeof value !== "string") return [];
+  return value
+    .split(/[,;\n]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function formatConfidence(value: unknown): string {
+  if (value === null || value === undefined || value === "") return "";
+  if (typeof value === "string") {
+    const parsed = Number(value.replace("%", ""));
+    if (!Number.isFinite(parsed)) return value;
+    value = value.includes("%") ? parsed : Number(value);
+  }
+  if (typeof value !== "number" || !Number.isFinite(value)) return "";
+  const percent = value >= 0 && value <= 1 ? value * 100 : value;
+  return `${Math.round(percent)}%`;
 }
 
 const EMPTY_ANSWER_VALUES = new Set([

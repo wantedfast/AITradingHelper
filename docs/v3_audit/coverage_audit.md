@@ -7,6 +7,8 @@
 - **P1 partially fixed:** verified Trade Execution peer returns now feed `peer_snapshot.metrics`; Better Opportunity remains `missing` when no verified peer quote rows exist.
 - **Second batch complete:** WANG unsupported numeric fields are now gated and moved to hypotheses; structured catalyst/news facts retain `fact/date/source/source_type`.
 - **Still open after batch two:** raw financial/valuation providers, calibrated WANG datasets, industry-specific KPI gates, and end-user provenance display.
+- **Third batch complete:** final-answer dependencies are auditable, provenance is visible in the frontend, and conservative industry-family KPI coverage is attached to the research context.
+- **Still open after batch three:** actual financial/valuation/consensus providers and calibrated WANG datasets.
 
 Implementation evidence:
 

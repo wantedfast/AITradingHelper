@@ -7,6 +7,7 @@ from typing import Any
 import pandas as pd
 
 from .trade_rounds import TradeRound
+from .industry_coverage import build_industry_coverage
 from .workbench_news import build_market_catalyst_context
 
 
@@ -19,6 +20,8 @@ def build_stock_context(
     stock: pd.DataFrame | None = None,
     sector: pd.DataFrame | None = None,
     benchmark: pd.DataFrame | None = None,
+    profile: Any = None,
+    company_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Compact facts passed to WANG/Public Equity workbench agents."""
     trades = []
@@ -62,12 +65,19 @@ def build_stock_context(
     }
     legacy_catalysts = _fact_texts(catalyst_facts) or _legacy_texts(catalyst.get("recent_catalysts"))
     legacy_news = _fact_texts(industry_news) or legacy_catalysts
-    return {
-        "company": {
-            "code": code,
-            "name": name or code,
-            "market": "A-share",
-        },
+    company = {
+        "code": code,
+        "name": name or code,
+        "market": "A-share",
+    }
+    if isinstance(company_metadata, dict):
+        for field in ("sector", "industry", "industry_name", "sector_name", "theme"):
+            value = company_metadata.get(field)
+            if value not in (None, ""):
+                company[field] = value
+
+    context = {
+        "company": company,
         "trade": {
             "buy_date": _date_to_text(getattr(trade_round, "start_date", "")),
             "sell_date": _date_to_text(getattr(trade_round, "end_date", "")),
@@ -107,6 +117,12 @@ def build_stock_context(
         "news": legacy_news,
         "structured_news": industry_news,
     }
+    context["industry_coverage"] = build_industry_coverage(
+        company=company,
+        profile=profile,
+        context=context,
+    )
+    return context
 
 
 def _frame_snapshot(frame: pd.DataFrame | None) -> str:

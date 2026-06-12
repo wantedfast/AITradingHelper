@@ -10,6 +10,8 @@ Completed in the first remediation batch:
 4. Semantic validator fixtures reject unsupported Public Equity conclusions and execution judgments labeled `real_data`.
 5. WANG unsupported formal numbers are withheld unless matching structured inputs exist.
 6. Catalyst/news facts retain structured metadata and explicit LLM/fallback lineage.
+7. Final-answer traces now include generating agent, actual dependencies, missing dependencies, and confidence.
+8. Industry coverage exposes conservative family-specific KPI gaps and falls back to `unknown` on weak or conflicting metadata.
 
 Remaining data gaps:
 

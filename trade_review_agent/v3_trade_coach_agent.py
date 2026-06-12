@@ -8,6 +8,83 @@ from .v3_market_scout import LLMCaller, MISSING
 
 FINAL_FIELDS = ("score", "verdict", "better_choice", "main_reason", "mistake_source", "next_action")
 
+_FIELD_DEPENDENCIES = {
+    "score": (
+        "trade_execution.trade_execution_notes",
+        "trade_execution.execution_advice",
+        "trade_execution.trade_timing",
+        "trade_execution.buy_verdict",
+        "trade_execution.sell_verdict",
+        "wang_industry.industry_rating",
+        "wang_industry.industry_position",
+        "wang_industry.profit_flow.company_position",
+        "wang_industry.moat_radar.company_score",
+        "public_equity.investment_rating",
+        "public_equity.quality_rating",
+        "public_equity.financial_validation",
+        "public_equity.valuation_odds",
+        "public_equity.expectation_gap.gap_score",
+        "market_scout.market_theme",
+        "market_scout.market_catalyst",
+        "market_scout.sector_strength",
+        "better_opportunity.better_candidates",
+        "better_opportunity.confidence",
+    ),
+    "verdict": (
+        "trade_execution.trade_execution_notes",
+        "trade_execution.execution_advice",
+        "trade_execution.buy_verdict",
+        "trade_execution.sell_verdict",
+        "wang_industry.industry_rating",
+        "wang_industry.industry_position",
+        "wang_industry.profit_flow.company_position",
+        "public_equity.investment_rating",
+        "public_equity.quality_rating",
+        "public_equity.financial_validation",
+        "market_scout.market_theme",
+        "market_scout.market_catalyst",
+        "better_opportunity.better_candidates",
+    ),
+    "better_choice": (
+        "better_opportunity.better_candidates",
+    ),
+    "main_reason": (
+        "trade_execution.trade_execution_notes",
+        "wang_industry.industry_position",
+        "wang_industry.profit_flow",
+        "wang_industry.moat_radar",
+        "public_equity.financial_validation",
+        "public_equity.expectation_gap",
+        "public_equity.risks",
+        "market_scout.market_theme",
+        "market_scout.market_catalyst",
+        "market_scout.sector_strength",
+        "better_opportunity.superiority_reason",
+        "better_opportunity.replacement_thesis",
+    ),
+    "mistake_source": (
+        "trade_execution.trade_execution_notes",
+        "trade_execution.execution_advice",
+        "trade_execution.trade_timing",
+        "trade_execution.buy_verdict",
+        "trade_execution.sell_verdict",
+        "wang_industry.weakest_link",
+        "public_equity.risks",
+        "better_opportunity.better_candidates",
+    ),
+    "next_action": (
+        "trade_execution.execution_advice",
+        "trade_execution.trade_execution_notes",
+        "wang_industry.weakest_link",
+        "wang_industry.logic_tree",
+        "public_equity.risks",
+        "public_equity.valuation_odds",
+        "market_scout.market_catalyst",
+        "market_scout.industry_news",
+        "better_opportunity.replacement_thesis",
+    ),
+}
+
 
 def run_trade_coach_agent(
     *,
@@ -31,6 +108,7 @@ def run_trade_coach_agent(
         return missing_trade_coach_answer(
             missing_reason or "LLM caller is not configured",
             answer_evidence=evidence,
+            context=context,
         )
 
     raw = llm_caller(_system_prompt(), _user_prompt(context))
@@ -112,7 +190,13 @@ def build_answer_evidence(context: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def missing_trade_coach_answer(reason: str, *, answer_evidence: dict[str, Any]) -> dict[str, Any]:
+def missing_trade_coach_answer(
+    reason: str,
+    *,
+    answer_evidence: dict[str, Any],
+    context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    safe_context = context if isinstance(context, dict) else {}
     return {
         "status": MISSING,
         "ai_final_answer": {
@@ -125,10 +209,11 @@ def missing_trade_coach_answer(reason: str, *, answer_evidence: dict[str, Any]) 
         },
         "answer_evidence": answer_evidence,
         "missing_reason": reason,
-        "source_trace": {
-            f"ai_final_answer.{field}": {"source": "missing", "detail": reason}
-            for field in FINAL_FIELDS
-        },
+        "source_trace": build_final_answer_source_trace(
+            safe_context,
+            source="missing",
+            reason=reason,
+        ),
     }
 
 
@@ -158,6 +243,7 @@ def normalize_trade_coach_answer(
         return missing_trade_coach_answer(
             "LLM output lacked required final-answer fields",
             answer_evidence=answer_evidence,
+            context=context,
         )
 
     better_status = _dict(context.get("better_opportunity")).get("status")
@@ -165,6 +251,7 @@ def normalize_trade_coach_answer(
         return missing_trade_coach_answer(
             "LLM better_choice was not present in supported better candidates",
             answer_evidence=answer_evidence,
+            context=context,
         )
     if better_status != "available":
         better_choice = MISSING
@@ -190,11 +277,104 @@ def normalize_trade_coach_answer(
         },
         "answer_evidence": answer_evidence,
         "missing_reason": "",
-        "source_trace": {
-            f"ai_final_answer.{field}": {"source": "llm"}
-            for field in FINAL_FIELDS
-        },
+        "source_trace": build_final_answer_source_trace(context, source="llm"),
     }
+
+
+def build_final_answer_source_trace(
+    context: dict[str, Any],
+    *,
+    source: str,
+    reason: str = "",
+) -> dict[str, Any]:
+    trace: dict[str, Any] = {}
+    for field in FINAL_FIELDS:
+        depends_on = [
+            path
+            for path in _FIELD_DEPENDENCIES[field]
+            if _has_value(_path_value(context, path))
+        ]
+        missing_dependencies = _missing_dependencies(context, field)
+        entry: dict[str, Any] = {
+            "source": source,
+            "agent": "trade_coach",
+            "depends_on": depends_on,
+            "missing_dependencies": missing_dependencies,
+            "confidence": (
+                _lineage_confidence(field, depends_on, missing_dependencies, context)
+                if source == "llm"
+                else None
+            ),
+        }
+        if reason:
+            entry["detail"] = reason
+        trace[f"ai_final_answer.{field}"] = entry
+    return trace
+
+
+def _missing_dependencies(context: dict[str, Any], field: str) -> list[str]:
+    relevant_roots = {
+        path.split(".", 1)[0]
+        for path in _FIELD_DEPENDENCIES[field]
+    }
+    missing: list[str] = []
+    for root in sorted(relevant_roots):
+        layer = _dict(context.get(root))
+        if not layer:
+            missing.append(root)
+            continue
+        sufficiency = _dict(layer.get("data_sufficiency"))
+        field_status = _dict(sufficiency.get("field_status"))
+        for status_path, status in field_status.items():
+            if status not in {"verified_input", "available", "verified"}:
+                missing.append(f"{root}.{status_path}")
+        missing_inputs = sufficiency.get("missing_inputs")
+        if isinstance(missing_inputs, list):
+            missing.extend(
+                f"{root}.data_sufficiency.missing_inputs.{item}"
+                for item in missing_inputs
+                if _text(item)
+            )
+
+    if field == "better_choice":
+        better = _dict(context.get("better_opportunity"))
+        candidates = better.get("better_candidates")
+        if better.get("status") != "available" or not isinstance(candidates, list) or not candidates:
+            missing.append("better_opportunity.better_candidates")
+    return list(dict.fromkeys(missing))
+
+
+def _lineage_confidence(
+    field: str,
+    depends_on: list[str],
+    missing_dependencies: list[str],
+    context: dict[str, Any],
+) -> str:
+    if field == "better_choice":
+        confidence = _dict(context.get("better_opportunity")).get("confidence")
+        try:
+            number = float(confidence)
+        except (TypeError, ValueError):
+            return "low"
+        if number >= 0.75:
+            return "high"
+        return "medium" if number >= 0.5 else "low"
+
+    roots = {path.split(".", 1)[0] for path in depends_on}
+    if len(roots) >= 4 and not missing_dependencies:
+        return "high"
+    if len(roots) >= 3:
+        return "medium"
+    return "low"
+
+
+def _path_value(context: dict[str, Any], path: str) -> Any:
+    value: Any = context
+    for part in path.split("."):
+        if not isinstance(value, dict) or part not in value:
+            return None
+        value = value[part]
+    return value
 
 
 def validate_trade_coach_contract(payload: Any) -> list[str]:
