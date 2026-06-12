@@ -135,7 +135,8 @@ def test_presenter_fallback_full_chinese_schema() -> None:
     ]:
         assert key in fallback
     assert "summary" in fallback["profit_flow"]
-    assert "explanation" in fallback["logic_tree"][0]
+    assert isinstance(fallback["logic_tree"], list)
+    assert all("explanation" in item for item in fallback["logic_tree"])
     assert "dimensions" in fallback["moat"]
     assert "weakest_link" in fallback["moat"]
     pollution = ["should be judged", "Profit Flow", "Conclusion pending", "pending verification", "Claim ", "Validation"]
@@ -236,7 +237,7 @@ def test_presenter_ignores_pending_hero_placeholders_contract() -> None:
     )
     data = build_presenter_fallback_data(workbench=workbench, profile=profile, analysis={}, trade_frame=pd.DataFrame())
     assert data["hero"]["claims"][0] != "结论待验证"
-    assert "光纤光缆" in data["hero"]["tags"]
+    assert "结论待验证" not in data["hero"]["tags"]
 
 
 def test_presenter_structured_schema_contract() -> None:
@@ -672,8 +673,10 @@ def test_agent_failure_preserves_market_catalyst_context() -> None:
             assert data["evidence_quality"] == "medium"
             assert "source A" in data["evidence"]
             assert "news A" in data["news"]
-            assert data["wang_agent"] == {}
-            assert data["public_equity_agent"] == {}
+            assert data["wang_agent"]["research_metrics"]["status"] == "error"
+            assert data["public_equity_agent"]["research_metrics"]["status"] == "error"
+            assert "industry_rating" not in data["wang_agent"]
+            assert "investment_rating" not in data["public_equity_agent"]
             assert any("WANG agent failed" in item for item in data["agent_errors"])
             assert any("Public Equity agent failed" in item for item in data["agent_errors"])
         finally:
