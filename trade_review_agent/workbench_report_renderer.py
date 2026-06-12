@@ -13,6 +13,7 @@ def render_workbench_report(data: dict[str, Any]) -> str:
     action = _d(data.get("next_action"))
     memos = _d(data.get("deep_memos"))
     diagnostics = _d(data.get("generation_diagnostics"))
+    final_answer = _d(data.get("ai_final_answer"))
 
     name = _s(company.get("name"), "个股")
     subtitle = _s(company.get("subtitle"), "")
@@ -148,6 +149,8 @@ def render_workbench_report(data: dict[str, Any]) -> str:
 
     {_diagnostic_panel(diagnostics, trade)}
 
+    {_final_answer_panel(final_answer)}
+
     <section class="section">
       <div class="section-head">
         <div><h2>利润流向图</h2><p>{escape(_s(profit.get("description"), "用利润池解释为什么是它。"))}</p></div>
@@ -254,6 +257,32 @@ def _metric(label: str, value: str) -> str:
     return f'<div class="metric"><span>{escape(label)}</span><b>{escape(value)}</b></div>'
 
 
+def _final_answer_panel(answer: dict[str, Any]) -> str:
+    if not answer:
+        return ""
+    score = answer.get("score") if answer.get("score") is not None else answer.get("ai_score")
+    fields = [
+        ("AI Score", _s(score, "missing")),
+        ("Verdict", _s(answer.get("verdict"), "missing")),
+        ("Better Choice", _s(answer.get("better_choice"), "missing")),
+        ("Main Reason", _s(answer.get("main_reason"), "missing")),
+        ("Mistake Source", _s(answer.get("mistake_source"), "missing")),
+        ("Next Action", _s(answer.get("next_action"), "missing")),
+    ]
+    if all(value.lower() == "missing" for _, value in fields):
+        return ""
+    cards = "".join(_metric(label, value) for label, value in fields)
+    return f"""
+    <section class="section">
+      <div class="section-head">
+        <div><h2>AI 最终结论</h2><p>首页答案字段，由上游 V3 Agent 生成；前端只展示，不重新推理。</p></div>
+        <span class="pill">V3 Answer</span>
+      </div>
+      <div class="three">{cards}</div>
+    </section>
+"""
+
+
 def _diagnostic_panel(diagnostics: dict[str, Any], trade: dict[str, Any]) -> str:
     status = _s(diagnostics.get("status"), "unknown")
     errors = _list(diagnostics.get("errors"))
@@ -330,6 +359,7 @@ def _llm_call_rows(items: list[Any]) -> str:
     for item in items[:8]:
         item = _d(item)
         stage = _s(item.get("stage"), "unknown")
+        agent = _s(item.get("agent"), "")
         status = _s(item.get("status"), "unknown")
         tokens = _num(item.get("actual_total_tokens") or item.get("estimated_total_tokens"), 0)
         seconds = _format_seconds(item.get("seconds"))
@@ -342,8 +372,9 @@ def _llm_call_rows(items: list[Any]) -> str:
         if item.get("retry_after"):
             flags.append(f"retry_after={_s(item.get('retry_after'), '')}")
         flag_text = f" | {', '.join(flags)}" if flags else ""
+        label = f"{stage} / {agent}" if agent else stage
         rows.append(
-            f"<div><b>{escape(stage)}</b><span>{escape(status)} | {seconds} | {tokens:.0f}{suffix}{escape(flag_text)}</span></div>"
+            f"<div><b>{escape(label)}</b><span>{escape(status)} | {seconds} | {tokens:.0f}{suffix}{escape(flag_text)}</span></div>"
         )
     return "".join(rows)
 
