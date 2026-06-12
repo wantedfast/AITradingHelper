@@ -96,6 +96,8 @@ class IndustryCoverageTests(unittest.TestCase):
             result = build_stock_context(
                 code="000001",
                 name="Target",
+                financial_snapshot={"status": "missing"},
+                valuation_snapshot={"status": "unavailable"},
                 company_metadata={"sector": "医疗器械"},
             )
 

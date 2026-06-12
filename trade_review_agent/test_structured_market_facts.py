@@ -98,7 +98,12 @@ class StructuredMarketFactsTests(unittest.TestCase):
             "evidence": [],
         }
         with patch.object(workbench_context, "build_market_catalyst_context", return_value=catalyst):
-            result = workbench_context.build_stock_context(code="000001", name="Target")
+            result = workbench_context.build_stock_context(
+                code="000001",
+                name="Target",
+                financial_snapshot={"status": "missing"},
+                valuation_snapshot={"status": "unavailable"},
+            )
 
         self.assertEqual(["Structured catalyst"], result["recent_catalysts"])
         self.assertEqual("Structured catalyst", result["market_catalyst_facts"][0]["fact"])
@@ -116,7 +121,12 @@ class StructuredMarketFactsTests(unittest.TestCase):
             "source_trace": {"market_catalyst": {"source": "fallback"}},
         }
         with patch.object(workbench_context, "build_market_catalyst_context", return_value=legacy):
-            result = workbench_context.build_stock_context(code="000001", name="Target")
+            result = workbench_context.build_stock_context(
+                code="000001",
+                name="Target",
+                financial_snapshot={"status": "missing"},
+                valuation_snapshot={"status": "unavailable"},
+            )
 
         fact = result["market_catalyst"]["market_catalyst"][0]
         self.assertEqual("Legacy string catalyst", fact["fact"])
