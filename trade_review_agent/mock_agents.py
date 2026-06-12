@@ -148,6 +148,12 @@ def build_mock_v3_workbench() -> dict[str, Any]:
         better_opportunity_caller=mock_better_opportunity_caller,
         trade_coach_caller=mock_trade_coach_caller,
     )
+    trace = result.get("source_trace") if isinstance(result.get("source_trace"), dict) else {}
+    for field in ("score", "verdict", "better_choice", "main_reason", "mistake_source", "next_action"):
+        entry = trace.get(f"ai_final_answer.{field}")
+        if isinstance(entry, dict):
+            entry["mode"] = "mock"
+            entry["mock_agent"] = True
     result["company"] = {"code": "000001", "name": "目标公司", "subtitle": "000001 | mock"}
     result["hero"] = {
         "industry_rating": "A",

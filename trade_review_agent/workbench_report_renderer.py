@@ -14,6 +14,7 @@ def render_workbench_report(data: dict[str, Any]) -> str:
     memos = _d(data.get("deep_memos"))
     diagnostics = _d(data.get("generation_diagnostics"))
     final_answer = _d(data.get("ai_final_answer"))
+    source_trace = _d(data.get("source_trace"))
 
     name = _s(company.get("name"), "个股")
     subtitle = _s(company.get("subtitle"), "")
@@ -63,7 +64,22 @@ def render_workbench_report(data: dict[str, Any]) -> str:
     .brand {{ color: var(--gold); font-weight: 800; font-size: 20px; }}
     .nav {{ display: flex; gap: 12px; flex-wrap: wrap; }}
     .nav span {{ border: 1px solid rgba(242,207,103,.28); border-radius: 999px; padding: 8px 12px; color: var(--soft); }}
-    .hero {{ min-height: 520px; display: grid; grid-template-columns: 1.02fr .98fr; gap: 26px; align-items: stretch; border-bottom: 1px solid rgba(242,207,103,.18); padding-bottom: 34px; }}
+    .answer-hero {{ min-height: 560px; display: grid; grid-template-columns: .82fr 1.18fr; gap: 28px; align-items: stretch; border-bottom: 1px solid rgba(242,207,103,.18); padding-bottom: 34px; }}
+    .answer-score {{ border: 1px solid rgba(242,207,103,.36); background: linear-gradient(180deg, rgba(242,207,103,.12), rgba(16,23,24,.94)); border-radius: 8px; padding: 32px; display: flex; flex-direction: column; justify-content: space-between; min-height: 430px; }}
+    .answer-score .label {{ color: var(--muted); font-size: 16px; font-weight: 900; }}
+    .score-number {{ margin-top: 20px; color: var(--gold); font-size: 104px; line-height: .95; font-weight: 900; }}
+    .score-caption {{ color: var(--soft); font-size: 18px; line-height: 1.65; margin-top: 14px; }}
+    .answer-main {{ display: flex; flex-direction: column; justify-content: center; padding: 18px 0; }}
+    .answer-main h1 {{ margin: 16px 0 0; font-size: clamp(42px, 5.4vw, 78px); line-height: 1.05; font-weight: 900; letter-spacing: 0; }}
+    .answer-verdict {{ margin-top: 22px; color: #f6efd5; font-size: clamp(28px, 3.2vw, 44px); line-height: 1.25; font-weight: 900; }}
+    .answer-next {{ margin-top: 24px; border-left: 4px solid var(--cyan); padding-left: 18px; color: #dbe1dc; font-size: 20px; line-height: 1.7; }}
+    .answer-grid {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 28px; }}
+    .answer-item {{ border: 1px solid rgba(111,213,223,.28); background: rgba(111,213,223,.06); border-radius: 8px; padding: 18px; min-height: 150px; }}
+    .answer-item span {{ display: block; color: var(--muted); font-size: 13px; font-weight: 900; text-transform: uppercase; }}
+    .answer-item b {{ display: block; color: var(--gold); font-size: 22px; line-height: 1.35; margin-top: 10px; }}
+    .source-line {{ display: flex; flex-wrap: wrap; gap: 10px; margin-top: 24px; }}
+    .source-chip {{ border: 1px solid rgba(242,207,103,.24); border-radius: 999px; color: var(--soft); padding: 7px 10px; font-size: 13px; }}
+    .hero {{ margin-top: 28px; display: grid; grid-template-columns: 1.02fr .98fr; gap: 26px; align-items: stretch; border-bottom: 1px solid rgba(242,207,103,.18); padding-bottom: 34px; }}
     .hero-left {{ display: flex; flex-direction: column; justify-content: center; padding: 34px 0; }}
     .kicker, .eyebrow {{ color: var(--cyan); font-size: 17px; font-weight: 900; letter-spacing: .12em; text-transform: uppercase; }}
     h1 {{ margin: 16px 0 0; font-size: clamp(56px, 8vw, 104px); line-height: .95; font-weight: 900; letter-spacing: -.05em; }}
@@ -118,20 +134,22 @@ def render_workbench_report(data: dict[str, Any]) -> str:
     .trade-table th, .trade-table td {{ border-bottom: 1px solid rgba(242,207,103,.14); padding: 12px 10px; text-align: left; }}
     .trade-table th {{ color: var(--gold); }}
     footer {{ margin-top: 24px; color: #73807b; font-size: 13px; }}
-    @media (max-width: 980px) {{ .hero, .two, .sankey, .expect-grid {{ grid-template-columns: 1fr; }} .three, .logic-row {{ grid-template-columns: 1fr 1fr; }} }}
+    @media (max-width: 980px) {{ .answer-hero, .answer-grid, .hero, .two, .sankey, .expect-grid {{ grid-template-columns: 1fr; }} .three, .logic-row {{ grid-template-columns: 1fr 1fr; }} .answer-score {{ min-height: 280px; }} }}
     @media (max-width: 640px) {{ .three, .logic-row {{ grid-template-columns: 1fr; }} h1 {{ font-size: 44px; }} }}
   </style>
 </head>
 <body>
   <main class="page">
     <header class="topbar">
-      <div class="brand">Research Workbench</div>
-      <nav class="nav"><span>AI 复盘分析</span><span>{escape(_s(company.get("code"), ""))}</span></nav>
+      <div class="brand">YingHang AI Investment Coach</div>
+      <nav class="nav"><span>Screen 1</span><span>{escape(_s(company.get("code"), ""))}</span></nav>
     </header>
+
+    {_final_answer_hero(final_answer, source_trace, name, subtitle)}
 
     <section class="hero">
       <div class="hero-left">
-        <div class="kicker">{escape(_s(hero.get("kicker"), "这家公司值得研究吗？"))}</div>
+        <div class="kicker">答案依据</div>
         <h1>{escape(name)}</h1>
         <div class="ticker">{escape(subtitle)}</div>
         <div class="rating-row">
@@ -148,8 +166,6 @@ def render_workbench_report(data: dict[str, Any]) -> str:
     </section>
 
     {_diagnostic_panel(diagnostics, trade)}
-
-    {_final_answer_panel(final_answer)}
 
     <section class="section">
       <div class="section-head">
@@ -257,7 +273,107 @@ def _metric(label: str, value: str) -> str:
     return f'<div class="metric"><span>{escape(label)}</span><b>{escape(value)}</b></div>'
 
 
-def _final_answer_panel(answer: dict[str, Any]) -> str:
+def _final_answer_hero(
+    answer: dict[str, Any],
+    source_trace: dict[str, Any],
+    name: str,
+    subtitle: str,
+) -> str:
+    score = answer.get("score") if answer.get("score") is not None else answer.get("ai_score")
+    score_text = _score_text(score)
+    verdict = _s(answer.get("verdict"), "missing")
+    next_action = _s(answer.get("next_action"), "missing")
+    cards = "".join(
+        [
+            _answer_item("Better Choice", answer.get("better_choice")),
+            _answer_item("Main Reason", answer.get("main_reason")),
+            _answer_item("Mistake Source", answer.get("mistake_source")),
+        ]
+    )
+    return f"""
+    <section class="answer-hero" data-testid="screen1-final-answer">
+      <div class="answer-score">
+        <div>
+          <div class="label">AI Score</div>
+          <div class="score-number">{escape(score_text)}</div>
+          <div class="score-caption">{escape(name)}{(" | " + escape(subtitle)) if subtitle else ""}</div>
+        </div>
+        <div class="source-line">{_source_chips(source_trace, ["score"])}</div>
+      </div>
+      <div class="answer-main">
+        <div class="kicker">AI 最终结论</div>
+        <h1>{escape(name)}</h1>
+        <div class="answer-verdict">{escape(verdict)}</div>
+        <div class="answer-next"><b>Next Action</b><br>{escape(next_action)}</div>
+        <div class="answer-grid">{cards}</div>
+        <div class="source-line">{_source_chips(source_trace, ["verdict", "better_choice", "main_reason", "mistake_source", "next_action"])}</div>
+      </div>
+    </section>
+"""
+
+
+def _source_chips(source_trace: dict[str, Any], fields: list[str]) -> str:
+    chips = []
+    for field in fields:
+        entry = _d(source_trace.get(f"ai_final_answer.{field}"))
+        source = _s(entry.get("source"), "missing")
+        mode = _s(entry.get("mode"), "")
+        fallback = _s(entry.get("fallback_used"), "")
+        suffix = f" / {mode}" if mode else ""
+        if fallback.lower() == "true":
+            suffix += " / fallback"
+        chips.append(f'<span class="source-chip">{escape(field)}: {escape(source + suffix)}</span>')
+    return "".join(chips)
+
+
+def _has_final_answer(answer: dict[str, Any]) -> bool:
+    if not answer:
+        return False
+    fields = (
+        answer.get("score") if answer.get("score") is not None else answer.get("ai_score"),
+        answer.get("verdict"),
+        answer.get("better_choice"),
+        answer.get("main_reason"),
+        answer.get("mistake_source"),
+        answer.get("next_action"),
+    )
+    return any(_s(value, "").strip().lower() not in {"", "missing"} for value in fields)
+
+
+def _hero_answer_card(answer: dict[str, Any], claims: list[Any], *, hero_note: str, has_final_answer: bool) -> str:
+    if not has_final_answer:
+        return f"""
+      <div class="hero-card">
+        <h2>一句话结论</h2>
+        <div class="claim-list">{_claims(claims)}</div>
+        <p class="hero-note">{escape(hero_note)}</p>
+      </div>
+"""
+    score = answer.get("score") if answer.get("score") is not None else answer.get("ai_score")
+    return f"""
+      <div class="hero-card v3-answer-card">
+        <div class="answer-head">
+          <span class="pill">AI 最终结论</span>
+          <div class="answer-score"><span>AI评分</span><b>{escape(_score_text(score))}</b></div>
+        </div>
+        <div class="answer-verdict">{escape(_s(answer.get("verdict"), "missing"))}</div>
+        <div class="answer-grid">
+          {_answer_item("如果重来一次", answer.get("better_choice"))}
+          {_answer_item("主要原因", answer.get("main_reason"))}
+          {_answer_item("问题来源", answer.get("mistake_source"))}
+          {_answer_item("下次动作", answer.get("next_action"))}
+        </div>
+      </div>
+"""
+
+
+def _answer_item(label: str, value: Any) -> str:
+    return f'<div class="answer-item"><span>{escape(label)}</span><b>{escape(_s(value, "missing"))}</b></div>'
+
+
+def _final_answer_panel(answer: dict[str, Any], *, render: bool = True) -> str:
+    if not render:
+        return ""
     if not answer:
         return ""
     score = answer.get("score") if answer.get("score") is not None else answer.get("ai_score")
