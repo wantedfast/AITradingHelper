@@ -27,6 +27,7 @@ import {
   Target,
   Upload,
 } from "lucide-react";
+import { getAuthToken, storeUser } from "@/lib/auth-client";
 
 type ReportPayload = {
   run_id?: string;
@@ -48,6 +49,15 @@ type ReportPayload = {
   stage?: string;
   code?: string;
   retryable?: boolean;
+  user?: {
+    id?: number;
+    phone?: string;
+    role?: string;
+    invite_code?: string;
+    credits?: number;
+    referral_count?: number;
+    created_at?: string;
+  };
 };
 
 type WorkbenchData = {
@@ -334,6 +344,11 @@ export default function ReviewPage() {
       return;
     }
     if (generating) return;
+    const token = getAuthToken();
+    if (!token) {
+      router.push("/auth?redirect=/review");
+      return;
+    }
 
     setGenerating(true);
     setErrorText("");
@@ -351,11 +366,25 @@ export default function ReviewPage() {
       const response = await fetch(`${API_BASE}/api/reports`, {
         method: "POST",
         body: formData,
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
       });
       let payload = await parseJsonResponse(response);
 
       if (!response.ok) {
         throw new Error(formatReportError(payload, copy.errorTitle));
+      }
+      if (payload.user?.id && payload.user.phone && payload.user.role && payload.user.invite_code) {
+        storeUser({
+          id: payload.user.id,
+          phone: payload.user.phone,
+          role: payload.user.role as "user" | "admin",
+          invite_code: payload.user.invite_code,
+          credits: payload.user.credits || 0,
+          referral_count: payload.user.referral_count || 0,
+          created_at: payload.user.created_at || "",
+        });
       }
 
       if (isPendingReport(payload) && payload.status_url) {
@@ -805,4 +834,3 @@ function clampPct(value: unknown) {
   if (typeof value !== "number" || !Number.isFinite(value)) return 8;
   return Math.max(4, Math.min(100, value));
 }
-

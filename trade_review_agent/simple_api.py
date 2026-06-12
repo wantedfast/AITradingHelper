@@ -16,6 +16,26 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from .alerts import AlertPlan, evaluate_plans, event_dedupe_key, load_plans, save_plans
+from .auth_system import (
+    AuthError,
+    admin_dashboard,
+    consume_feature_credit,
+    create_order,
+    get_current_user,
+    init_auth_db,
+    login_user,
+    login_password_user,
+    logout_user,
+    mark_order_paid,
+    register_password_user,
+    register_user,
+    require_admin,
+    require_user,
+    review_feedback,
+    send_email_code,
+    send_login_code,
+    submit_feedback,
+)
 from .ai_trade_parser import OpenAITradeParsingError
 from .config import load_env
 from .ocr_trades import trade_file_to_trade_csv
@@ -36,6 +56,7 @@ VOICE_SETTINGS_PATH = BASE_DIR / "work" / "watch_voice_settings.json"
 WATCH_AUDIO_DIR = BASE_DIR / "work" / "tts"
 WATCH_SEEN_EVENTS = BASE_DIR / "work" / "watch_seen_events.json"
 API_ERROR_LOG = BASE_DIR / "work" / "api_errors.log"
+AUTH_DB = BASE_DIR / "work" / "auth.sqlite"
 CN_TZ = ZoneInfo("Asia/Shanghai")
 ALLOWED_SUFFIXES = {".xls", ".xlsx", ".csv", ".txt", ".png", ".jpg", ".jpeg", ".webp"}
 MAX_SEEN_EVENTS = 2048
@@ -69,6 +90,12 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             if path == "/api/health":
                 self._json({"status": "ok"})
                 return
+            if path == "/api/auth/me":
+                self._auth_me()
+                return
+            if path == "/api/admin/dashboard":
+                self._admin_dashboard()
+                return
             if path.startswith("/api/reports/"):
                 self._serve_report(path)
                 return
@@ -83,6 +110,8 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                 self._serve_watch_audio(path)
                 return
             self._json({"error": "not found"}, status=404)
+        except AuthError as exc:
+            self._json({"error": exc.message}, status=exc.status)
         except Exception as exc:
             self._send_error(exc)
 
@@ -90,6 +119,39 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
         self._begin_request()
         path = self._request_path()
         try:
+            if path == "/api/auth/register":
+                self._auth_register()
+                return
+            if path == "/api/auth/login":
+                self._auth_login()
+                return
+            if path == "/api/auth/send-code":
+                self._auth_send_code()
+                return
+            if path == "/api/auth/send-email-code":
+                self._auth_send_email_code()
+                return
+            if path == "/api/auth/password-register":
+                self._auth_password_register()
+                return
+            if path == "/api/auth/password-login":
+                self._auth_password_login()
+                return
+            if path == "/api/auth/logout":
+                self._auth_logout()
+                return
+            if path == "/api/feedback":
+                self._submit_feedback()
+                return
+            if path == "/api/orders":
+                self._create_order()
+                return
+            if path.startswith("/api/admin/feedback/"):
+                self._admin_review_feedback(path)
+                return
+            if path.startswith("/api/admin/orders/"):
+                self._admin_mark_order(path)
+                return
             if path == "/api/reports":
                 self._create_reports()
                 return
@@ -112,13 +174,157 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                 self._preview_watch_voice()
                 return
             self._json({"error": "not found"}, status=404)
+        except AuthError as exc:
+            self._json({"error": exc.message}, status=exc.status)
         except ValueError as exc:
             self._send_error(exc, status=400)
         except Exception as exc:
             self._send_error(exc)
 
     def _create_reports(self) -> None:
+        user = self._require_user()
+        updated_user = consume_feature_credit(
+            AUTH_DB,
+            user_id=int(user["id"]),
+            feature="review_report",
+            ip=self._client_ip(),
+        )
+        self._charged_user = updated_user
         self._create_reports_resilient()
+
+    def _auth_register(self) -> None:
+        payload = self._read_json_body()
+        result = register_user(
+            AUTH_DB,
+            phone=str(payload.get("phone") or ""),
+            code=str(payload.get("code") or ""),
+            invite_code=str(payload.get("invite_code") or ""),
+            ip=self._client_ip(),
+        )
+        self._json(result)
+
+    def _auth_login(self) -> None:
+        payload = self._read_json_body()
+        result = login_user(
+            AUTH_DB,
+            phone=str(payload.get("phone") or ""),
+            code=str(payload.get("code") or ""),
+            password=str(payload.get("password") or ""),
+            ip=self._client_ip(),
+        )
+        self._json(result)
+
+    def _auth_password_register(self) -> None:
+        payload = self._read_json_body()
+        result = register_password_user(
+            AUTH_DB,
+            username=str(payload.get("username") or ""),
+            email=str(payload.get("email") or ""),
+            password=str(payload.get("password") or ""),
+            email_code=str(payload.get("email_code") or payload.get("code") or ""),
+            invite_code=str(payload.get("invite_code") or ""),
+            ip=self._client_ip(),
+        )
+        self._json(result)
+
+    def _auth_password_login(self) -> None:
+        payload = self._read_json_body()
+        result = login_password_user(
+            AUTH_DB,
+            account=str(payload.get("account") or ""),
+            password=str(payload.get("password") or ""),
+            ip=self._client_ip(),
+        )
+        self._json(result)
+
+    def _auth_send_code(self) -> None:
+        payload = self._read_json_body()
+        result = send_login_code(
+            AUTH_DB,
+            phone=str(payload.get("phone") or ""),
+            purpose=str(payload.get("purpose") or "login"),
+            ip=self._client_ip(),
+            log_path=BASE_DIR / "work" / "sms_codes.log",
+        )
+        self._json(result)
+
+    def _auth_send_email_code(self) -> None:
+        payload = self._read_json_body()
+        result = send_email_code(
+            AUTH_DB,
+            email=str(payload.get("email") or ""),
+            purpose=str(payload.get("purpose") or "register"),
+            ip=self._client_ip(),
+            log_path=BASE_DIR / "work" / "email_codes.log",
+        )
+        self._json(result)
+
+    def _auth_logout(self) -> None:
+        logout_user(AUTH_DB, self._bearer_token())
+        self._json({"ok": True})
+
+    def _auth_me(self) -> None:
+        user = get_current_user(AUTH_DB, self._bearer_token())
+        self._json({"user": user})
+
+    def _submit_feedback(self) -> None:
+        user = self._require_user()
+        payload = self._read_json_body()
+        result = submit_feedback(
+            AUTH_DB,
+            user_id=int(user["id"]),
+            category=str(payload.get("category") or "建议"),
+            content=str(payload.get("content") or ""),
+            contact=str(payload.get("contact") or ""),
+        )
+        refreshed = get_current_user(AUTH_DB, self._bearer_token())
+        self._json({"feedback": result, "user": refreshed})
+
+    def _create_order(self) -> None:
+        user = self._require_user()
+        payload = self._read_json_body()
+        result = create_order(
+            AUTH_DB,
+            user_id=int(user["id"]),
+            plan_name=str(payload.get("plan_name") or "次数包"),
+            credits=int(payload.get("credits") or 0),
+            amount_cents=int(payload.get("amount_cents") or 0),
+        )
+        self._json({"order": result})
+
+    def _admin_dashboard(self) -> None:
+        self._require_admin()
+        query = urlparse(self.path).query
+        days = 14
+        for part in query.split("&"):
+            key, _, value = part.partition("=")
+            if key == "days" and value.isdigit():
+                days = int(value)
+        self._json(admin_dashboard(AUTH_DB, days=days))
+
+    def _admin_review_feedback(self, path: str) -> None:
+        self._require_admin()
+        parts = path.split("/")
+        if len(parts) != 5:
+            self._json({"error": "not found"}, status=404)
+            return
+        payload = self._read_json_body()
+        result = review_feedback(
+            AUTH_DB,
+            feedback_id=int(parts[4]),
+            status=str(payload.get("status") or ""),
+            admin_note=str(payload.get("admin_note") or ""),
+        )
+        self._json({"feedback": result})
+
+    def _admin_mark_order(self, path: str) -> None:
+        self._require_admin()
+        parts = path.split("/")
+        if len(parts) != 6 or parts[5] != "paid":
+            self._json({"error": "not found"}, status=404)
+            return
+        result = mark_order_paid(AUTH_DB, order_id=int(parts[4]))
+        self._json({"order": result})
 
     def _create_reports_resilient(self) -> None:
         run_id = ""
@@ -160,7 +366,11 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                 research_model_tier=research_model_tier,
                 request_id=self._request_id,
             )
-            self._json(_report_status_payload(run_id, status="queued", stage="queued"), status=202)
+            queued = _report_status_payload(run_id, status="queued", stage="queued")
+            charged_user = getattr(self, "_charged_user", None)
+            if charged_user:
+                queued["user"] = charged_user
+            self._json(queued, status=202)
         except Exception as exc:
             recovered = _recover_report_manifest(run_id, run_dir) if run_id and run_dir else None
             if recovered:
@@ -184,6 +394,13 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             raise
 
     def _create_watch_plan(self) -> None:
+        user = self._require_user()
+        updated_user = consume_feature_credit(
+            AUTH_DB,
+            user_id=int(user["id"]),
+            feature="watch_plan",
+            ip=self._client_ip(),
+        )
         self._set_stage("create_watch_plan")
         payload = self._read_json_body()
         stock_name = str(payload.get("stock_name") or "").strip()
@@ -211,7 +428,7 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
         plans = [item for item in load_plans(ALERT_PLANS) if item.plan_id != plan.plan_id]
         plans.insert(0, plan)
         save_plans(ALERT_PLANS, plans)
-        self._json({"plan": _plan_payload(plan), "plans": [_plan_payload(item) for item in plans]})
+        self._json({"plan": _plan_payload(plan), "plans": [_plan_payload(item) for item in plans], "user": updated_user})
 
     def _clear_watch_plans(self) -> None:
         save_plans(ALERT_PLANS, [])
@@ -421,7 +638,7 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
     def _cors_headers(self) -> None:
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
 
     def _begin_request(self) -> None:
         self._request_id = uuid4().hex
@@ -432,6 +649,24 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
         self._stage = stage
         if run_id is not None:
             self._run_id = run_id
+
+    def _bearer_token(self) -> str:
+        value = self.headers.get("authorization", "").strip()
+        if value.lower().startswith("bearer "):
+            return value[7:].strip()
+        return ""
+
+    def _require_user(self) -> dict:
+        return require_user(AUTH_DB, self._bearer_token())
+
+    def _require_admin(self) -> dict:
+        return require_admin(AUTH_DB, self._bearer_token())
+
+    def _client_ip(self) -> str:
+        forwarded = self.headers.get("x-forwarded-for", "").split(",", 1)[0].strip()
+        if forwarded:
+            return forwarded
+        return self.client_address[0] if self.client_address else ""
 
     def _send_error(self, exc: Exception, status: int = 500) -> None:
         request_id = getattr(self, "_request_id", uuid4().hex)
@@ -944,6 +1179,7 @@ def _assert_port_available(host: str, port: int) -> None:
 def run(host: str = "0.0.0.0", port: int = 8600) -> None:
     load_env(BASE_DIR / ".env")
     _assert_port_available(host, port)
+    init_auth_db(AUTH_DB)
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     WATCH_AUDIO_DIR.mkdir(parents=True, exist_ok=True)

@@ -25,6 +25,7 @@ import {
   Volume2,
   X,
 } from "lucide-react";
+import { getAuthToken, storeUser, type UserProfile } from "@/lib/auth-client";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || (process.env.NODE_ENV === "development" ? "http://127.0.0.1:8600" : "");
 const SHOW_WATCH_VOICE_TEST = process.env.NODE_ENV === "development";
@@ -92,6 +93,10 @@ type PollPayload = {
   errors: string[];
 };
 
+type UserAwarePayload = {
+  user?: UserProfile;
+};
+
 type VoiceSettings = {
   provider: "openai" | "edge";
   openai_voice: string;
@@ -137,7 +142,10 @@ type WatchOcrPayload = {
 };
 
 async function apiFetchJson<T>(path: string, init?: RequestInit, fallbackError = "请求失败"): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, init);
+  const token = getAuthToken();
+  const headers = new Headers(init?.headers);
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  const response = await fetch(`${API_BASE}${path}`, { ...init, headers });
   const text = await response.text();
   let payload: unknown = null;
   if (text.trim()) {
@@ -159,7 +167,9 @@ async function apiFetchJson<T>(path: string, init?: RequestInit, fallbackError =
   if (!payload || typeof payload !== "object") {
     throw new Error(text.trim() ? `${fallbackError}：响应不是 JSON` : `${fallbackError}：响应为空`);
   }
-  return payload as T;
+  const typedPayload = payload as T & UserAwarePayload;
+  if (typedPayload.user) storeUser(typedPayload.user);
+  return typedPayload as T;
 }
 
 const FALLBACK_VOICE_OPTIONS: VoiceSettingsPayload["options"] = {
