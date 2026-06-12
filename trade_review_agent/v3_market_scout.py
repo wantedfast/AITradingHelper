@@ -7,6 +7,11 @@ from typing import Any, Callable
 LLMCaller = Callable[[str, str], dict[str, Any]]
 MISSING = "missing"
 SOURCE_TYPES = {"real_data", "llm", "fallback", "hardcode", "missing"}
+KNOWN_FACT_PROVIDERS = {
+    "akshare": "real_data",
+    "tencent_finance": "real_data",
+    "fallback_existing": "fallback",
+}
 
 _FORBIDDEN_CONCLUSION_FIELDS = {
     "ai_score",
@@ -187,14 +192,42 @@ def _intrinsic_fact_source(value: Any) -> str:
     }
     if declared_sources:
         return next(iter(declared_sources)) if len(declared_sources) == 1 else "fallback"
+    nested_sources = {
+        source
+        for item in items
+        if isinstance(item, dict)
+        for source in _nested_trace_sources(item.get("source_trace"))
+    }
+    if nested_sources:
+        return next(iter(nested_sources)) if len(nested_sources) == 1 else "fallback"
+    provider_sources = {
+        source
+        for item in items
+        if isinstance(item, dict)
+        for source in [KNOWN_FACT_PROVIDERS.get(_text(item.get("source")))]
+        if source
+    }
+    if provider_sources:
+        return next(iter(provider_sources)) if len(provider_sources) == 1 else "fallback"
     supported = [
         item
         for item in items
         if isinstance(item, dict)
-        and _text(item.get("source") or item.get("url"))
-        and _text(item.get("source") or item.get("url")) != MISSING
+        and _text(item.get("url"))
+        and _text(item.get("url")) != MISSING
     ]
     return "real_data" if supported and len(supported) == len(items) else ""
+
+
+def _nested_trace_sources(value: Any) -> set[str]:
+    trace = value if isinstance(value, dict) else {}
+    return {
+        source
+        for entry in trace.values()
+        if isinstance(entry, dict)
+        for source in [_text(entry.get("source"))]
+        if source in SOURCE_TYPES and source != MISSING
+    }
 
 
 def _system_prompt() -> str:

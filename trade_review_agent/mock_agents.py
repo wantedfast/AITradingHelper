@@ -11,6 +11,7 @@ from .workbench_report_renderer import render_workbench_report
 
 MOCK_FINAL_ANSWER = {
     "score": 84,
+    "ai_score": 84,
     "verdict": "你买对了行业，但买错了公司。",
     "better_choice": "东方电缆",
     "main_reason": "东方电缆拥有更强海缆壁垒、订单质量更高，盈利弹性更强。",
@@ -149,7 +150,7 @@ def build_mock_v3_workbench() -> dict[str, Any]:
         trade_coach_caller=mock_trade_coach_caller,
     )
     trace = result.get("source_trace") if isinstance(result.get("source_trace"), dict) else {}
-    for field in ("score", "verdict", "better_choice", "main_reason", "mistake_source", "next_action"):
+    for field in ("score", "ai_score", "verdict", "better_choice", "main_reason", "mistake_source", "next_action"):
         entry = trace.get(f"ai_final_answer.{field}")
         if isinstance(entry, dict):
             entry["mode"] = "mock"

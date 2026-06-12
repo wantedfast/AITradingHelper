@@ -27,13 +27,20 @@ class MockAgentFrontendTests(unittest.TestCase):
 
         self.assertIn("YingHang AI Investment Coach", html)
         self.assertIn('data-testid="screen1-final-answer"', html)
-        self.assertIn("AI 最终结论", html)
-        self.assertIn("AI Score", html)
+        self.assertIn("AI最终结论", html)
+        self.assertIn("AI评分", html)
         self.assertIn(">84<", html)
-        self.assertIn("Better Choice", html)
-        self.assertIn("Main Reason", html)
-        self.assertIn("Mistake Source", html)
-        self.assertIn("Next Action", html)
+        self.assertIn("我买对了吗？", html)
+        self.assertIn("如果重来一次买谁", html)
+        self.assertIn("为什么", html)
+        self.assertIn("问题在哪里", html)
+        self.assertIn("下次怎么办", html)
+        self.assertIn('data-testid="ai-score"', html)
+        self.assertIn('data-testid="verdict"', html)
+        self.assertIn('data-testid="better-choice"', html)
+        self.assertIn('data-testid="main-reason"', html)
+        self.assertIn('data-testid="mistake-source"', html)
+        self.assertIn('data-testid="next-action"', html)
         self.assertIn("答案依据", html)
         self.assertIn("Token & Cost", html)
         self.assertIn("LLM Calls", html)
@@ -48,12 +55,14 @@ class MockAgentFrontendTests(unittest.TestCase):
         self.assertIn(MOCK_FINAL_ANSWER["verdict"], html)
         self.assertIn(MOCK_FINAL_ANSWER["better_choice"], html)
         self.assertIn(MOCK_FINAL_ANSWER["main_reason"], html)
-        self.assertIn(MOCK_FINAL_ANSWER["mistake_source"], html)
+        self.assertIn("选股问题", html)
+        self.assertNotIn(">selection<", html)
         self.assertIn(MOCK_FINAL_ANSWER["next_action"], html)
         self.assertLess(html.index('data-testid="screen1-final-answer"'), html.index("答案依据"))
         self.assertLess(html.index("答案依据"), html.index("Token & Cost"))
 
         self.assertEqual(data["generation_diagnostics"]["status"], "ok")
+        self.assertEqual(data["ai_final_answer"]["ai_score"], 84)
         self.assertEqual(data["generation_diagnostics"]["token_usage"]["actual_total_tokens"], 820)
         self.assertEqual(data["generation_diagnostics"]["cache_diagnostics"]["cache_hit"], False)
         self.assertEqual(data["source_trace"]["ai_final_answer.verdict"]["source"], "llm")
@@ -63,6 +72,7 @@ class MockAgentFrontendTests(unittest.TestCase):
         data = build_mock_v3_workbench()
 
         self.assertEqual(data["ai_final_answer"], MOCK_FINAL_ANSWER)
+        self.assertEqual(data["source_trace"]["ai_final_answer.ai_score"]["source"], "llm")
         self.assertEqual(data["generation_diagnostics"]["status"], "ok")
         self.assertEqual(data["generation_diagnostics"]["token_usage"]["actual_total_tokens"], 820)
         self.assertEqual(data["source_trace"]["ai_final_answer.verdict"]["source"], "llm")
@@ -87,6 +97,24 @@ class MockAgentFrontendTests(unittest.TestCase):
         self.assertIn("hit=True stale=False", html)
         self.assertIn("fallback", html)
         self.assertIn("cache", html)
+
+    def test_screen1_missing_values_are_user_readable(self) -> None:
+        data = build_mock_v3_workbench()
+        data["ai_final_answer"] = {
+            "score": None,
+            "ai_score": None,
+            "verdict": "missing",
+            "better_choice": "missing",
+            "main_reason": "missing",
+            "mistake_source": "missing",
+            "next_action": "missing",
+        }
+
+        html = render_workbench_report(data)
+        screen1 = html.split("答案依据", 1)[0]
+
+        self.assertIn("待验证", screen1)
+        self.assertNotIn("<b>missing</b>", screen1)
 
 
 if __name__ == "__main__":

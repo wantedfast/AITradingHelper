@@ -57,18 +57,24 @@ def run_v3_pipeline(
         "better_opportunity": _without_key(better, "source_trace"),
         "trade_coach": _without_key(coach, "source_trace"),
     }
+    final_answer = dict(coach["ai_final_answer"])
+    if "ai_score" not in final_answer:
+        final_answer["ai_score"] = final_answer.get("score")
+    source_trace = _merge_source_trace(
+        market_scout=market_scout,
+        research_layers=research_layers,
+        better=better,
+        coach=coach,
+        trade_execution_provenance=execution_provenance,
+    )
+    if "ai_final_answer.ai_score" not in source_trace:
+        source_trace["ai_final_answer.ai_score"] = dict(source_trace.get("ai_final_answer.score") or {"source": "missing"})
     return {
         "schema_version": "yinghang-v3-pipeline",
-        "ai_final_answer": coach["ai_final_answer"],
+        "ai_final_answer": final_answer,
         "answer_evidence": coach["answer_evidence"],
         "research_layers": research_layers,
-        "source_trace": _merge_source_trace(
-            market_scout=market_scout,
-            research_layers=research_layers,
-            better=better,
-            coach=coach,
-            trade_execution_provenance=execution_provenance,
-        ),
+        "source_trace": source_trace,
     }
 
 

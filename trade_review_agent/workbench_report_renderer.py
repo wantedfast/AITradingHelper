@@ -71,6 +71,7 @@ def render_workbench_report(data: dict[str, Any]) -> str:
     .score-caption {{ color: var(--soft); font-size: 18px; line-height: 1.65; margin-top: 14px; }}
     .answer-main {{ display: flex; flex-direction: column; justify-content: center; padding: 18px 0; }}
     .answer-main h1 {{ margin: 16px 0 0; font-size: clamp(42px, 5.4vw, 78px); line-height: 1.05; font-weight: 900; letter-spacing: 0; }}
+    .answer-question {{ margin-top: 18px; color: var(--muted); font-size: 17px; font-weight: 900; }}
     .answer-verdict {{ margin-top: 22px; color: #f6efd5; font-size: clamp(28px, 3.2vw, 44px); line-height: 1.25; font-weight: 900; }}
     .answer-next {{ margin-top: 24px; border-left: 4px solid var(--cyan); padding-left: 18px; color: #dbe1dc; font-size: 20px; line-height: 1.7; }}
     .answer-grid {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 28px; }}
@@ -281,30 +282,31 @@ def _final_answer_hero(
 ) -> str:
     score = answer.get("score") if answer.get("score") is not None else answer.get("ai_score")
     score_text = _score_text(score)
-    verdict = _s(answer.get("verdict"), "missing")
-    next_action = _s(answer.get("next_action"), "missing")
+    verdict = _answer_value(answer.get("verdict"))
+    next_action = _answer_value(answer.get("next_action"))
     cards = "".join(
         [
-            _answer_item("Better Choice", answer.get("better_choice")),
-            _answer_item("Main Reason", answer.get("main_reason")),
-            _answer_item("Mistake Source", answer.get("mistake_source")),
+            _answer_item("如果重来一次买谁", _answer_value(answer.get("better_choice")), testid="better-choice"),
+            _answer_item("为什么", _answer_value(answer.get("main_reason")), testid="main-reason"),
+            _answer_item("问题在哪里", _mistake_source_label(answer.get("mistake_source")), testid="mistake-source"),
         ]
     )
     return f"""
     <section class="answer-hero" data-testid="screen1-final-answer">
       <div class="answer-score">
         <div>
-          <div class="label">AI Score</div>
-          <div class="score-number">{escape(score_text)}</div>
+          <div class="label">AI评分</div>
+          <div class="score-number" data-testid="ai-score">{escape(score_text)}</div>
           <div class="score-caption">{escape(name)}{(" | " + escape(subtitle)) if subtitle else ""}</div>
         </div>
         <div class="source-line">{_source_chips(source_trace, ["score"])}</div>
       </div>
       <div class="answer-main">
-        <div class="kicker">AI 最终结论</div>
+        <div class="kicker">AI最终结论</div>
         <h1>{escape(name)}</h1>
-        <div class="answer-verdict">{escape(verdict)}</div>
-        <div class="answer-next"><b>Next Action</b><br>{escape(next_action)}</div>
+        <div class="answer-question">我买对了吗？</div>
+        <div class="answer-verdict" data-testid="verdict">{escape(verdict)}</div>
+        <div class="answer-next" data-testid="next-action"><b>下次怎么办</b><br>{escape(next_action)}</div>
         <div class="answer-grid">{cards}</div>
         <div class="source-line">{_source_chips(source_trace, ["verdict", "better_choice", "main_reason", "mistake_source", "next_action"])}</div>
       </div>
@@ -367,8 +369,30 @@ def _hero_answer_card(answer: dict[str, Any], claims: list[Any], *, hero_note: s
 """
 
 
-def _answer_item(label: str, value: Any) -> str:
-    return f'<div class="answer-item"><span>{escape(label)}</span><b>{escape(_s(value, "missing"))}</b></div>'
+def _answer_item(label: str, value: Any, *, testid: str = "") -> str:
+    attr = f' data-testid="{escape(testid)}"' if testid else ""
+    return f'<div class="answer-item"{attr}><span>{escape(label)}</span><b>{escape(_answer_value(value))}</b></div>'
+
+
+def _answer_value(value: Any) -> str:
+    text = _s(value, "").strip()
+    if text.lower() in {"", "missing", "none", "null", "pending verification"}:
+        return "待验证"
+    return text
+
+
+def _mistake_source_label(value: Any) -> str:
+    text = _s(value, "").strip().lower()
+    labels = {
+        "selection": "选股问题",
+        "stock_selection": "选股问题",
+        "execution": "执行问题",
+        "timing": "交易执行问题",
+        "industry": "行业判断问题",
+        "valuation": "估值问题",
+        "position": "仓位管理问题",
+    }
+    return labels.get(text, _answer_value(value))
 
 
 def _final_answer_panel(answer: dict[str, Any], *, render: bool = True) -> str:

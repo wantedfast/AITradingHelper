@@ -54,6 +54,40 @@ class V3ProvenanceSemanticsTests(unittest.TestCase):
 
         self.assertEqual("llm", result["source_trace"]["market_catalyst"]["source"])
 
+    def test_fallback_peer_provider_without_nested_trace_stays_fallback(self) -> None:
+        result = run_market_scout(
+            {
+                "peer_snapshot": [
+                    {
+                        "code": "600001",
+                        "name": "Cached Peer",
+                        "metrics": {"return_1d_pct": 1.2},
+                        "as_of": "2026-06-01",
+                        "source": "fallback_existing",
+                    }
+                ]
+            }
+        )
+
+        self.assertEqual("fallback", result["source_trace"]["peer_snapshot"]["source"])
+
+    def test_unknown_peer_provider_without_nested_trace_stays_fallback(self) -> None:
+        result = run_market_scout(
+            {
+                "peer_snapshot": [
+                    {
+                        "code": "600001",
+                        "name": "Unknown Vendor Peer",
+                        "metrics": {"return_1d_pct": 1.2},
+                        "as_of": "2026-06-01",
+                        "source": "some_vendor",
+                    }
+                ]
+            }
+        )
+
+        self.assertEqual("fallback", result["source_trace"]["peer_snapshot"]["source"])
+
     def test_llm_output_and_input_fallback_keep_distinct_sources(self) -> None:
         result = run_market_scout(
             {

@@ -30,6 +30,14 @@ class PeerSnapshotPipelineTests(unittest.TestCase):
             "fallback",
             snapshot[0]["source_trace"]["metrics"]["source"],
         )
+        market_scout = run_market_scout(
+            {"market_theme": "cached sector", "peer_snapshot": snapshot}
+        )
+
+        self.assertEqual(
+            "fallback",
+            market_scout["source_trace"]["peer_snapshot"]["source"],
+        )
 
     def test_real_peer_metrics_reach_better_opportunity(self) -> None:
         snapshot = build_peer_snapshot(
