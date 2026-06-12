@@ -23,7 +23,8 @@ from .sector_strength import build_sector_signal
 from .trade_rounds import TradeRound, split_trade_rounds
 from .trade_execution_chain import build_trade_execution_chain, enhance_trade_execution_with_llm
 from .presenter_agent import build_presenter_data
-from .workbench_agents import research_model_metadata
+from .v3_pipeline import run_v3_pipeline
+from .workbench_agents import _call_json_agent, research_model_metadata
 from .workbench_report_renderer import render_workbench_report
 from .workbench_composer import write_workbench_json
 from .workbench_schema import merge_default_workbench
@@ -189,13 +190,22 @@ def build_round_html(
         )
         execution_payload = execution_future.result()
     execution_llm_started = time.perf_counter()
-    enhance_trade_execution_with_llm(
+    execution_payload = enhance_trade_execution_with_llm(
         execution_payload=execution_payload,
         workbench=workbench_data,
         output=output,
         research_model_tier=research_model_tier,
     )
     timings["trade_execution_llm_seconds"] = _elapsed_seconds(execution_llm_started)
+    v3_started = time.perf_counter()
+    workbench_data = _join_v3_pipeline(
+        workbench=workbench_data,
+        execution_payload=execution_payload,
+        research_model_tier=research_model_tier,
+    )
+    write_workbench_json(output.parent / "research_workbench_data.json", workbench_data)
+    write_workbench_json(output.with_suffix(".workbench.json"), workbench_data)
+    timings["v3_pipeline_seconds"] = _elapsed_seconds(v3_started)
     presenter_started = time.perf_counter()
     presenter_data = build_presenter_data(
         workbench=workbench_data,
@@ -347,6 +357,112 @@ def _write_round_workbench_data(
     if timings is not None:
         timings["workbench_agents_seconds"] = _elapsed_seconds(started)
     return data
+
+
+def _join_v3_pipeline(
+    *,
+    workbench: dict[str, Any],
+    execution_payload: dict[str, Any],
+    research_model_tier: str,
+) -> dict[str, Any]:
+    workbench = dict(workbench if isinstance(workbench, dict) else {})
+    layers = workbench.get("research_layers")
+    layers = dict(layers if isinstance(layers, dict) else {})
+    wang = layers.get("wang_industry") or workbench.get("wang_agent") or {}
+    public_equity = layers.get("public_equity") or workbench.get("public_equity_agent") or {}
+    company = workbench.get("company") if isinstance(workbench.get("company"), dict) else {}
+    market_facts = _v3_market_facts(workbench)
+    caller = _v3_llm_caller(research_model_tier) if _v3_llm_enabled() else None
+    try:
+        upstream_trace = workbench.get("source_trace")
+        upstream_trace = upstream_trace if isinstance(upstream_trace, dict) else {}
+        v3_result = run_v3_pipeline(
+            company=company,
+            market_facts=market_facts,
+            wang=wang if isinstance(wang, dict) else {},
+            public_equity=public_equity if isinstance(public_equity, dict) else {},
+            trade_execution=execution_payload if isinstance(execution_payload, dict) else {},
+            better_opportunity_caller=caller,
+            trade_coach_caller=caller,
+        )
+    except Exception as exc:
+        errors = workbench.get("agent_errors")
+        errors = list(errors if isinstance(errors, list) else [])
+        errors.append(f"v3_pipeline_failed: {exc}")
+        workbench["agent_errors"] = errors
+        layers["trade_execution"] = execution_payload
+        workbench["research_layers"] = layers
+        return merge_default_workbench(
+            workbench,
+            code=str(company.get("code") or ""),
+            name=str(company.get("name") or ""),
+        )
+
+    for field in ("ai_final_answer", "answer_evidence", "research_layers", "source_trace"):
+        value = v3_result.get(field)
+        if isinstance(value, dict):
+            workbench[field] = value
+    trace = workbench.get("source_trace")
+    trace = dict(trace if isinstance(trace, dict) else {})
+    for path, entry in upstream_trace.items():
+        if path.startswith(
+            (
+                "research_layers.market_scout",
+                "research_layers.wang_industry",
+                "research_layers.public_equity",
+            )
+        ):
+            trace[path] = entry
+    workbench["source_trace"] = trace
+    workbench["schema_version"] = "yinghang-v3"
+    return merge_default_workbench(
+        workbench,
+        code=str(company.get("code") or ""),
+        name=str(company.get("name") or ""),
+    )
+
+
+def _v3_market_facts(workbench: dict[str, Any]) -> dict[str, Any]:
+    market_layer = {}
+    layers = workbench.get("research_layers")
+    if isinstance(layers, dict) and isinstance(layers.get("market_scout"), dict):
+        market_layer = dict(layers["market_scout"])
+    catalyst = workbench.get("market_catalyst")
+    if isinstance(catalyst, dict):
+        market_layer = {**catalyst, **market_layer}
+    return {
+        "company": workbench.get("company") if isinstance(workbench.get("company"), dict) else {},
+        "market_theme": market_layer.get("market_theme")
+        or market_layer.get("theme")
+        or workbench.get("market_hype_reason"),
+        "market_catalyst": market_layer.get("market_catalyst")
+        or market_layer.get("recent_catalysts")
+        or workbench.get("recent_catalysts"),
+        "industry_news": market_layer.get("industry_news") or workbench.get("news"),
+        "sector_strength": market_layer.get("sector_strength"),
+        "peer_snapshot": market_layer.get("peer_snapshot") or market_layer.get("peers"),
+        "as_of": market_layer.get("as_of"),
+    }
+
+
+def _v3_llm_caller(research_model_tier: str):
+    model = research_model_metadata(research_model_tier)["model"]
+
+    def call(system_prompt: str, user_prompt: str) -> dict[str, Any]:
+        return _call_json_agent(
+            system_prompt,
+            user_prompt,
+            model_override=model,
+            max_output_tokens=2200,
+            allow_web=False,
+        )
+
+    return call
+
+
+def _v3_llm_enabled() -> bool:
+    value = os.getenv("V3_COACH_LLM_ENABLED", "1").strip().lower()
+    return value not in {"0", "false", "no", "off"}
 
 
 def _elapsed_seconds(started: float) -> float:

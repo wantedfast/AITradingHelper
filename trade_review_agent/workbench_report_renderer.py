@@ -128,8 +128,8 @@ def render_workbench_report(data: dict[str, Any]) -> str:
         <h1>{escape(name)}</h1>
         <div class="ticker">{escape(subtitle)}</div>
         <div class="rating-row">
-          <span class="rating">产业评级 {escape(_s(hero.get("industry_rating"), "B"))}</span>
-          <span class="rating">投资评级 {escape(_s(hero.get("investment_rating"), "B"))}</span>
+          <span class="rating">产业评级 {escape(_s(hero.get("industry_rating"), "待验证"))}</span>
+          <span class="rating">投资评级 {escape(_s(hero.get("investment_rating"), "待验证"))}</span>
         </div>
         <div class="rating-row">{_tags(tags)}</div>
       </div>
@@ -146,7 +146,7 @@ def render_workbench_report(data: dict[str, Any]) -> str:
         <span class="pill">核心模块</span>
       </div>
       <div class="sankey">
-        <div class="source-box"><strong>{escape(_s(profit.get("value_pool"), "价值池"))}</strong><span>价值池 100%</span></div>
+        <div class="source-box"><strong>{escape(_s(profit.get("value_pool"), "价值池待验证"))}</strong></div>
         <div class="flow-list">{_profit_rows(profit_items)}</div>
         <div class="target-box"><span>高亮位置</span><strong>{escape(name)}</strong><p class="muted">{escape(_s(profit.get("company_position"), ""))}<br>{escape(_s(profit.get("why_profit_flows_here"), ""))}</p></div>
       </div>
@@ -167,7 +167,7 @@ def render_workbench_report(data: dict[str, Any]) -> str:
       </div>
       <div class="expect-grid">
         <div class="expect-box"><h3>市场认为</h3><ul>{_li(_list(gap.get("market_believes")))}</ul></div>
-        <div class="gap-score"><div><b>{_int(gap.get("gap_score"), 50)}</b><span>预期差</span></div></div>
+        <div class="gap-score"><div><b>{_score_text(gap.get("gap_score"))}</b><span>预期差</span></div></div>
         <div class="expect-box"><h3>实际情况</h3><ul>{_li(_list(gap.get("analyst_view")))}</ul></div>
       </div>
     </section>
@@ -209,11 +209,18 @@ def _claims(items: list[Any]) -> str:
 def _profit_rows(items: list[Any]) -> str:
     rows = []
     if not items:
-        items = [{"name": "待验证", "share_pct": 50, "highlight": True}]
+        return '<p class="muted">待验证</p>'
     for item in items:
         item = _d(item)
-        pct = max(2, min(100, _num(item.get("share_pct"), 10)))
+        pct = _optional_num(item.get("share_pct"))
         cls = "flow highlight" if item.get("highlight") else "flow"
+        if pct is None:
+            rows.append(
+                f'<div class="{cls}"><span>{escape(_s(item.get("name"), "环节"))}</span>'
+                '<div class="bar"></div><b>待验证</b></div>'
+            )
+            continue
+        pct = max(0, min(100, pct))
         rows.append(
             f'<div class="{cls}"><span>{escape(_s(item.get("name"), "环节"))}</span><div class="bar"><div class="fill" style="width:{pct:.1f}%"></div></div><b>{pct:.0f}%</b></div>'
         )
@@ -223,10 +230,15 @@ def _profit_rows(items: list[Any]) -> str:
 def _logic_cards(items: list[Any]) -> str:
     rows = []
     if not items:
-        items = [{"node": "逻辑待验证", "certainty_pct": 50}]
+        return '<article class="logic-card"><h3>尚未生成</h3><b>待验证</b></article>'
     for item in items:
         item = _d(item)
-        rows.append(f'<article class="logic-card"><h3>{escape(_s(item.get("node"), "逻辑节点"))}</h3><b>{_int(item.get("certainty_pct"), 50)}%</b></article>')
+        certainty = _optional_num(item.get("certainty_pct"))
+        certainty_text = f"{max(0, min(100, certainty)):.0f}%" if certainty is not None else "待验证"
+        rows.append(
+            f'<article class="logic-card"><h3>{escape(_s(item.get("node"), "逻辑节点"))}</h3>'
+            f"<b>{certainty_text}</b></article>"
+        )
     return "".join(rows)
 
 
@@ -281,3 +293,17 @@ def _num(value: Any, fallback: float) -> float:
 
 def _int(value: Any, fallback: int) -> int:
     return int(round(_num(value, fallback)))
+
+
+def _optional_num(value: Any) -> float | None:
+    if value in (None, "", [], {}, "missing", "pending", "pending verification", "待验证", "尚未生成"):
+        return None
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _score_text(value: Any) -> str:
+    score = _optional_num(value)
+    return f"{score:.0f}" if score is not None else "待验证"

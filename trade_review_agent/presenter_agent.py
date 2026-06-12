@@ -42,6 +42,21 @@ def build_presenter_fallback_data(
     analysis: dict[str, Any],
     trade_frame: pd.DataFrame,
 ) -> dict[str, Any]:
+    return _build_truthful_presenter_payload(
+        workbench=workbench,
+        profile=profile,
+        analysis=analysis,
+        trade_frame=trade_frame,
+    )
+
+
+def _build_truthful_presenter_payload(
+    *,
+    workbench: dict[str, Any],
+    profile: IndustryProfile,
+    analysis: dict[str, Any],
+    trade_frame: pd.DataFrame,
+) -> dict[str, Any]:
     workbench = _dict(workbench)
     company = _dict(workbench.get("company"))
     hero = _dict(workbench.get("hero"))
@@ -50,16 +65,16 @@ def build_presenter_fallback_data(
     action = _dict(workbench.get("action"))
     trade = _dict(workbench.get("trade_review"))
     memos = _dict(workbench.get("deep_memos"))
-    wang_memo = _first(memos.get("wang"), _dict(workbench.get("wang_agent")).get("deep_memo"), profile.wang_investor_report, profile.industry_judgment)
-    public_memo = _first(memos.get("public_equity"), _dict(workbench.get("public_equity_agent")).get("deep_memo"), profile.public_equity_report, profile.valuation_odds)
+    wang_memo = _first(memos.get("wang"), _dict(workbench.get("wang_agent")).get("deep_memo"))
+    public_memo = _first(memos.get("public_equity"), _dict(workbench.get("public_equity_agent")).get("deep_memo"))
     memo_conclusion = _memo_conclusion(public_memo)
 
     name = _first(company.get("name"), profile.name, "未识别公司")
     code = _first(company.get("code"), profile.code, "")
-    theme = _first_non_pending(company.get("theme"), workbench.get("traded_business_line"), profile.theme, "待验证")
-    node = _first_non_pending(profit.get("company_position"), workbench.get("traded_business_line"), profile.node, company.get("sector"), "待验证")
-    claims = _meaningful_str_list(hero.get("claims")) or _split_claims(_first(memo_conclusion, profile.one_sentence_thesis, analysis.get("headline"), "研究结论待验证"))
-    tags = _meaningful_str_list(hero.get("tags")) or _meaningful_str_list(action.get("status_tags")) or _derive_tags(workbench, theme, node)
+    theme = _first_non_pending(company.get("theme"), workbench.get("traded_business_line"), "待验证")
+    node = _first_non_pending(profit.get("company_position"), workbench.get("traded_business_line"), company.get("sector"), "待验证")
+    claims = _meaningful_str_list(hero.get("claims")) or _split_claims(_first(memo_conclusion, "研究结论待验证"))
+    tags = _meaningful_str_list(hero.get("tags")) or _meaningful_str_list(action.get("status_tags"))
 
     data = {
         "company": {
@@ -72,8 +87,8 @@ def build_presenter_fallback_data(
         "hero": {
             "kicker": "这家公司值得研究吗？",
             "title": name,
-            "industry_rating": _first(hero.get("industry_rating"), "B"),
-            "investment_rating": _first(hero.get("investment_rating"), "B"),
+            "industry_rating": hero.get("industry_rating"),
+            "investment_rating": hero.get("investment_rating"),
             "tags": tags[:5],
             "claims": claims[:4],
             "note": "先看市场已经交易什么，再看哪些证据已经验证，最后列出下一步复查条件。",
@@ -82,28 +97,27 @@ def build_presenter_fallback_data(
             _dict(workbench.get("public_equity_agent")).get("one_sentence_conclusion"),
             memo_conclusion,
             claims[0] if claims else "",
-            profile.one_sentence_thesis,
             "结论待验证。",
         ),
         "profit_flow": {
             "title": "利润流向图",
-            "summary": _first(profit.get("summary"), profit.get("description"), "用资金流和利润池解释为什么是它，而不是只看财务指标。"),
-            "description": _first(profit.get("description"), profit.get("summary"), "用资金流和利润池解释为什么是它，而不是只看财务指标。"),
-            "value_pool": _first(profit.get("value_pool"), profile.core_driver, theme),
+            "summary": _first(profit.get("summary"), profit.get("description"), "利润流向待验证"),
+            "description": _first(profit.get("description"), profit.get("summary"), "利润流向待验证"),
+            "value_pool": profit.get("value_pool"),
             "items": _profit_items(profit, profile),
             "company_position": node,
-            "why_profit_flows_here": _first(profit.get("why_profit_flows_here"), profile.rerating_anchor, "利润能否流向公司仍需验证"),
+            "why_profit_flows_here": _first(profit.get("why_profit_flows_here"), "利润能否流向公司仍需验证"),
         },
         "logic_tree": _logic_tree(workbench, profile),
         "expectation_gap": {
             "market_believes": _str_list(gap.get("market_believes")) or [_first(workbench.get("what_market_is_pricing"), "市场共识待验证")],
-            "analyst_view": _str_list(gap.get("analyst_view")) or [_first(gap.get("underestimated"), profile.expectation_gap, "研究判断待验证")],
-            "gap_score": _num(gap.get("gap_score"), 50),
-            "underestimated": _first(gap.get("underestimated"), profile.rerating_anchor, "低估点待验证"),
+            "analyst_view": _str_list(gap.get("analyst_view")) or ["研究判断待验证"],
+            "gap_score": _optional_num(gap.get("gap_score")),
+            "underestimated": _first(gap.get("underestimated"), "低估点待验证"),
             "overestimated": _first(gap.get("overestimated"), "高估点待验证"),
         },
         "moat": {
-            "summary": _first(_dict(workbench.get("moat_radar")).get("explanation"), "; ".join(profile.barriers), "产业壁垒待验证"),
+            "summary": _first(_dict(workbench.get("moat_radar")).get("explanation"), "产业壁垒待验证"),
             "dimensions": _moat_dimensions(workbench, profile),
             "weakest_link": _first(workbench.get("weakest_link"), "最薄弱环节待验证"),
             "items": _moat_items(workbench, profile),
@@ -111,9 +125,9 @@ def build_presenter_fallback_data(
         "financial_validation": _str_list(_dict(workbench.get("public_equity_agent")).get("financial_validation"))
         or [_validation_text(item) for item in _list(workbench.get("validation_panel"))]
         or ["财务验证待补充"],
-        "valuation_odds": _first(workbench.get("valuation_odds"), profile.valuation_odds, "估值赔率待验证"),
-        "catalysts": _event_list(workbench.get("catalysts"), profile.catalysts, workbench.get("recent_catalysts")),
-        "disconfirming_signals": _risk_list(workbench.get("risks"), profile.disconfirming_signals, workbench.get("unknowns")),
+        "valuation_odds": _first(workbench.get("valuation_odds"), "估值赔率待验证"),
+        "catalysts": _event_list(workbench.get("catalysts"), [], workbench.get("recent_catalysts")),
+        "disconfirming_signals": _risk_list(workbench.get("risks"), [], workbench.get("unknowns")),
         "trade_review": {
             "return_pct": _num(trade.get("trade_return_pct"), analysis.get("return", 0)),
             "score": _num(trade.get("trade_score"), analysis.get("score", 0)),
@@ -123,10 +137,10 @@ def build_presenter_fallback_data(
             "rows": _trade_rows(trade_frame),
         },
         "next_action": {
-            "current_action": _first(action.get("current_action"), profile.position_sizing, "加入观察清单，优先验证催化剂和收入贡献"),
-            "suitable_for": _first(action.get("suitable_for"), profile.best_expression, "适合愿意继续验证产业证据和业绩兑现的投资者"),
+            "current_action": _first(action.get("current_action"), "下一步动作待验证"),
+            "suitable_for": _first(action.get("suitable_for"), "待验证"),
             "not_suitable_for": _first(action.get("not_suitable_for"), "不适合只按题材追高、但不验证收入贡献的交易"),
-            "recheck_conditions": _str_list(action.get("recheck_conditions")) or _str_list(profile.disconfirming_signals)[:4],
+            "recheck_conditions": _str_list(action.get("recheck_conditions")),
         },
         "deep_memos": {
             "wang": wang_memo,
@@ -142,6 +156,14 @@ def build_presenter_fallback_data(
         "news": _str_list(workbench.get("news")),
         "unknowns": _str_list(workbench.get("unknowns")),
         "agent_errors": _str_list(workbench.get("agent_errors")),
+        "ai_final_answer": _dict(workbench.get("ai_final_answer")),
+        "answer_evidence": _dict(workbench.get("answer_evidence")),
+        "research_layers": _dict(workbench.get("research_layers")),
+        "source_trace": _dict(workbench.get("source_trace")),
+        "presenter_provenance": {
+            "role": "expression_only",
+            "conclusion_policy": "copy_upstream_or_missing",
+        },
     }
     data.update(_expression_layer(data, workbench, analysis))
     return _normalize_presenter_data(data)
@@ -565,45 +587,42 @@ def _normalize_presenter_data(data: dict[str, Any], fallback: dict[str, Any] | N
     hero = normalized["hero"]
     hero["tags"] = _str_list(hero.get("tags"))[:5] or _str_list(_dict(fallback.get("hero")).get("tags"))[:5] or ["待验证"]
     hero["claims"] = _str_list(hero.get("claims"))[:4] or _str_list(_dict(fallback.get("hero")).get("claims"))[:4] or ["结论待验证"]
-    hero["industry_rating"] = _first(hero.get("industry_rating"), "B")
-    hero["investment_rating"] = _first(hero.get("investment_rating"), "B")
+    hero.update(
+        {
+            "industry_rating": hero.get("industry_rating"),
+            "investment_rating": hero.get("investment_rating"),
+        }
+    )
     hero["title"] = _first(hero.get("title"), company["name"])
     hero["kicker"] = _first(hero.get("kicker"), "这家公司值得研究吗？")
     hero["note"] = _first(hero.get("note"), "先验证市场叙事，再验证业务贡献。")
 
     normalized["one_sentence_conclusion"] = _first(normalized.get("one_sentence_conclusion"), hero["claims"][0])
-    normalized["logic_tree"] = _normalize_logic_tree(normalized.get("logic_tree"))
-    if not normalized["logic_tree"]:
-        normalized["logic_tree"] = [
-            {"node": company["theme"], "certainty_pct": 55, "explanation": "产业主线来自上游 memo 或市场催化剂，仍需继续验证。"},
-            {"node": company["node"], "certainty_pct": 50, "explanation": "公司所处环节需要结合订单、收入和毛利率复查。"},
-        ]
+    _set_presenter_field(normalized, "logic_tree", _normalize_logic_tree(normalized.get("logic_tree")))
     profit = normalized["profit_flow"]
     profit["title"] = _first(profit.get("title"), "利润流向图")
     profit["summary"] = _first(profit.get("summary"), profit.get("description"), "利润流向仍需结合订单、收入和毛利率验证。")
     profit["description"] = _first(profit.get("description"), profit.get("summary"), "利润流向仍需结合订单、收入和毛利率验证。")
-    profit["value_pool"] = _first(profit.get("value_pool"), company["theme"])
-    profit["company_position"] = _first(profit.get("company_position"), company["node"])
+    profit["value_pool"] = profit.get("value_pool")
+    profit["company_position"] = profit.get("company_position")
     profit["why_profit_flows_here"] = _first(profit.get("why_profit_flows_here"), "利润是否流向公司仍需验证。")
     profit["items"] = _normalize_profit_items(profit.get("items"))
-    if not profit["items"]:
-        profit["items"] = [{"name": company["node"], "share_pct": 50, "highlight": True}]
     normalized["expectation_gap"]["market_believes"] = _str_list(normalized["expectation_gap"].get("market_believes")) or ["市场观点待验证"]
     normalized["expectation_gap"]["analyst_view"] = _str_list(normalized["expectation_gap"].get("analyst_view")) or ["研究判断待验证"]
-    normalized["expectation_gap"]["gap_score"] = _num(normalized["expectation_gap"].get("gap_score"), 50)
+    normalized["expectation_gap"]["gap_score"] = _optional_num(normalized["expectation_gap"].get("gap_score"))
     normalized["expectation_gap"]["underestimated"] = _first(normalized["expectation_gap"].get("underestimated"), "低估点待验证")
     normalized["expectation_gap"]["overestimated"] = _first(normalized["expectation_gap"].get("overestimated"), "高估点待验证")
     normalized["moat"]["summary"] = _first(normalized["moat"].get("summary"), "产业壁垒待验证")
-    normalized["moat"]["dimensions"] = _str_list(normalized["moat"].get("dimensions"))[:6] or _str_list(normalized["moat"].get("items"))[:6] or ["壁垒维度待验证"]
+    normalized["moat"]["dimensions"] = _str_list(normalized["moat"].get("dimensions"))[:6]
     normalized["moat"]["weakest_link"] = _first(normalized["moat"].get("weakest_link"), "最薄弱环节待验证")
-    normalized["moat"]["items"] = _str_list(normalized["moat"].get("items"))[:6] or normalized["moat"]["dimensions"]
-    normalized["financial_validation"] = _str_list(normalized.get("financial_validation"))[:6] or ["财务验证待补充"]
+    normalized["moat"]["items"] = _str_list(normalized["moat"].get("items"))[:6]
+    normalized["financial_validation"] = _str_list(normalized.get("financial_validation"))[:6]
     normalized["catalysts"] = _str_list(normalized.get("catalysts"))[:8]
-    normalized["disconfirming_signals"] = _str_list(normalized.get("disconfirming_signals"))[:8] or ["反证信号待补充"]
+    normalized["disconfirming_signals"] = _str_list(normalized.get("disconfirming_signals"))[:8]
     normalized["next_action"]["current_action"] = _first(normalized["next_action"].get("current_action"), "加入观察清单，继续验证")
     normalized["next_action"]["suitable_for"] = _first(normalized["next_action"].get("suitable_for"), "适合愿意继续验证证据的投资者")
     normalized["next_action"]["not_suitable_for"] = _first(normalized["next_action"].get("not_suitable_for"), "不适合只按题材追高的交易")
-    normalized["next_action"]["recheck_conditions"] = _str_list(normalized["next_action"].get("recheck_conditions"))[:6] or ["复查订单、收入贡献和毛利率变化"]
+    normalized["next_action"]["recheck_conditions"] = _str_list(normalized["next_action"].get("recheck_conditions"))[:6]
     normalized["deep_memos"]["wang"] = _first(_dict(fallback.get("deep_memos")).get("wang"), normalized["deep_memos"].get("wang"), "")
     normalized["deep_memos"]["public_equity"] = _first(_dict(fallback.get("deep_memos")).get("public_equity"), normalized["deep_memos"].get("public_equity"), "")
     normalized["market_catalyst"] = _dict(normalized.get("market_catalyst"))
@@ -623,6 +642,10 @@ def _normalize_presenter_data(data: dict[str, Any], fallback: dict[str, Any] | N
 
 
 def _expression_layer(data: dict[str, Any], workbench: dict[str, Any], analysis: dict[str, Any]) -> dict[str, Any]:
+    return _build_expression_projection(data, workbench, analysis)
+
+
+def _build_expression_projection(data: dict[str, Any], workbench: dict[str, Any], analysis: dict[str, Any]) -> dict[str, Any]:
     company = _dict(data.get("company"))
     claims = _str_list(_dict(data.get("hero")).get("claims"))
     profit = _dict(data.get("profit_flow"))
@@ -641,7 +664,7 @@ def _expression_layer(data: dict[str, Any], workbench: dict[str, Any], analysis:
                 "title": f"核心判断 {idx + 1}",
                 "claim": claim,
                 "evidence": _first(financial[idx] if idx < len(financial) else "", "证据待验证"),
-                "confidence_pct": max(35, 80 - idx * 8),
+                "confidence_pct": None,
                 "risk": _first(risks[idx] if idx < len(risks) else "", "风险待验证"),
             }
         )
@@ -745,12 +768,7 @@ def _presenter_max_output_tokens() -> int:
 
 
 def _profit_items(profit: dict[str, Any], profile: IndustryProfile) -> list[dict[str, Any]]:
-    items = _normalize_profit_items(profit.get("items"))
-    if items:
-        return items
-    labels = [profile.core_driver, profile.node, "财务验证"]
-    defaults = [40, 35, 25]
-    return [{"name": _first(label, f"环节 {idx + 1}"), "share_pct": defaults[idx], "highlight": idx == 1} for idx, label in enumerate(labels[:3])]
+    return _normalize_profit_items(profit.get("items"))
 
 
 def _normalize_profit_items(value: Any) -> list[dict[str, Any]]:
@@ -758,16 +776,12 @@ def _normalize_profit_items(value: Any) -> list[dict[str, Any]]:
     for item in _list(value):
         item = _dict(item)
         if item:
-            items.append({"name": _first(item.get("name"), "待验证环节"), "share_pct": _num(item.get("share_pct"), 0), "highlight": bool(item.get("highlight"))})
+            items.append({"name": _first(item.get("name"), "待验证环节"), "share_pct": _optional_num(item.get("share_pct")), "highlight": bool(item.get("highlight"))})
     return items
 
 
 def _logic_tree(workbench: dict[str, Any], profile: IndustryProfile) -> list[dict[str, Any]]:
-    items = _normalize_logic_tree(workbench.get("logic_tree"))
-    if items:
-        return items
-    labels = [title for _, title, _ in profile.chain_nodes] or [profile.core_driver, profile.node, "财务验证"]
-    return [{"node": _first(label, "逻辑节点"), "certainty_pct": max(40, 85 - idx * 10), "explanation": "该节点来自产业链 memo 或 deterministic fallback，仍需证据复查。"} for idx, label in enumerate(labels[:5])]
+    return _normalize_logic_tree(workbench.get("logic_tree"))
 
 
 def _normalize_logic_tree(value: Any) -> list[dict[str, Any]]:
@@ -775,7 +789,7 @@ def _normalize_logic_tree(value: Any) -> list[dict[str, Any]]:
     for item in _list(value):
         item = _dict(item)
         if item:
-            items.append({"node": _first(item.get("node"), "逻辑节点"), "certainty_pct": _num(item.get("certainty_pct"), 50), "explanation": _first(item.get("explanation"), "该节点仍需结合证据验证。")})
+            items.append({"node": _first(item.get("node"), "逻辑节点"), "certainty_pct": _optional_num(item.get("certainty_pct")), "explanation": _first(item.get("explanation"), "该节点仍需结合证据验证。")})
     return items[:6]
 
 
@@ -787,7 +801,7 @@ def _moat_items(workbench: dict[str, Any], profile: IndustryProfile) -> list[str
         item = _dict(item)
         if item:
             rows.append(f"{_first(item.get('name'), '壁垒')}: 公司 {item.get('company', '待验证')} / 行业 {item.get('average', '待验证')}")
-    return rows or _str_list(profile.barriers)[:5] or ["产业壁垒待验证"]
+    return rows
 
 
 def _moat_dimensions(workbench: dict[str, Any], profile: IndustryProfile) -> list[str]:
@@ -797,7 +811,7 @@ def _moat_dimensions(workbench: dict[str, Any], profile: IndustryProfile) -> lis
         item = _dict(item)
         if item:
             rows.append(_first(item.get("name"), "壁垒维度"))
-    return rows or _str_list(profile.barriers)[:5] or ["壁垒维度待验证"]
+    return rows
 
 
 def _event_list(value: Any, profile_items: Any, recent: Any = None) -> list[str]:
@@ -964,6 +978,19 @@ def _num(value: Any, fallback: float) -> float:
         return float(value)
     except Exception:
         return float(fallback)
+
+
+def _optional_num(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _set_presenter_field(target: dict[str, Any], key: str, value: Any) -> None:
+    target[key] = value
 
 
 def _truncate(text: Any, limit: int) -> str:

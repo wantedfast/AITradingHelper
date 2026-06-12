@@ -2,7 +2,22 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { ArrowLeft, ExternalLink, FileText, Loader2, LockKeyhole } from "lucide-react";
+import {
+  ArrowLeft,
+  BrainCircuit,
+  ChevronDown,
+  CircleAlert,
+  Compass,
+  ExternalLink,
+  FileText,
+  Loader2,
+  LockKeyhole,
+  RefreshCcw,
+  Route,
+  Sparkles,
+  Target,
+  TrendingUp,
+} from "lucide-react";
 
 type ReviewReportPageProps = {
   params: {
@@ -11,6 +26,29 @@ type ReviewReportPageProps = {
 };
 
 type PresenterData = {
+  schema_version?: string;
+  ai_final_answer?: {
+    score?: number | null;
+    verdict?: string;
+    better_choice?: string;
+    main_reason?: string;
+    mistake_source?: string;
+    next_action?: string;
+  };
+  answer_evidence?: {
+    why_stock_moved?: Record<string, unknown>;
+    investment_thesis?: Record<string, unknown>;
+    better_candidates?: unknown[];
+    mistake_diagnosis?: Record<string, unknown>;
+    future_rules?: string[];
+  };
+  research_layers?: {
+    market_scout?: Record<string, unknown>;
+    wang_industry?: Record<string, unknown>;
+    public_equity?: Record<string, unknown>;
+    trade_execution?: Record<string, unknown>;
+  };
+  source_trace?: Record<string, { source?: string; detail?: string } | string>;
   company?: {
     name?: string;
     code?: string;
@@ -277,6 +315,282 @@ function StructuredWorkbench({
   const profit = data.profit_flow || {};
   const gap = data.expectation_gap || {};
   const action = data.next_action || {};
+  const finalAnswer = data.ai_final_answer || {};
+  const evidence = data.answer_evidence || {};
+  const whyMoved = evidence.why_stock_moved || {};
+  const thesis = evidence.investment_thesis || {};
+  const diagnosis = evidence.mistake_diagnosis || {};
+  const answerScore = validScore(finalAnswer.score);
+  const betterCandidates = list(evidence.better_candidates).slice(0, 4);
+  const futureRules = meaningfulStrings(evidence.future_rules).slice(0, 6);
+  const whyMovedItems = evidenceRows(whyMoved);
+  const thesisItems = evidenceRows(thesis);
+  const diagnosisItems = evidenceRows(diagnosis);
+  const legacyWhyMoved = uniqueStrings([
+    ...meaningfulStrings(data.catalysts),
+    ...meaningfulStrings(gap.analyst_view),
+    ...meaningfulStrings(hero.claims),
+  ]).slice(0, 5);
+  const legacyThesis = uniqueStrings([
+    meaningfulText(profit.company_position),
+    meaningfulText(profit.why_profit_flows_here),
+    ...meaningfulStrings(data.moat?.items),
+  ]).slice(0, 5);
+  const legacyDiagnosis = uniqueStrings([
+    ...meaningfulStrings(data.disconfirming_signals),
+    meaningfulText(data.newbie_summary),
+  ]).slice(0, 5);
+  const coachRules = futureRules.length ? futureRules : meaningfulStrings(action.recheck_conditions).slice(0, 5);
+  const researchAvailable = Boolean(
+    data.research_layers &&
+      Object.values(data.research_layers).some((layer) => layer && Object.keys(layer).length > 0),
+  );
+
+  return (
+    <section className="structured-report-shell v3-report-shell">
+      <div className="structured-report-links v3-report-links">
+        <a href={presenterSrc} target="_blank" rel="noreferrer">Presenter JSON <ExternalLink /></a>
+        <a href={htmlSrc} target="_blank" rel="noreferrer">完整研究报告 <ExternalLink /></a>
+      </div>
+
+      <section className="v3-answer-hero">
+        <div className="v3-answer-heading">
+          <p className="structured-kicker"><Sparkles /> AI 最终结论</p>
+          <div className="v3-company-line">
+            <span>{company.code || "代码待验证"}</span>
+            <span>{isMeaningful(company.theme) ? company.theme : "主题待验证"}</span>
+          </div>
+          <h1>{company.name || hero.title || "标的公司待验证"}</h1>
+          <p className="v3-answer-verdict">{answerText(finalAnswer.verdict)}</p>
+          <div className="v3-answer-reason">
+            <span>核心原因</span>
+            <strong>{answerText(finalAnswer.main_reason, "待验证")}</strong>
+          </div>
+        </div>
+
+        <aside className="v3-score-panel">
+          <span>AI 评分</span>
+          <strong>{answerScore === null ? "尚未生成" : Math.round(answerScore)}</strong>
+          <small>{answerScore === null ? "等待 AI 教练完成综合判断" : "满分 100"}</small>
+        </aside>
+
+        <div className="v3-answer-grid">
+          <AnswerCard icon={<Target />} label="如果重来一次买谁" value={answerText(finalAnswer.better_choice)} />
+          <AnswerCard icon={<CircleAlert />} label="问题在哪里" value={answerText(finalAnswer.mistake_source)} />
+          <AnswerCard icon={<Compass />} label="下次怎么办" value={answerText(finalAnswer.next_action)} />
+        </div>
+      </section>
+
+      <AnswerSection
+        icon={<TrendingUp />}
+        eyebrow="WHY IT MOVED"
+        title="为什么会涨"
+        summary={answerText(pickMeaningful(whyMoved.market_narrative, data.presenter_copy?.expectation_gap), "待验证")}
+      >
+        <EvidenceList
+          items={whyMovedItems.length ? whyMovedItems : legacyWhyMoved}
+          empty="上涨原因尚未生成，当前缺少可验证的市场催化与行情证据。"
+          legacy={!whyMovedItems.length && legacyWhyMoved.length > 0}
+        />
+      </AnswerSection>
+
+      <AnswerSection
+        icon={<BrainCircuit />}
+        eyebrow="WHAT YOU BOUGHT"
+        title="真正买到什么"
+        summary={answerText(pickMeaningful(thesis.traded_business_line, profit.company_position), "待验证")}
+      >
+        <div className="v3-two-column">
+          <EvidenceList
+            title="投资逻辑"
+            items={thesisItems.length ? thesisItems : legacyThesis}
+            empty="投资逻辑尚未生成，主营业务、利润流向与壁垒仍待验证。"
+            legacy={!thesisItems.length && legacyThesis.length > 0}
+          />
+          <EvidenceList
+            title="市场在定价什么"
+            items={meaningfulStrings([thesis.what_market_is_pricing, gap.underestimated, gap.overestimated])}
+            empty="市场定价结论待验证。"
+          />
+        </div>
+      </AnswerSection>
+
+      <AnswerSection
+        icon={<RefreshCcw />}
+        eyebrow="REPLAY"
+        title="如果重来一次"
+        summary={answerText(finalAnswer.better_choice)}
+      >
+        {betterCandidates.length ? (
+          <div className="v3-candidate-grid">
+            {betterCandidates.map((candidate, index) => (
+              <CandidateCard key={index} candidate={candidate} rank={index + 1} />
+            ))}
+          </div>
+        ) : (
+          <EmptyAnswer text="更优标的尚未生成。当前报告不能证明存在更好的替代公司。" />
+        )}
+      </AnswerSection>
+
+      <AnswerSection
+        icon={<CircleAlert />}
+        eyebrow="DIAGNOSIS"
+        title="问题在哪里"
+        summary={answerText(finalAnswer.mistake_source)}
+      >
+        <EvidenceList
+          items={diagnosisItems.length ? diagnosisItems : legacyDiagnosis}
+          empty="选股与执行问题尚未完成归因。"
+          legacy={!diagnosisItems.length && legacyDiagnosis.length > 0}
+        />
+        <TradeExecutionAdvicePanel tradeExecution={tradeExecution} />
+      </AnswerSection>
+
+      <AnswerSection
+        icon={<Route />}
+        eyebrow="AI TRADING COACH"
+        title="AI 交易教练"
+        summary={answerText(finalAnswer.next_action)}
+      >
+        <EvidenceList items={coachRules} empty="下一次可执行规则尚未生成。" />
+      </AnswerSection>
+
+      <details className="v3-research-disclosure">
+        <summary>
+          <span><FileText /> 完整研究层</span>
+          <small>{researchAvailable ? "查看 Agent 原始研究与旧版报告字段" : "研究层尚未生成"}</small>
+          <ChevronDown />
+        </summary>
+        <div className="v3-research-body">
+          <ResearchLayer title="Market Scout" data={data.research_layers?.market_scout} />
+          <ResearchLayer title="WANG Industry" data={data.research_layers?.wang_industry} />
+          <ResearchLayer title="Public Equity" data={data.research_layers?.public_equity} />
+          <ResearchLayer title="Trade Execution" data={data.research_layers?.trade_execution} />
+          {!researchAvailable && <EmptyAnswer text="V3 研究层尚未生成。可通过上方完整研究报告查看旧版 Presenter 内容。" />}
+        </div>
+      </details>
+    </section>
+  );
+}
+
+function AnswerCard({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) {
+  return (
+    <article className="v3-answer-card">
+      <span>{icon}</span>
+      <div>
+        <small>{label}</small>
+        <strong>{value}</strong>
+      </div>
+    </article>
+  );
+}
+
+function AnswerSection({
+  icon,
+  eyebrow,
+  title,
+  summary,
+  children,
+}: {
+  icon: React.ReactNode;
+  eyebrow: string;
+  title: string;
+  summary: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="v3-answer-section">
+      <header>
+        <span className="v3-section-icon">{icon}</span>
+        <div>
+          <small>{eyebrow}</small>
+          <h2>{title}</h2>
+        </div>
+      </header>
+      <p className="v3-section-summary">{summary}</p>
+      <div className="v3-section-content">{children}</div>
+    </section>
+  );
+}
+
+function EvidenceList({
+  title,
+  items,
+  empty,
+  legacy = false,
+}: {
+  title?: string;
+  items: string[];
+  empty: string;
+  legacy?: boolean;
+}) {
+  if (!items.length) return <EmptyAnswer text={empty} />;
+  return (
+    <div className="v3-evidence-list">
+      {(title || legacy) && (
+        <div className="v3-evidence-title">
+          {title && <strong>{title}</strong>}
+          {legacy && <span>旧版报告依据</span>}
+        </div>
+      )}
+      <ul>
+        {items.map((item, index) => <li key={`${item}-${index}`}>{item}</li>)}
+      </ul>
+    </div>
+  );
+}
+
+function CandidateCard({ candidate, rank }: { candidate: unknown; rank: number }) {
+  const record = isPlainObject(candidate) ? candidate : {};
+  const name = answerText(pickMeaningful(record.name, record.stock_name, record.code, candidate));
+  const reason = answerText(
+    pickMeaningful(record.main_reason, record.reason, record.why_strong, record.moat_reason),
+    "待验证",
+  );
+  return (
+    <article className="v3-candidate-card">
+      <span>#{rank}</span>
+      <h3>{name}</h3>
+      <p>{reason}</p>
+    </article>
+  );
+}
+
+function EmptyAnswer({ text }: { text: string }) {
+  return (
+    <div className="v3-empty-answer">
+      <CircleAlert />
+      <span>{text}</span>
+    </div>
+  );
+}
+
+function ResearchLayer({ title, data }: { title: string; data?: Record<string, unknown> }) {
+  const rows = data ? evidenceRows(data).slice(0, 12) : [];
+  return (
+    <article className="v3-research-layer">
+      <h3>{title}</h3>
+      {rows.length ? <ul>{rows.map((row, index) => <li key={`${row}-${index}`}>{row}</li>)}</ul> : <p>尚未生成</p>}
+    </article>
+  );
+}
+
+function LegacyStructuredWorkbench({
+  data,
+  htmlSrc,
+  presenterSrc,
+  tradeExecution,
+}: {
+  data: PresenterData;
+  htmlSrc: string;
+  presenterSrc: string;
+  tradeExecution: TradeExecutionState;
+}) {
+  const company = data.company || {};
+  const hero = data.hero || {};
+  const profit = data.profit_flow || {};
+  const gap = data.expectation_gap || {};
+  const action = data.next_action || {};
   const claims = list(hero.claims).slice(0, 4);
   const tags = list(hero.tags).slice(0, 5);
   const profitItems = list(profit.items).slice(0, 6);
@@ -305,8 +619,8 @@ function StructuredWorkbench({
           <h1>{company.name || hero.title || "标的公司"}</h1>
           <h2>{company.subtitle || `${company.code || ""} · ${company.theme || "待验证"} / ${company.node || "待验证"}`}</h2>
           <div className="structured-rating-row">
-            <span>产业评级 {hero.industry_rating || "B"}</span>
-            <span>投资评级 {hero.investment_rating || "B"}</span>
+            <span>产业评级 {isMeaningful(hero.industry_rating) ? hero.industry_rating : "尚未生成"}</span>
+            <span>投资评级 {isMeaningful(hero.investment_rating) ? hero.investment_rating : "尚未生成"}</span>
           </div>
           <div className="structured-tag-row">
             {tags.map((tag) => <span key={tag}>{tag}</span>)}
@@ -376,10 +690,10 @@ function StructuredWorkbench({
           <span>因果链</span>
         </div>
         <div className="structured-logic-grid">
-          {(logicTree.length ? logicTree : [{ node: "逻辑待验证", certainty_pct: 50 }]).map((node, index) => (
+          {(logicTree.length ? logicTree : [{ node: "逻辑待验证", certainty_pct: undefined }]).map((node, index) => (
             <article key={`${node?.node || "logic"}-${index}`}>
               <h3>{node?.node || `节点 ${index + 1}`}</h3>
-              <b>{Math.round(number(node?.certainty_pct, 50))}%</b>
+              <b>{isMeaningful(node?.certainty_pct) ? `${Math.round(number(node?.certainty_pct, 0))}%` : "尚未生成"}</b>
             </article>
           ))}
         </div>
@@ -399,7 +713,7 @@ function StructuredWorkbench({
             <BulletList items={marketBelieves} fallback="市场共识待验证" />
           </article>
           <article className="structured-gap-score">
-            <b>{Math.round(number(gap.gap_score, 50))}</b>
+            <b>{isMeaningful(gap.gap_score) ? Math.round(number(gap.gap_score, 0)) : "尚未生成"}</b>
             <span>预期差</span>
           </article>
           <article>
@@ -729,6 +1043,64 @@ function BulletList({ items, fallback }: { items: string[]; fallback: string }) 
       {rows.map((item, index) => <li key={`${item}-${index}`}>{item}</li>)}
     </ul>
   );
+}
+
+const EMPTY_ANSWER_VALUES = new Set([
+  "",
+  "-",
+  "missing",
+  "pending",
+  "pending verification",
+  "尚未生成",
+  "待验证",
+]);
+
+function isMeaningful(value: unknown): boolean {
+  if (value === null || value === undefined) return false;
+  if (typeof value === "string") return !EMPTY_ANSWER_VALUES.has(value.trim().toLowerCase());
+  if (Array.isArray(value)) return value.some(isMeaningful);
+  if (isPlainObject(value)) return Object.values(value).some(isMeaningful);
+  return true;
+}
+
+function meaningfulText(value: unknown): string {
+  return isMeaningful(value) ? formatValue(value) : "";
+}
+
+function meaningfulStrings(value: unknown): string[] {
+  if (Array.isArray(value)) return value.flatMap((item) => meaningfulStrings(item));
+  const text = meaningfulText(value);
+  return text ? [text] : [];
+}
+
+function answerText(value: unknown, fallback = "尚未生成"): string {
+  return meaningfulText(value) || fallback;
+}
+
+function pickMeaningful(...values: unknown[]): unknown {
+  return values.find(isMeaningful);
+}
+
+function validScore(value: unknown): number | null {
+  if (!isMeaningful(value)) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 && parsed <= 100 ? parsed : null;
+}
+
+function evidenceRows(value: Record<string, unknown>): string[] {
+  return Object.entries(value)
+    .flatMap(([key, item]) => {
+      if (!isMeaningful(item)) return [];
+      const label = key
+        .replaceAll("_", " ")
+        .replace(/\b\w/g, (letter) => letter.toUpperCase());
+      return meaningfulStrings(item).map((text) => `${label}：${text}`);
+    })
+    .slice(0, 8);
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return Array.from(new Set(values.filter(Boolean)));
 }
 
 function list<T>(value?: T[] | T | null): T[] {
