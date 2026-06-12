@@ -178,7 +178,7 @@ def _market_facts() -> dict[str, Any]:
                 "name": "Peer A",
                 "metrics": {"order_growth_pct": 30, "return_20d_pct": 12},
                 "as_of": "2026-06-01",
-                "source": "market and filing data",
+                "source": "tencent_finance",
             }
         ],
     }

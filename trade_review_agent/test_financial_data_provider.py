@@ -126,7 +126,7 @@ class FinancialProviderFallbackTests(unittest.TestCase):
 
             fallback = FinancialDataProvider(
                 cache,
-                cache_ttl=pd.Timedelta(0).to_pytimedelta(),
+                cache_ttl=pd.Timedelta(microseconds=-1).to_pytimedelta(),
                 akshare_fetcher=lambda code: (_ for _ in ()).throw(TimeoutError("timed out")),
             )
             result = fallback.get_financials("600000")
