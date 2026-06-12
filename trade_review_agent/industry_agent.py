@@ -9,7 +9,7 @@ from typing import Any
 import pandas as pd
 
 from .config import load_env
-from .industry_profiles import IndustryProfile, get_profile
+from .industry_profiles import DEFAULT_PROFILE, IndustryProfile
 from .workbench_agents import normalize_research_model_tier, research_model_metadata, run_public_equity_workbench_agent, run_wang_workbench_agent
 from .workbench_composer import compose_workbench_data, profile_from_workbench
 from .workbench_context import build_stock_context
@@ -62,7 +62,7 @@ def get_workbench_profile_data(
         stock=stock,
         sector=sector,
         benchmark=benchmark,
-        profile=get_profile(code, name),
+        profile=_base_context_profile(code, name),
     )
     context["research_model_tier"] = research_model["tier"]
     context["research_model"] = research_model
@@ -194,6 +194,39 @@ def _refresh_enabled() -> bool:
 def _clean_code(code: str) -> str:
     digits = "".join(ch for ch in str(code or "") if ch.isdigit())
     return digits[-6:] if len(digits) >= 6 else str(code or "").strip()
+
+
+def _base_context_profile(code: str, name: str) -> IndustryProfile:
+    """Lightweight profile for context assembly; must not call AI recursively."""
+    return IndustryProfile(
+        code=code,
+        name=name or code or DEFAULT_PROFILE.name,
+        theme=DEFAULT_PROFILE.theme,
+        core_driver=DEFAULT_PROFILE.core_driver,
+        node=DEFAULT_PROFILE.node,
+        sector_symbol=DEFAULT_PROFILE.sector_symbol,
+        chain_nodes=DEFAULT_PROFILE.chain_nodes,
+        barriers=DEFAULT_PROFILE.barriers,
+        profit_levers=DEFAULT_PROFILE.profit_levers,
+        peers=DEFAULT_PROFILE.peers,
+        industry_judgment=DEFAULT_PROFILE.industry_judgment,
+        company_judgment=DEFAULT_PROFILE.company_judgment,
+        financial_validation=DEFAULT_PROFILE.financial_validation,
+        expectation_gap=DEFAULT_PROFILE.expectation_gap,
+        valuation_odds=DEFAULT_PROFILE.valuation_odds,
+        catalysts=DEFAULT_PROFILE.catalysts,
+        disconfirming_signals=DEFAULT_PROFILE.disconfirming_signals,
+        position_sizing=DEFAULT_PROFILE.position_sizing,
+        one_sentence_thesis=DEFAULT_PROFILE.one_sentence_thesis,
+        rerating_anchor=DEFAULT_PROFILE.rerating_anchor,
+        market_position=DEFAULT_PROFILE.market_position,
+        peer_ranking=DEFAULT_PROFILE.peer_ranking,
+        best_expression=DEFAULT_PROFILE.best_expression,
+        trading_implication=DEFAULT_PROFILE.trading_implication,
+        evidence=DEFAULT_PROFILE.evidence,
+        wang_investor_report=DEFAULT_PROFILE.wang_investor_report,
+        public_equity_report=DEFAULT_PROFILE.public_equity_report,
+    )
 
 
 def _load_cache() -> dict[str, Any]:

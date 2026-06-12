@@ -16,7 +16,7 @@ from plotly.subplots import make_subplots
 
 from .data_provider import MarketDataProvider
 from .industry_agent import get_workbench_profile_data
-from .industry_profiles import IndustryProfile, get_profile
+from .industry_profiles import DEFAULT_PROFILE, IndustryProfile, get_profile
 from .io import read_trade_file
 from .peer_snapshot import build_peer_snapshot
 from .schema import Trade
@@ -100,6 +100,39 @@ def _report_build_workers(max_workers: int | None, round_count: int) -> int:
     return max(1, min(int(value), round_count))
 
 
+def _base_report_profile(code: str, name: str) -> IndustryProfile:
+    """Non-AI profile used before the real workbench agents run."""
+    return IndustryProfile(
+        code=code,
+        name=name or code or DEFAULT_PROFILE.name,
+        theme=DEFAULT_PROFILE.theme,
+        core_driver=DEFAULT_PROFILE.core_driver,
+        node=DEFAULT_PROFILE.node,
+        sector_symbol=DEFAULT_PROFILE.sector_symbol,
+        chain_nodes=DEFAULT_PROFILE.chain_nodes,
+        barriers=DEFAULT_PROFILE.barriers,
+        profit_levers=DEFAULT_PROFILE.profit_levers,
+        peers=DEFAULT_PROFILE.peers,
+        industry_judgment=DEFAULT_PROFILE.industry_judgment,
+        company_judgment=DEFAULT_PROFILE.company_judgment,
+        financial_validation=DEFAULT_PROFILE.financial_validation,
+        expectation_gap=DEFAULT_PROFILE.expectation_gap,
+        valuation_odds=DEFAULT_PROFILE.valuation_odds,
+        catalysts=DEFAULT_PROFILE.catalysts,
+        disconfirming_signals=DEFAULT_PROFILE.disconfirming_signals,
+        position_sizing=DEFAULT_PROFILE.position_sizing,
+        one_sentence_thesis=DEFAULT_PROFILE.one_sentence_thesis,
+        rerating_anchor=DEFAULT_PROFILE.rerating_anchor,
+        market_position=DEFAULT_PROFILE.market_position,
+        peer_ranking=DEFAULT_PROFILE.peer_ranking,
+        best_expression=DEFAULT_PROFILE.best_expression,
+        trading_implication=DEFAULT_PROFILE.trading_implication,
+        evidence=DEFAULT_PROFILE.evidence,
+        wang_investor_report=DEFAULT_PROFILE.wang_investor_report,
+        public_equity_report=DEFAULT_PROFILE.public_equity_report,
+    )
+
+
 def _write_first_report_json_aliases(output_dir: Path, results: list[VisualReportResult]) -> None:
     if not results:
         return
@@ -146,7 +179,7 @@ def build_round_html(
 ) -> VisualReportResult:
     timings: dict[str, float] = {}
     output = Path(output)
-    profile = profile or get_profile(trade_round.code, trade_round.name)
+    profile = profile or _base_report_profile(trade_round.code, trade_round.name)
     start = trade_round.start_date - timedelta(days=25)
     end = max(trade_round.end_date + timedelta(days=20), trade_round.start_date + timedelta(days=45))
     provider = MarketDataProvider(cache_db=cache_db, adjust="qfq")
