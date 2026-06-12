@@ -18,6 +18,7 @@ from .data_provider import MarketDataProvider
 from .industry_agent import get_workbench_profile_data
 from .industry_profiles import IndustryProfile, get_profile
 from .io import read_trade_file
+from .peer_snapshot import build_peer_snapshot
 from .schema import Trade
 from .sector_strength import build_sector_signal
 from .trade_rounds import TradeRound, split_trade_rounds
@@ -250,13 +251,21 @@ def _write_trade_execution_artifacts(
 ) -> dict:
     started = time.perf_counter()
     try:
-        return build_trade_execution_chain(
+        payload = build_trade_execution_chain(
             provider=provider,
             profile=profile,
             trade_round=trade_round,
             output=output,
             prefetched_quotes=prefetched_quotes,
         )
+        context_path = output.with_suffix(".execution_data_context.json")
+        try:
+            context = json.loads(context_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            context = {}
+        payload["peer_snapshot"] = build_peer_snapshot(context)
+        write_workbench_json(output.with_suffix(".trade_execution.json"), payload)
+        return payload
     except Exception as exc:
         fallback = {
             "trade_timing": {"buy_points": [], "sell_points": []},
@@ -371,7 +380,7 @@ def _join_v3_pipeline(
     wang = layers.get("wang_industry") or workbench.get("wang_agent") or {}
     public_equity = layers.get("public_equity") or workbench.get("public_equity_agent") or {}
     company = workbench.get("company") if isinstance(workbench.get("company"), dict) else {}
-    market_facts = _v3_market_facts(workbench)
+    market_facts = _v3_market_facts(workbench, execution_payload=execution_payload)
     caller = _v3_llm_caller(research_model_tier) if _v3_llm_enabled() else None
     try:
         upstream_trace = workbench.get("source_trace")
@@ -384,6 +393,8 @@ def _join_v3_pipeline(
             trade_execution=execution_payload if isinstance(execution_payload, dict) else {},
             better_opportunity_caller=caller,
             trade_coach_caller=caller,
+            market_facts_source_trace=_v3_market_source_trace(upstream_trace),
+            trade_execution_provenance=_v3_execution_provenance(execution_payload),
         )
     except Exception as exc:
         errors = workbench.get("agent_errors")
@@ -422,7 +433,11 @@ def _join_v3_pipeline(
     )
 
 
-def _v3_market_facts(workbench: dict[str, Any]) -> dict[str, Any]:
+def _v3_market_facts(
+    workbench: dict[str, Any],
+    *,
+    execution_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     market_layer = {}
     layers = workbench.get("research_layers")
     if isinstance(layers, dict) and isinstance(layers.get("market_scout"), dict):
@@ -430,6 +445,10 @@ def _v3_market_facts(workbench: dict[str, Any]) -> dict[str, Any]:
     catalyst = workbench.get("market_catalyst")
     if isinstance(catalyst, dict):
         market_layer = {**catalyst, **market_layer}
+    execution = execution_payload if isinstance(execution_payload, dict) else {}
+    execution_peers = execution.get("peer_snapshot")
+    if not isinstance(execution_peers, list):
+        execution_peers = []
     return {
         "company": workbench.get("company") if isinstance(workbench.get("company"), dict) else {},
         "market_theme": market_layer.get("market_theme")
@@ -440,9 +459,58 @@ def _v3_market_facts(workbench: dict[str, Any]) -> dict[str, Any]:
         or workbench.get("recent_catalysts"),
         "industry_news": market_layer.get("industry_news") or workbench.get("news"),
         "sector_strength": market_layer.get("sector_strength"),
-        "peer_snapshot": market_layer.get("peer_snapshot") or market_layer.get("peers"),
+        "peer_snapshot": execution_peers
+        or market_layer.get("peer_snapshot")
+        or market_layer.get("peers"),
         "as_of": market_layer.get("as_of"),
     }
+
+
+def _v3_market_source_trace(upstream_trace: dict[str, Any]) -> dict[str, Any]:
+    aliases = {
+        "market_theme": (
+            "research_layers.market_scout.market_theme",
+            "research_layers.market_scout.theme",
+            "market_hype_reason",
+        ),
+        "market_catalyst": (
+            "research_layers.market_scout.market_catalyst",
+            "research_layers.market_scout.recent_catalysts",
+            "recent_catalysts",
+        ),
+        "industry_news": (
+            "research_layers.market_scout.industry_news",
+            "news",
+        ),
+        "sector_strength": ("research_layers.market_scout.sector_strength",),
+    }
+    result: dict[str, Any] = {}
+    for field, paths in aliases.items():
+        for path in paths:
+            entry = upstream_trace.get(path)
+            if isinstance(entry, dict) and entry.get("source"):
+                result[field] = entry
+                break
+    return result
+
+
+def _v3_execution_provenance(execution_payload: dict[str, Any]) -> dict[str, Any]:
+    provenance: dict[str, Any] = {}
+    embedded = execution_payload.get("source_trace")
+    if isinstance(embedded, dict):
+        provenance.update(embedded)
+    peers = execution_payload.get("peer_snapshot")
+    if not isinstance(peers, list):
+        return provenance
+    for index, peer in enumerate(peers):
+        if not isinstance(peer, dict):
+            continue
+        trace = peer.get("source_trace")
+        if not isinstance(trace, dict):
+            continue
+        for path, entry in trace.items():
+            provenance[f"peer_snapshot.{index}.{path}"] = entry
+    return provenance
 
 
 def _v3_llm_caller(research_model_tier: str):

@@ -1,5 +1,22 @@
 # V3 Cross-Agent Data Sufficiency and Lineage Audit
 
+## Remediation Status - 2026-06-12
+
+Completed in the first remediation batch:
+
+1. Market and execution provenance is propagated conservatively at field level.
+2. Public Equity cannot expose unsupported high-value fields as verified conclusions.
+3. Real peer quote returns can populate `peer_snapshot.metrics`.
+4. Semantic validator fixtures reject unsupported Public Equity conclusions and execution judgments labeled `real_data`.
+
+Remaining data gaps:
+
+- real financial statements and valuation series;
+- consensus expectations and revision history;
+- industry-specific operating KPIs;
+- structured raw news facts with durable citations;
+- calibrated WANG profit-share, moat, and certainty metrics.
+
 审计日期：2026-06-12
 
 ## Full Lineage

@@ -5,12 +5,15 @@ from pathlib import Path
 from typing import Any
 
 from .industry_profiles import IndustryProfile
+from .workbench_agents import apply_public_equity_sufficiency
 from .workbench_schema import merge_default_workbench
 
 
 def compose_workbench_data(context: dict[str, Any], wang: dict[str, Any], equity: dict[str, Any]) -> dict[str, Any]:
     wang = wang if isinstance(wang, dict) else {}
     equity = equity if isinstance(equity, dict) else {}
+    if _requires_public_equity_sufficiency(equity, context):
+        equity = apply_public_equity_sufficiency(equity, context)
     company = context.get("company", {}) if isinstance(context, dict) else {}
     action = _dict(equity.get("action"))
     code = str(company.get("code") or "").strip()
@@ -162,6 +165,7 @@ def _build_source_trace(
     market_scout = _dict(context.get("market_catalyst"))
     market_scout_source = _context_source(market_scout)
     action = _dict(equity.get("action"))
+    sufficiency = _dict(equity.get("data_sufficiency"))
     trace = {
         "schema_version": _trace("hardcode", "YingHang V3 contract identifier"),
         "ai_final_answer.score": _trace("missing", "Trade Coach Agent not implemented"),
@@ -223,7 +227,8 @@ def _build_source_trace(
         "evidence_quality": _trace(evidence_quality_source),
         "hero.industry_rating": _trace(wang_source if _has_value(wang.get("industry_rating")) else "missing"),
         "hero.investment_rating": _trace(
-            equity_source if _has_value(equity.get("investment_rating")) else "missing"
+            equity_source if _has_value(equity.get("investment_rating")) else "missing",
+            _sufficiency_detail(sufficiency, "investment_rating"),
         ),
         "hero.tags": _trace(
             _source_for_values(
@@ -240,7 +245,8 @@ def _build_source_trace(
         "moat_radar": _trace(wang_source if _has_value(wang.get("moat_radar")) else "missing"),
         "logic_tree": _trace(wang_source if _has_value(wang.get("logic_tree")) else "missing"),
         "expectation_gap": _trace(
-            equity_source if _has_value(equity.get("expectation_gap")) else "missing"
+            equity_source if _has_value(equity.get("expectation_gap")) else "missing",
+            _sufficiency_detail(sufficiency, "expectation_gap.gap_score"),
         ),
         "validation_panel": _trace(
             equity_source if _has_value(equity.get("validation_panel")) else "missing"
@@ -287,20 +293,72 @@ def _build_source_trace(
         "deep_memo",
     ):
         trace[f"research_layers.public_equity.{path}"] = _trace(
-            equity_source if _has_value(equity.get(path)) else "missing"
+            equity_source if _has_value(equity.get(path)) else "missing",
+            _sufficiency_detail(sufficiency, path),
         )
     _trace_research_leaves(trace, "market_scout", market_scout, market_scout_source)
     _trace_research_leaves(trace, "wang_industry", wang, wang_source)
     _trace_research_leaves(trace, "public_equity", equity, equity_source)
     trace["research_layers.public_equity.financial_validation"] = _trace(
         equity_source if _has_value(equity.get("financial_validation")) else "missing",
-        "No structured financial statements are present in stock_context",
+        _sufficiency_detail(sufficiency, "financial_validation")
+        or "No structured financial statements are present in stock_context",
     )
     trace["research_layers.public_equity.valuation_odds"] = _trace(
         equity_source if _has_value(equity.get("valuation_odds")) else "missing",
-        "No PE/PB or valuation percentile data are present in stock_context",
+        _sufficiency_detail(sufficiency, "valuation_odds")
+        or "No PE/PB or valuation percentile data are present in stock_context",
     )
+    for path in (
+        "investment_rating_hypothesis",
+        "financial_validation_hypothesis",
+        "valuation_odds_hypothesis",
+        "expectation_gap.gap_score_hypothesis",
+    ):
+        value = _path_value(equity, path)
+        trace[f"research_layers.public_equity.{path}"] = _trace(
+            equity_source if _has_value(value) else "missing",
+            "LLM hypothesis retained for review; not a verified conclusion",
+        )
     return trace
+
+
+def _requires_public_equity_sufficiency(equity: dict[str, Any], context: dict[str, Any]) -> bool:
+    if equity.get("agent_type") == "public_equity" or isinstance(equity.get("data_sufficiency"), dict):
+        return True
+    return any(
+        key in context
+        for key in (
+            "financials",
+            "financial_data",
+            "financial_statements",
+            "fundamentals",
+            "valuation",
+            "consensus",
+            "analyst_consensus",
+            "consensus_estimates",
+            "estimates",
+        )
+    )
+
+
+def _sufficiency_detail(sufficiency: dict[str, Any], field: str) -> str:
+    status = _dict(sufficiency.get("field_status")).get(field)
+    if status == "missing":
+        missing = ", ".join(str(item) for item in _list(sufficiency.get("missing_inputs"), []))
+        return f"Missing verified inputs: {missing or 'required source data'}"
+    if status == "verified_input":
+        return "Required structured input is present; conclusion remains LLM-generated"
+    return ""
+
+
+def _path_value(value: Any, path: str) -> Any:
+    current = value
+    for part in path.split("."):
+        if not isinstance(current, dict):
+            return None
+        current = current.get(part)
+    return current
 
 
 def _trace_research_leaves(

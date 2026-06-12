@@ -1,5 +1,21 @@
 # V3 Cross-Agent Coverage Audit
 
+## Remediation Status - 2026-06-12
+
+- **P0 fixed:** Market Scout and Trade Execution now inherit field-level provenance instead of defaulting mixed content to `real_data`.
+- **P0 contained:** Public Equity now clears unsupported rating, financial validation, valuation odds, and expectation-gap score when verified inputs are absent. Original LLM text is retained only as an explicit hypothesis.
+- **P1 partially fixed:** verified Trade Execution peer returns now feed `peer_snapshot.metrics`; Better Opportunity remains `missing` when no verified peer quote rows exist.
+- **Still open:** WANG fake-precision fields, raw financial/valuation providers, structured news facts, industry-specific KPI gates, and end-user provenance display.
+
+Implementation evidence:
+
+- `v3_market_scout.py:23`
+- `v3_pipeline.py:93`
+- `workbench_agents.py:902-1025`
+- `peer_snapshot.py:9`
+- `visual_report.py:469-518`
+- `validate_v3_contracts.py:364`
+
 审计日期：2026-06-12
 
 范围：Market Scout -> WANG -> Public Equity -> Better Opportunity -> Trade Execution -> Trade Coach -> Presenter/Frontend

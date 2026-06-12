@@ -122,6 +122,7 @@ def validate_v3_payload(payload: Any, *, label: str = "payload") -> list[Contrac
         issues.extend(_validate_source_trace(trace, label=label))
         issues.extend(_validate_trace_coverage(payload, trace, label=label))
         issues.extend(_validate_missing_semantics(payload, trace, label=label))
+        issues.extend(_validate_provenance_semantics(payload, trace, label=label))
 
     issues.extend(_validate_forbidden_defaults(payload, label=label))
     return issues
@@ -358,6 +359,129 @@ def _validate_missing_semantics(
                 )
             )
     return issues
+
+
+def _validate_provenance_semantics(
+    payload: dict[str, Any],
+    trace: dict[str, Any],
+    *,
+    label: str,
+) -> list[ContractIssue]:
+    issues: list[ContractIssue] = []
+    layers = payload.get("research_layers")
+    layers = layers if isinstance(layers, dict) else {}
+    public = layers.get("public_equity")
+    public = public if isinstance(public, dict) else {}
+    sufficiency = public.get("data_sufficiency")
+    sufficiency = sufficiency if isinstance(sufficiency, dict) else {}
+
+    protected_inputs = {
+        "investment_rating": ("financials", "valuation"),
+        "financial_validation": ("financials",),
+        "valuation_odds": ("valuation",),
+        "expectation_gap.gap_score": ("consensus",),
+    }
+    for relative_path, required_inputs in protected_inputs.items():
+        if not sufficiency or all(bool(sufficiency.get(item)) for item in required_inputs):
+            continue
+        value = _get_path(public, relative_path)
+        if not _is_missing_value(value):
+            issues.append(
+                ContractIssue(
+                    "V3-SEM-001",
+                    f"{label}.research_layers.public_equity.{relative_path}",
+                    f"verified conclusion requires {', '.join(required_inputs)} input data",
+                )
+            )
+
+    execution = layers.get("trade_execution")
+    execution = execution if isinstance(execution, dict) else {}
+    execution_prefix = "research_layers.trade_execution"
+    for relative_path, value in _walk_leaves(execution):
+        if _is_missing_value(value) or not _is_execution_judgment_path(relative_path):
+            continue
+        full_path = f"{execution_prefix}.{relative_path}"
+        if _trace_source(trace.get(full_path)) == "real_data":
+            issues.append(
+                ContractIssue(
+                    "V3-SEM-002",
+                    f"{label}.{full_path}",
+                    "execution judgment/rule output cannot be labeled real_data",
+                )
+            )
+
+    execution_layer_source = _trace_source(trace.get(execution_prefix))
+    execution_leaf_sources = {
+        _trace_source(entry)
+        for path, entry in trace.items()
+        if path.startswith(f"{execution_prefix}.") and isinstance(entry, dict)
+    }
+    if execution_layer_source == "real_data" and (
+        any(_is_execution_judgment_path(path) for path, _value in _walk_leaves(execution))
+        or any(source not in {None, "real_data", "missing"} for source in execution_leaf_sources)
+    ):
+        issues.append(
+            ContractIssue(
+                "V3-SEM-003",
+                f"{label}.{execution_prefix}",
+                "mixed Trade Execution output cannot be labeled real_data at layer level",
+            )
+        )
+
+    market = layers.get("market_scout")
+    market = market if isinstance(market, dict) else {}
+    for field in ("market_catalyst", "industry_news"):
+        path = f"research_layers.market_scout.{field}"
+        if _trace_source(trace.get(path)) == "real_data" and not _fact_rows_have_sources(market.get(field)):
+            issues.append(
+                ContractIssue(
+                    "V3-SEM-004",
+                    f"{label}.{path}",
+                    "real_data fact rows require explicit non-missing sources",
+                )
+            )
+    sector_path = "research_layers.market_scout.sector_strength"
+    sector = market.get("sector_strength")
+    if (
+        _trace_source(trace.get(sector_path)) == "real_data"
+        and isinstance(sector, dict)
+        and _is_missing_value(sector.get("source"))
+    ):
+        issues.append(
+            ContractIssue(
+                "V3-SEM-005",
+                f"{label}.{sector_path}",
+                "real_data sector strength requires an explicit source",
+            )
+        )
+    return issues
+
+
+def _is_execution_judgment_path(path: str) -> bool:
+    lowered = path.lower()
+    markers = (
+        "advice",
+        "analysis",
+        "grade",
+        "judgment",
+        "lesson",
+        "note",
+        "rating",
+        "recommendation",
+        "rule",
+        "score",
+        "verdict",
+    )
+    return any(marker in lowered for marker in markers)
+
+
+def _fact_rows_have_sources(value: Any) -> bool:
+    if not isinstance(value, list) or not value:
+        return False
+    for item in value:
+        if not isinstance(item, dict) or _is_missing_value(item.get("source")):
+            return False
+    return True
 
 
 def _validate_forbidden_defaults(payload: dict[str, Any], *, label: str) -> list[ContractIssue]:
@@ -641,6 +765,40 @@ def run_self_test() -> list[ContractIssue]:
                 "V3-SELF-003",
                 "self_test.presenter",
                 "Presenter fabrication fixture was not rejected",
+            )
+        )
+
+    semantic = _valid_fixture()
+    semantic["research_layers"]["public_equity"] = {
+        "investment_rating": "A",
+        "data_sufficiency": {"financials": False, "valuation": False, "consensus": False},
+    }
+    semantic["research_layers"]["trade_execution"] = {
+        "trade_execution_notes": {"buy_verdict": "good"}
+    }
+    semantic["source_trace"].update(
+        {
+            "research_layers.public_equity.investment_rating": {"source": "llm"},
+            "research_layers.public_equity.data_sufficiency.financials": {"source": "fallback"},
+            "research_layers.public_equity.data_sufficiency.valuation": {"source": "fallback"},
+            "research_layers.public_equity.data_sufficiency.consensus": {"source": "fallback"},
+            "research_layers.trade_execution.trade_execution_notes.buy_verdict": {
+                "source": "real_data"
+            },
+        }
+    )
+    semantic_issues = _validate_provenance_semantics(
+        semantic,
+        semantic["source_trace"],
+        label="self_test.semantic",
+    )
+    semantic_codes = {issue.code for issue in semantic_issues}
+    if not {"V3-SEM-001", "V3-SEM-002"}.issubset(semantic_codes):
+        failures.append(
+            ContractIssue(
+                "V3-SELF-005",
+                "self_test.semantic",
+                "semantic fixtures did not reject unsupported Public Equity or execution provenance",
             )
         )
 

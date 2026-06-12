@@ -1,5 +1,20 @@
 # V3 Cross-Agent Fake-AI Audit
 
+## Remediation Status - 2026-06-12
+
+The findings below preserve the audited pre-remediation behavior. Current status:
+
+| Finding | Status |
+|---|---|
+| FAI-01 Market Scout source laundering | Fixed with inherited field provenance and conservative fallback |
+| FAI-02 Trade Execution mixed-source laundering | Fixed at layer/leaf trace level; unknown fields remain fallback |
+| FAI-03 Public Equity conclusions without required data | Contained by data-sufficiency gates and hypothesis fields |
+| Missing production `peer_snapshot.metrics` | Partially fixed using verified peer quote returns only |
+| WANG unsupported numeric precision | Open |
+| News string-to-fact loss | Open |
+
+The validator now includes semantic checks (`V3-SEM-001` through `V3-SEM-005`) rather than checking source enums alone.
+
 审计日期：2026-06-12
 
 ## Definition

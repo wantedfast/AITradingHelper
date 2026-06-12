@@ -6,6 +6,7 @@ import re
 import urllib.error
 import urllib.request
 import time
+from copy import deepcopy
 from typing import Any
 
 
@@ -708,6 +709,19 @@ def run_public_equity_workbench_agent(context: dict[str, Any]) -> dict[str, Any]
     include_memo = _research_model_tier(context) == "better"
     system_prompt = _research_json_system_prompt("Public Equity", include_memo=include_memo)
     user_prompt = _public_research_json_user_prompt(context, include_memo=include_memo)
+    sufficiency = public_equity_data_sufficiency(context)
+    user_prompt = f"""{user_prompt}
+
+DATA SUFFICIENCY:
+{json.dumps(sufficiency, ensure_ascii=False)}
+
+Strict rules:
+- Without verified financials, financial_validation cannot contain verified conclusions.
+- Without verified valuation data, valuation_odds must be null or pending verification.
+- Without verified consensus data, expectation_gap.gap_score must be null.
+- Without both verified financials and valuation data, investment_rating must be null.
+- Unsupported narrative is a hypothesis pending verification, not a verified conclusion.
+"""
     started = time.perf_counter()
     payload = _call_json_agent(
         system_prompt,
@@ -716,7 +730,7 @@ def run_public_equity_workbench_agent(context: dict[str, Any]) -> dict[str, Any]
         max_output_tokens=_research_json_max_output_tokens(include_memo),
         allow_web=False,
     )
-    return _research_agent_payload(
+    result = _research_agent_payload(
         "public_equity",
         payload,
         model=model,
@@ -725,6 +739,7 @@ def run_public_equity_workbench_agent(context: dict[str, Any]) -> dict[str, Any]
         input_text=f"{system_prompt}\n{user_prompt}",
         seconds=time.perf_counter() - started,
     )
+    return apply_public_equity_sufficiency(result, context)
 
 
 def _research_json_system_prompt(agent_name: str, *, include_memo: bool) -> str:
@@ -863,6 +878,189 @@ def _research_agent_payload(
         data["memo"] = data["deep_memo"]
         data["raw_text"] = data["deep_memo"]
     return data
+
+
+_INSUFFICIENT_MARKERS = {
+    "",
+    "missing",
+    "none",
+    "null",
+    "n/a",
+    "na",
+    "unknown",
+    "pending",
+    "pending fetch",
+    "pending verification",
+    "待验证",
+    "待确认",
+    "待获取",
+    "暂无",
+    "未知",
+}
+
+
+def public_equity_data_sufficiency(context: dict[str, Any]) -> dict[str, Any]:
+    context = context if isinstance(context, dict) else {}
+    financial_sections = [
+        _mapping_values(
+            context.get("financials"),
+            (
+                "revenue",
+                "revenue_growth",
+                "profit",
+                "profit_growth",
+                "gross_margin",
+                "net_margin",
+                "roe",
+                "cash_flow",
+                "free_cash_flow",
+                "debt",
+            ),
+        ),
+        context.get("financial_data"),
+        context.get("financial_statements"),
+        context.get("fundamentals"),
+    ]
+    valuation_sections = [
+        context.get("valuation"),
+        _mapping_values(
+            context.get("financials"),
+            ("valuation", "pe", "pe_ttm", "pb", "ps", "ev_ebitda", "valuation_percentile"),
+        ),
+    ]
+    consensus_sections = [
+        context.get("consensus"),
+        context.get("analyst_consensus"),
+        context.get("consensus_estimates"),
+        context.get("estimates"),
+    ]
+    financials = any(_contains_verified_data(value) for value in financial_sections)
+    valuation = any(_contains_verified_data(value) for value in valuation_sections)
+    consensus = any(_contains_verified_data(value) for value in consensus_sections)
+    return {
+        "financials": financials,
+        "valuation": valuation,
+        "consensus": consensus,
+        "verified_inputs": [
+            name
+            for name, available in (
+                ("financials", financials),
+                ("valuation", valuation),
+                ("consensus", consensus),
+            )
+            if available
+        ],
+        "missing_inputs": [
+            name
+            for name, available in (
+                ("financials", financials),
+                ("valuation", valuation),
+                ("consensus", consensus),
+            )
+            if not available
+        ],
+    }
+
+
+def apply_public_equity_sufficiency(payload: object, context: dict[str, Any]) -> dict[str, Any]:
+    data = deepcopy(payload) if isinstance(payload, dict) else {}
+    if data.get("_agent_error") or data.get("agent_error"):
+        return data
+
+    sufficiency = public_equity_data_sufficiency(context)
+    financials = bool(sufficiency["financials"])
+    valuation = bool(sufficiency["valuation"])
+    consensus = bool(sufficiency["consensus"])
+    field_status: dict[str, str] = {}
+
+    if not financials:
+        _move_to_hypothesis(data, "financial_validation")
+        data["financial_validation"] = []
+        for item in data.get("validation_panel") or []:
+            if isinstance(item, dict) and str(item.get("status") or "").strip() in {"已验证", "verified"}:
+                item["status"] = "待确认"
+        field_status["financial_validation"] = "missing"
+    else:
+        field_status["financial_validation"] = "verified_input"
+
+    if not valuation:
+        _move_to_hypothesis(data, "valuation_odds")
+        data["valuation_odds"] = None
+        field_status["valuation_odds"] = "missing"
+    else:
+        field_status["valuation_odds"] = "verified_input"
+
+    gap = data.get("expectation_gap")
+    if isinstance(gap, dict):
+        if not consensus and _contains_verified_data(gap.get("gap_score")):
+            gap["gap_score_hypothesis"] = gap.get("gap_score")
+        if not consensus:
+            gap["gap_score"] = None
+            gap["verification_status"] = "hypothesis"
+            field_status["expectation_gap.gap_score"] = "missing"
+        else:
+            field_status["expectation_gap.gap_score"] = "verified_input"
+
+    if not (financials and valuation):
+        _move_to_hypothesis(data, "investment_rating")
+        data["investment_rating"] = None
+        field_status["investment_rating"] = "missing"
+    else:
+        field_status["investment_rating"] = "verified_input"
+
+    data["data_sufficiency"] = {
+        **sufficiency,
+        "field_status": field_status,
+        "narrative_status": (
+            "verified_inputs_available"
+            if financials and valuation and consensus
+            else "llm_hypothesis_pending_verification"
+        ),
+    }
+    return data
+
+
+def _move_to_hypothesis(data: dict[str, Any], field: str) -> None:
+    value = data.get(field)
+    if _contains_verified_data(value):
+        data[f"{field}_hypothesis"] = value
+
+
+def _mapping_values(value: Any, keys: tuple[str, ...]) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    return {key: value.get(key) for key in keys if key in value}
+
+
+def _contains_verified_data(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return True
+    if isinstance(value, str):
+        return value.strip().lower() not in _INSUFFICIENT_MARKERS
+    if isinstance(value, dict):
+        metadata_keys = {
+            "source",
+            "sources",
+            "provider",
+            "as_of",
+            "updated_at",
+            "unit",
+            "currency",
+            "status",
+            "note",
+        }
+        return any(
+            _contains_verified_data(item)
+            for key, item in value.items()
+            if str(key).strip().lower() not in metadata_keys
+        )
+    if isinstance(value, (list, tuple, set)):
+        return any(_contains_verified_data(item) for item in value)
+    return False
 
 
 def _research_metrics(input_text: str, output_text: str, *, seconds: float, api_usage: object = None) -> dict[str, Any]:

@@ -6,7 +6,7 @@ from typing import Any, Callable
 
 LLMCaller = Callable[[str, str], dict[str, Any]]
 MISSING = "missing"
-SOURCE_TYPES = {"real_data", "llm", "missing"}
+SOURCE_TYPES = {"real_data", "llm", "fallback", "hardcode", "missing"}
 
 _FORBIDDEN_CONCLUSION_FIELDS = {
     "ai_score",
@@ -24,15 +24,27 @@ def run_market_scout(
     facts: dict[str, Any],
     *,
     llm_caller: LLMCaller | None = None,
+    source_trace: dict[str, Any] | None = None,
+    provenance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Normalize market facts without producing an investment conclusion."""
 
     compact_facts = _compact_facts(facts)
+    fact_provenance = _merge_provenance(facts, source_trace, provenance)
     if llm_caller is None:
-        return normalize_market_scout(compact_facts, source="real_data")
+        return normalize_market_scout(
+            compact_facts,
+            source="fallback",
+            input_provenance=fact_provenance,
+        )
 
     raw = llm_caller(_system_prompt(), _user_prompt(compact_facts))
-    return normalize_market_scout(raw, source="llm", input_facts=compact_facts)
+    return normalize_market_scout(
+        raw,
+        source="llm",
+        input_facts=compact_facts,
+        input_provenance=fact_provenance,
+    )
 
 
 def normalize_market_scout(
@@ -40,11 +52,13 @@ def normalize_market_scout(
     *,
     source: str,
     input_facts: dict[str, Any] | None = None,
+    input_provenance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     data = payload if isinstance(payload, dict) else {}
     facts = input_facts or data
     _assert_no_investment_conclusions(data)
 
+    generated_fields: set[str] = set()
     result = {
         "market_theme": _text(data.get("market_theme")) or MISSING,
         "market_catalyst": _fact_list(data.get("market_catalyst")),
@@ -54,20 +68,36 @@ def normalize_market_scout(
         "unknowns": _str_list(data.get("unknowns")),
         "source_trace": {},
     }
+    if input_facts is not None:
+        for field in ("market_theme", "market_catalyst", "industry_news", "sector_strength", "peer_snapshot"):
+            if _has_value(result[field]):
+                generated_fields.add(field)
     if not result["market_catalyst"]:
         result["market_catalyst"] = _fact_list(facts.get("market_catalyst"))
+        generated_fields.discard("market_catalyst")
     if not result["industry_news"]:
         result["industry_news"] = _fact_list(facts.get("industry_news") or facts.get("news"))
+        generated_fields.discard("industry_news")
     if result["sector_strength"] == MISSING:
         result["sector_strength"] = _normalize_sector_strength(facts.get("sector_strength"))
+        generated_fields.discard("sector_strength")
     if not result["peer_snapshot"]:
         result["peer_snapshot"] = _normalize_peers(facts.get("peer_snapshot") or facts.get("peers"))
+        generated_fields.discard("peer_snapshot")
 
     normalized_source = source if source in SOURCE_TYPES else "missing"
     for field in ("market_theme", "market_catalyst", "industry_news", "sector_strength", "peer_snapshot"):
         value = result[field]
+        field_source = normalized_source
+        if field not in generated_fields:
+            field_source = _resolve_field_source(
+                field,
+                facts.get(field),
+                input_provenance or {},
+                default=normalized_source,
+            )
         result["source_trace"][field] = {
-            "source": normalized_source if _has_value(value) else "missing"
+            "source": field_source if _has_value(value) else "missing"
         }
     return result
 
@@ -102,6 +132,62 @@ def _compact_facts(facts: Any) -> dict[str, Any]:
         "peer_snapshot": data.get("peer_snapshot") or data.get("peers"),
         "as_of": data.get("as_of"),
     }
+
+
+def _merge_provenance(
+    facts: Any,
+    source_trace: dict[str, Any] | None,
+    provenance: dict[str, Any] | None,
+) -> dict[str, Any]:
+    data = facts if isinstance(facts, dict) else {}
+    merged: dict[str, Any] = {}
+    for candidate in (
+        data.get("source_trace"),
+        data.get("provenance"),
+        source_trace,
+        provenance,
+    ):
+        if isinstance(candidate, dict):
+            merged.update(candidate)
+    return merged
+
+
+def _resolve_field_source(
+    field: str,
+    value: Any,
+    provenance: dict[str, Any],
+    *,
+    default: str,
+) -> str:
+    for key in (
+        field,
+        f"market_scout.{field}",
+        f"research_layers.market_scout.{field}",
+    ):
+        source = _source_value(provenance.get(key))
+        if source:
+            return source
+    intrinsic = _intrinsic_fact_source(value)
+    if intrinsic:
+        return intrinsic
+    return default if default in SOURCE_TYPES else "fallback"
+
+
+def _source_value(value: Any) -> str:
+    source = value.get("source") if isinstance(value, dict) else value
+    return source if source in SOURCE_TYPES else ""
+
+
+def _intrinsic_fact_source(value: Any) -> str:
+    items = value if isinstance(value, list) else [value]
+    supported = [
+        item
+        for item in items
+        if isinstance(item, dict)
+        and _text(item.get("source") or item.get("url"))
+        and _text(item.get("source") or item.get("url")) != MISSING
+    ]
+    return "real_data" if supported and len(supported) == len(items) else ""
 
 
 def _system_prompt() -> str:

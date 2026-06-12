@@ -17,10 +17,17 @@ def run_v3_pipeline(
     market_scout_caller: LLMCaller | None = None,
     better_opportunity_caller: LLMCaller | None = None,
     trade_coach_caller: LLMCaller | None = None,
+    market_facts_source_trace: dict[str, Any] | None = None,
+    trade_execution_source_trace: dict[str, Any] | None = None,
+    trade_execution_provenance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run the standalone V3 stages without modifying the legacy report chain."""
 
-    market_scout = run_market_scout(market_facts, llm_caller=market_scout_caller)
+    market_scout = run_market_scout(
+        market_facts,
+        llm_caller=market_scout_caller,
+        source_trace=market_facts_source_trace,
+    )
     better = run_better_opportunity_agent(
         company=company,
         market_scout=market_scout,
@@ -36,11 +43,17 @@ def run_v3_pipeline(
         market_scout=market_scout,
         llm_caller=trade_coach_caller,
     )
+    execution_layer = _without_provenance(trade_execution)
+    execution_provenance = _merge_provenance(
+        trade_execution,
+        trade_execution_source_trace,
+        trade_execution_provenance,
+    )
     research_layers = {
         "market_scout": _without_key(market_scout, "source_trace"),
         "wang_industry": wang if isinstance(wang, dict) else {},
         "public_equity": public_equity if isinstance(public_equity, dict) else {},
-        "trade_execution": trade_execution if isinstance(trade_execution, dict) else {},
+        "trade_execution": execution_layer,
     }
     return {
         "schema_version": "yinghang-v3-pipeline",
@@ -52,6 +65,7 @@ def run_v3_pipeline(
             research_layers=research_layers,
             better=better,
             coach=coach,
+            trade_execution_provenance=execution_provenance,
         ),
     }
 
@@ -82,6 +96,7 @@ def _merge_source_trace(
     research_layers: dict[str, dict[str, Any]],
     better: dict[str, Any],
     coach: dict[str, Any],
+    trade_execution_provenance: dict[str, Any],
 ) -> dict[str, Any]:
     better_available = better.get("status") == "available"
     coach_available = coach.get("status") == "available"
@@ -89,9 +104,18 @@ def _merge_source_trace(
     public_equity = _dict(research_layers.get("public_equity"))
     trade_execution = _dict(research_layers.get("trade_execution"))
     answer_evidence = _dict(coach.get("answer_evidence"))
+    market_source = _aggregate_sources(
+        _dict(market_scout.get("source_trace")),
+        has_value=_has_market_facts(market_scout),
+    )
+    execution_source = _resolve_provenance_source(
+        trade_execution_provenance,
+        "",
+        default="fallback" if _has_value(trade_execution) else "missing",
+    )
     trace: dict[str, Any] = {
         "research_layers.market_scout": _source_entry(
-            "real_data" if _has_market_facts(market_scout) else "missing"
+            market_source
         ),
         "research_layers.wang_industry": _source_entry(
             "llm" if _has_value(wang) else "missing"
@@ -100,11 +124,11 @@ def _merge_source_trace(
             "llm" if _has_value(public_equity) else "missing"
         ),
         "research_layers.trade_execution": _source_entry(
-            "real_data" if _has_value(trade_execution) else "missing",
-            "Upstream execution layer may contain rule and LLM analysis.",
+            execution_source,
+            "Source is inherited from upstream provenance; unknown mixed output is fallback.",
         ),
         "answer_evidence.why_stock_moved": _source_entry(
-            "real_data" if _has_market_facts(market_scout) else "missing"
+            market_source
         ),
         "answer_evidence.investment_thesis": _source_entry(
             "llm"
@@ -146,10 +170,14 @@ def _merge_source_trace(
         trace,
         "research_layers.trade_execution",
         trade_execution,
-        source_for_path=lambda _path: "real_data",
+        source_for_path=lambda path: _resolve_provenance_source(
+            trade_execution_provenance,
+            path,
+            default="fallback",
+        ),
     )
     evidence_sources = {
-        "why_stock_moved": "real_data",
+        "why_stock_moved": market_source,
         "investment_thesis": "llm",
         "better_candidates": "llm" if better_available else "missing",
         "mistake_diagnosis": "llm" if coach_available else "missing",
@@ -184,6 +212,57 @@ def _source_entry(source: str, detail: str = "") -> dict[str, str]:
     if detail:
         entry["detail"] = detail
     return entry
+
+
+def _merge_provenance(
+    payload: Any,
+    source_trace: dict[str, Any] | None,
+    provenance: dict[str, Any] | None,
+) -> dict[str, Any]:
+    data = payload if isinstance(payload, dict) else {}
+    merged: dict[str, Any] = {}
+    for candidate in (
+        data.get("source_trace"),
+        data.get("provenance"),
+        source_trace,
+        provenance,
+    ):
+        if isinstance(candidate, dict):
+            merged.update(candidate)
+    return merged
+
+
+def _resolve_provenance_source(
+    provenance: dict[str, Any],
+    relative_path: str,
+    *,
+    default: str,
+) -> str:
+    prefixes = ("", "trade_execution.", "research_layers.trade_execution.")
+    path_parts = relative_path.split(".") if relative_path else []
+    candidates: list[str] = []
+    for length in range(len(path_parts), -1, -1):
+        suffix = ".".join(path_parts[:length])
+        candidates.extend(f"{prefix}{suffix}".rstrip(".") for prefix in prefixes)
+    for key in candidates:
+        entry = provenance.get(key)
+        source = entry.get("source") if isinstance(entry, dict) else entry
+        if source in {"real_data", "llm", "fallback", "hardcode", "missing"}:
+            return source
+    return default
+
+
+def _aggregate_sources(field_trace: dict[str, Any], *, has_value: bool) -> str:
+    if not has_value:
+        return "missing"
+    sources = {
+        entry.get("source")
+        for entry in field_trace.values()
+        if isinstance(entry, dict) and entry.get("source") != "missing"
+    }
+    if len(sources) == 1:
+        return next(iter(sources))
+    return "fallback"
 
 
 def _trace_leaves(
@@ -223,3 +302,12 @@ def _trace_leaves(
 
 def _without_key(value: dict[str, Any], key: str) -> dict[str, Any]:
     return {item_key: item_value for item_key, item_value in value.items() if item_key != key}
+
+
+def _without_provenance(value: Any) -> dict[str, Any]:
+    data = value if isinstance(value, dict) else {}
+    return {
+        key: item
+        for key, item in data.items()
+        if key not in {"source_trace", "provenance"}
+    }
