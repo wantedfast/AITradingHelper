@@ -33,7 +33,7 @@ It does **not** receive:
 
 - financial statements or financial time series;
 - PE/PB/EV/EBITDA, valuation percentile, or market-cap data;
-- sell-side consensus, earnings forecasts, or estimate revisions;
+- sell-side consensus, earnings forecasts, or estimate revisions are intentionally not collected;
 - structured peer fundamentals or peer valuation;
 - ownership, cash-flow quality, balance-sheet, or segment data.
 

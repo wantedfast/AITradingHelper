@@ -2,13 +2,19 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from datetime import date
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
 from .trade_rounds import TradeRound
+from .financial_data_provider import FinancialDataProvider
 from .industry_coverage import build_industry_coverage
+from .valuation_data_provider import fetch_valuation_snapshot
 from .workbench_news import build_market_catalyst_context
+
+
+FINANCIAL_CACHE_PATH = Path(__file__).resolve().parents[1] / "work" / "real_trade_review_cache.sqlite"
 
 
 def build_stock_context(
@@ -22,6 +28,8 @@ def build_stock_context(
     benchmark: pd.DataFrame | None = None,
     profile: Any = None,
     company_metadata: dict[str, Any] | None = None,
+    financial_snapshot: dict[str, Any] | None = None,
+    valuation_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Compact facts passed to WANG/Public Equity workbench agents."""
     trades = []
@@ -75,6 +83,16 @@ def build_stock_context(
             value = company_metadata.get(field)
             if value not in (None, ""):
                 company[field] = value
+    valuation = (
+        dict(valuation_snapshot)
+        if isinstance(valuation_snapshot, dict)
+        else fetch_valuation_snapshot(code)
+    )
+    financial_data = (
+        dict(financial_snapshot)
+        if isinstance(financial_snapshot, dict)
+        else FinancialDataProvider(FINANCIAL_CACHE_PATH).get_financials(code)
+    )
 
     context = {
         "company": company,
@@ -97,13 +115,24 @@ def build_stock_context(
             "recent_benchmark_performance": _frame_snapshot(benchmark),
         },
         "financials": {
-            "revenue_growth": "pending fetch",
-            "profit_growth": "pending fetch",
-            "gross_margin": "pending fetch",
-            "valuation": "pending fetch",
-            "pe_ttm": None,
-            "pb": None,
+            "revenue": financial_data.get("revenue"),
+            "revenue_growth": financial_data.get("revenue_growth"),
+            "profit": financial_data.get("net_profit"),
+            "profit_growth": financial_data.get("profit_growth"),
+            "gross_margin": financial_data.get("gross_margin"),
+            "cash_flow": financial_data.get("operating_cash_flow"),
+            "free_cash_flow": financial_data.get("free_cash_flow"),
+            "debt": financial_data.get("total_liabilities"),
+            "debt_to_assets": financial_data.get("debt_to_assets"),
+            "roe": financial_data.get("roe"),
+            "pe_ttm": valuation.get("pe_ttm"),
+            "pb": valuation.get("pb"),
+            "ps": valuation.get("ps"),
+            "ev_ebitda": valuation.get("ev_ebitda"),
+            "valuation_percentile": valuation.get("pe_percentile"),
         },
+        "financial_data": financial_data,
+        "valuation": valuation,
         "market_catalyst": catalyst,
         "recent_catalysts": legacy_catalysts,
         "market_catalyst_facts": catalyst_facts,

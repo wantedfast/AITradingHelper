@@ -364,10 +364,6 @@ def _requires_public_equity_sufficiency(equity: dict[str, Any], context: dict[st
             "financial_statements",
             "fundamentals",
             "valuation",
-            "consensus",
-            "analyst_consensus",
-            "consensus_estimates",
-            "estimates",
         )
     )
 
@@ -379,6 +375,8 @@ def _sufficiency_detail(sufficiency: dict[str, Any], field: str) -> str:
         return f"Missing verified inputs: {missing or 'required source data'}"
     if status == "verified_input":
         return "Required structured input is present; conclusion remains LLM-generated"
+    if status == "not_collected":
+        return "Consensus estimates are intentionally not collected; numeric expectation gap is withheld"
     return ""
 
 

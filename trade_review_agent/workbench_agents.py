@@ -732,7 +732,7 @@ DATA SUFFICIENCY:
 Strict rules:
 - Without verified financials, financial_validation cannot contain verified conclusions.
 - Without verified valuation data, valuation_odds must be null or pending verification.
-- Without verified consensus data, expectation_gap.gap_score must be null.
+- No consensus-estimate provider is configured. expectation_gap.gap_score must be null.
 - Without both verified financials and valuation data, investment_rating must be null.
 - Unsupported narrative is a hypothesis pending verification, not a verified conclusion.
 """
@@ -1049,25 +1049,16 @@ def public_equity_data_sufficiency(context: dict[str, Any]) -> dict[str, Any]:
             ("valuation", "pe", "pe_ttm", "pb", "ps", "ev_ebitda", "valuation_percentile"),
         ),
     ]
-    consensus_sections = [
-        context.get("consensus"),
-        context.get("analyst_consensus"),
-        context.get("consensus_estimates"),
-        context.get("estimates"),
-    ]
     financials = any(_contains_verified_data(value) for value in financial_sections)
     valuation = any(_contains_verified_data(value) for value in valuation_sections)
-    consensus = any(_contains_verified_data(value) for value in consensus_sections)
     return {
         "financials": financials,
         "valuation": valuation,
-        "consensus": consensus,
         "verified_inputs": [
             name
             for name, available in (
                 ("financials", financials),
                 ("valuation", valuation),
-                ("consensus", consensus),
             )
             if available
         ],
@@ -1076,7 +1067,6 @@ def public_equity_data_sufficiency(context: dict[str, Any]) -> dict[str, Any]:
             for name, available in (
                 ("financials", financials),
                 ("valuation", valuation),
-                ("consensus", consensus),
             )
             if not available
         ],
@@ -1091,7 +1081,6 @@ def apply_public_equity_sufficiency(payload: object, context: dict[str, Any]) ->
     sufficiency = public_equity_data_sufficiency(context)
     financials = bool(sufficiency["financials"])
     valuation = bool(sufficiency["valuation"])
-    consensus = bool(sufficiency["consensus"])
     field_status: dict[str, str] = {}
 
     if not financials:
@@ -1113,14 +1102,11 @@ def apply_public_equity_sufficiency(payload: object, context: dict[str, Any]) ->
 
     gap = data.get("expectation_gap")
     if isinstance(gap, dict):
-        if not consensus and _contains_verified_data(gap.get("gap_score")):
+        if _contains_verified_data(gap.get("gap_score")):
             gap["gap_score_hypothesis"] = gap.get("gap_score")
-        if not consensus:
-            gap["gap_score"] = None
-            gap["verification_status"] = "hypothesis"
-            field_status["expectation_gap.gap_score"] = "missing"
-        else:
-            field_status["expectation_gap.gap_score"] = "verified_input"
+        gap["gap_score"] = None
+        gap["verification_status"] = "not_quantified"
+        field_status["expectation_gap.gap_score"] = "not_collected"
 
     if not (financials and valuation):
         _move_to_hypothesis(data, "investment_rating")
@@ -1134,7 +1120,7 @@ def apply_public_equity_sufficiency(payload: object, context: dict[str, Any]) ->
         "field_status": field_status,
         "narrative_status": (
             "verified_inputs_available"
-            if financials and valuation and consensus
+            if financials and valuation
             else "llm_hypothesis_pending_verification"
         ),
     }

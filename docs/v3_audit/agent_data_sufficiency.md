@@ -15,11 +15,20 @@ Completed in the first remediation batch:
 
 Remaining data gaps:
 
-- real financial statements and valuation series;
-- consensus expectations and revision history;
+- broader financial statement coverage when AKShare is unavailable;
+- consensus expectations are intentionally not collected; numeric expectation-gap scores remain null;
 - industry-specific operating KPIs;
 - structured raw news facts with durable citations;
 - calibrated WANG profit-share, moat, and certainty metrics.
+
+## Financial and valuation provider status
+
+- Financial statements now use an optional AKShare adapter with SQLite cache and field-level provenance.
+- Revenue, profit, gross margin, operating/free cash flow, liabilities, debt ratio, and ROE remain `None` when unavailable.
+- Valuation uses AKShare `stock_value_em` for PE(TTM), PB, PS, and historical percentiles.
+- AKShare `stock_zh_valuation_comparison_em` supplies EV/EBITDA when available.
+- Tencent Finance remains an injectable fallback. The verified Tencent integration currently exposes quotes/K-lines, not financial statements, so it is explicitly skipped by default.
+- Web-search protocols are reserved for both providers but are never invoked by the production pipeline.
 
 审计日期：2026-06-12
 

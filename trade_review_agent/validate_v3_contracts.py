@@ -380,7 +380,6 @@ def _validate_provenance_semantics(
         "investment_rating": ("financials", "valuation"),
         "financial_validation": ("financials",),
         "valuation_odds": ("valuation",),
-        "expectation_gap.gap_score": ("consensus",),
     }
     for relative_path, required_inputs in protected_inputs.items():
         if not sufficiency or all(bool(sufficiency.get(item)) for item in required_inputs):
@@ -914,7 +913,7 @@ def run_self_test() -> list[ContractIssue]:
     semantic = _valid_fixture()
     semantic["research_layers"]["public_equity"] = {
         "investment_rating": "A",
-        "data_sufficiency": {"financials": False, "valuation": False, "consensus": False},
+        "data_sufficiency": {"financials": False, "valuation": False},
     }
     semantic["research_layers"]["trade_execution"] = {
         "trade_execution_notes": {"buy_verdict": "good"}
@@ -933,7 +932,6 @@ def run_self_test() -> list[ContractIssue]:
             "research_layers.public_equity.investment_rating": {"source": "llm"},
             "research_layers.public_equity.data_sufficiency.financials": {"source": "fallback"},
             "research_layers.public_equity.data_sufficiency.valuation": {"source": "fallback"},
-            "research_layers.public_equity.data_sufficiency.consensus": {"source": "fallback"},
             "research_layers.trade_execution.trade_execution_notes.buy_verdict": {
                 "source": "real_data"
             },

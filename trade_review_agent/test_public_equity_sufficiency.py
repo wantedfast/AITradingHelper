@@ -58,7 +58,7 @@ class PublicEquitySufficiencyTests(unittest.TestCase):
         )
         self.assertIsNone(result["expectation_gap"]["gap_score"])
         self.assertEqual(82, result["expectation_gap"]["gap_score_hypothesis"])
-        self.assertEqual("hypothesis", result["expectation_gap"]["verification_status"])
+        self.assertEqual("not_quantified", result["expectation_gap"]["verification_status"])
         self.assertEqual("待确认", result["validation_panel"][0]["status"])
         self.assertEqual(
             "llm_hypothesis_pending_verification",
@@ -73,14 +73,18 @@ class PublicEquitySufficiencyTests(unittest.TestCase):
                 "pe_ttm": 18.4,
                 "pb": 2.1,
             },
-            "consensus": {"next_year_profit_growth": 15.0, "source": "analyst feed"},
         }
         result = apply_public_equity_sufficiency(LLM_OUTPUT, context)
 
         self.assertEqual("A", result["investment_rating"])
         self.assertEqual(LLM_OUTPUT["financial_validation"], result["financial_validation"])
         self.assertEqual(LLM_OUTPUT["valuation_odds"], result["valuation_odds"])
-        self.assertEqual(82, result["expectation_gap"]["gap_score"])
+        self.assertIsNone(result["expectation_gap"]["gap_score"])
+        self.assertEqual(82, result["expectation_gap"]["gap_score_hypothesis"])
+        self.assertEqual(
+            "not_collected",
+            result["data_sufficiency"]["field_status"]["expectation_gap.gap_score"],
+        )
         self.assertEqual(
             "verified_inputs_available",
             result["data_sufficiency"]["narrative_status"],
@@ -92,7 +96,6 @@ class PublicEquitySufficiencyTests(unittest.TestCase):
             {
                 "financial_data": {"source": "vendor", "status": "pending"},
                 "valuation": {"provider": "vendor", "as_of": "2026-06-12"},
-                "consensus": {"source": "analyst feed"},
             },
         )
 

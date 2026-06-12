@@ -104,5 +104,37 @@ class IndustryCoverageTests(unittest.TestCase):
         self.assertIn("regulatory_status", coverage["required_kpis"])
 
 
+    def test_stock_context_exposes_provider_snapshots(self) -> None:
+        with patch(
+            "trade_review_agent.workbench_context.build_market_catalyst_context",
+            return_value={"market_catalyst": [], "industry_news": []},
+        ):
+            result = build_stock_context(
+                code="000895",
+                name="Target",
+                financial_snapshot={
+                    "status": "partial",
+                    "provider": "akshare",
+                    "revenue_growth": 12.5,
+                    "operating_cash_flow": 150.0,
+                },
+                valuation_snapshot={
+                    "status": "available",
+                    "provider": "akshare.stock_value_em",
+                    "pe_ttm": 20.0,
+                    "pb": 2.0,
+                    "ps": 1.0,
+                    "ev_ebitda": 12.5,
+                    "pe_percentile": 80.0,
+                },
+            )
+
+        self.assertEqual(12.5, result["financials"]["revenue_growth"])
+        self.assertEqual(150.0, result["financials"]["cash_flow"])
+        self.assertEqual(20.0, result["financials"]["pe_ttm"])
+        self.assertEqual("akshare", result["financial_data"]["provider"])
+        self.assertEqual("akshare.stock_value_em", result["valuation"]["provider"])
+
+
 if __name__ == "__main__":
     unittest.main()

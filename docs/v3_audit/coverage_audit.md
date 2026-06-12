@@ -8,7 +8,7 @@
 - **Second batch complete:** WANG unsupported numeric fields are now gated and moved to hypotheses; structured catalyst/news facts retain `fact/date/source/source_type`.
 - **Still open after batch two:** raw financial/valuation providers, calibrated WANG datasets, industry-specific KPI gates, and end-user provenance display.
 - **Third batch complete:** final-answer dependencies are auditable, provenance is visible in the frontend, and conservative industry-family KPI coverage is attached to the research context.
-- **Still open after batch three:** actual financial/valuation/consensus providers and calibrated WANG datasets.
+- **Provider update:** AKShare-backed financial and valuation adapters are connected. Consensus estimates were removed from scope. Tencent financial/valuation support stays skipped until a verified structured endpoint is available; web search is reserved but disabled.
 
 Implementation evidence:
 
