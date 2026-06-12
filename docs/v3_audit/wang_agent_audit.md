@@ -1,5 +1,15 @@
 # WANG Agent Architecture Audit
 
+## Remediation Status - 2026-06-12
+
+The audit findings below preserve the behavior observed before remediation.
+
+- Unsupported profit shares, moat scores, industry averages, dimension scores, certainty percentages, and peer rankings are now withheld from formal fields when their required structured inputs are absent.
+- Original LLM values are retained only in explicit `*_hypothesis` fields.
+- WANG now exposes deterministic `data_sufficiency` and field-level provenance.
+- Semantic validator rules `V3-SEM-006` through `V3-SEM-009` reject reintroduction of unsupported formal numbers.
+- Still open: actual profit-pool data, peer moat samples, probability calibration, industry KPI adapters, and verified peer fundamentals.
+
 ## 0. Audit Scope And Verdict
 
 Audit target: current `feat/v3-schema` runtime code, not the previous audit document.

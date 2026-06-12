@@ -5,13 +5,15 @@ from pathlib import Path
 from typing import Any
 
 from .industry_profiles import IndustryProfile
-from .workbench_agents import apply_public_equity_sufficiency
+from .workbench_agents import apply_public_equity_sufficiency, apply_wang_sufficiency
 from .workbench_schema import merge_default_workbench
 
 
 def compose_workbench_data(context: dict[str, Any], wang: dict[str, Any], equity: dict[str, Any]) -> dict[str, Any]:
     wang = wang if isinstance(wang, dict) else {}
     equity = equity if isinstance(equity, dict) else {}
+    if _requires_wang_sufficiency(wang, context):
+        wang = apply_wang_sufficiency(wang, context)
     if _requires_public_equity_sufficiency(equity, context):
         equity = apply_public_equity_sufficiency(equity, context)
     company = context.get("company", {}) if isinstance(context, dict) else {}
@@ -165,7 +167,8 @@ def _build_source_trace(
     market_scout = _dict(context.get("market_catalyst"))
     market_scout_source = _context_source(market_scout)
     action = _dict(equity.get("action"))
-    sufficiency = _dict(equity.get("data_sufficiency"))
+    wang_sufficiency = _dict(wang.get("data_sufficiency"))
+    equity_sufficiency = _dict(equity.get("data_sufficiency"))
     trace = {
         "schema_version": _trace("hardcode", "YingHang V3 contract identifier"),
         "ai_final_answer.score": _trace("missing", "Trade Coach Agent not implemented"),
@@ -228,7 +231,7 @@ def _build_source_trace(
         "hero.industry_rating": _trace(wang_source if _has_value(wang.get("industry_rating")) else "missing"),
         "hero.investment_rating": _trace(
             equity_source if _has_value(equity.get("investment_rating")) else "missing",
-            _sufficiency_detail(sufficiency, "investment_rating"),
+            _sufficiency_detail(equity_sufficiency, "investment_rating"),
         ),
         "hero.tags": _trace(
             _source_for_values(
@@ -246,7 +249,7 @@ def _build_source_trace(
         "logic_tree": _trace(wang_source if _has_value(wang.get("logic_tree")) else "missing"),
         "expectation_gap": _trace(
             equity_source if _has_value(equity.get("expectation_gap")) else "missing",
-            _sufficiency_detail(sufficiency, "expectation_gap.gap_score"),
+            _sufficiency_detail(equity_sufficiency, "expectation_gap.gap_score"),
         ),
         "validation_panel": _trace(
             equity_source if _has_value(equity.get("validation_panel")) else "missing"
@@ -294,19 +297,19 @@ def _build_source_trace(
     ):
         trace[f"research_layers.public_equity.{path}"] = _trace(
             equity_source if _has_value(equity.get(path)) else "missing",
-            _sufficiency_detail(sufficiency, path),
+            _sufficiency_detail(equity_sufficiency, path),
         )
     _trace_research_leaves(trace, "market_scout", market_scout, market_scout_source)
     _trace_research_leaves(trace, "wang_industry", wang, wang_source)
     _trace_research_leaves(trace, "public_equity", equity, equity_source)
     trace["research_layers.public_equity.financial_validation"] = _trace(
         equity_source if _has_value(equity.get("financial_validation")) else "missing",
-        _sufficiency_detail(sufficiency, "financial_validation")
+        _sufficiency_detail(equity_sufficiency, "financial_validation")
         or "No structured financial statements are present in stock_context",
     )
     trace["research_layers.public_equity.valuation_odds"] = _trace(
         equity_source if _has_value(equity.get("valuation_odds")) else "missing",
-        _sufficiency_detail(sufficiency, "valuation_odds")
+        _sufficiency_detail(equity_sufficiency, "valuation_odds")
         or "No PE/PB or valuation percentile data are present in stock_context",
     )
     for path in (
@@ -320,7 +323,34 @@ def _build_source_trace(
             equity_source if _has_value(value) else "missing",
             "LLM hypothesis retained for review; not a verified conclusion",
         )
+    _apply_wang_sufficiency_trace(trace, wang, wang_sufficiency, wang_source)
     return trace
+
+
+def _requires_wang_sufficiency(wang: dict[str, Any], context: dict[str, Any]) -> bool:
+    if wang.get("agent_type") == "wang" or isinstance(wang.get("data_sufficiency"), dict):
+        return True
+    return any(
+        key in context
+        for key in (
+            "profit_pool",
+            "profit_pool_data",
+            "industry_profit_pool",
+            "structured_profit_pool",
+            "peer_moat_samples",
+            "moat_benchmarks",
+            "peer_barrier_samples",
+            "industry_moat_benchmarks",
+            "probability_calibration",
+            "calibrated_probabilities",
+            "thesis_probabilities",
+            "logic_tree_calibration",
+            "peer_snapshot",
+            "peer_metrics",
+            "comparable_companies",
+            "peers",
+        )
+    )
 
 
 def _requires_public_equity_sufficiency(equity: dict[str, Any], context: dict[str, Any]) -> bool:
@@ -352,6 +382,97 @@ def _sufficiency_detail(sufficiency: dict[str, Any], field: str) -> str:
     return ""
 
 
+def _apply_wang_sufficiency_trace(
+    trace: dict[str, dict[str, str]],
+    wang: dict[str, Any],
+    sufficiency: dict[str, Any],
+    wang_source: str,
+) -> None:
+    field_status = _dict(sufficiency.get("field_status"))
+    _set_wang_numeric_trace(
+        trace,
+        _dict(wang.get("profit_flow")).get("items"),
+        "profit_flow.items",
+        ("share_pct",),
+        field_status.get("profit_flow.items.share_pct"),
+        wang_source,
+    )
+    _set_wang_numeric_trace(
+        trace,
+        wang.get("moat_radar"),
+        "moat_radar",
+        ("company_score", "industry_average"),
+        field_status.get("moat_radar.numeric_scores"),
+        wang_source,
+    )
+    moat = _dict(wang.get("moat_radar"))
+    _set_wang_numeric_trace(
+        trace,
+        moat.get("dimensions"),
+        "moat_radar.dimensions",
+        ("company", "average"),
+        field_status.get("moat_radar.numeric_scores"),
+        wang_source,
+    )
+    _set_wang_numeric_trace(
+        trace,
+        wang.get("logic_tree"),
+        "logic_tree",
+        ("certainty_pct",),
+        field_status.get("logic_tree.certainty_pct"),
+        wang_source,
+    )
+    peer_status = field_status.get("peer_ranking")
+    trace["research_layers.wang_industry.peer_ranking"] = _trace(
+        wang_source if peer_status == "verified_input" and _has_value(wang.get("peer_ranking")) else "missing",
+        _sufficiency_detail(sufficiency, "peer_ranking"),
+    )
+    trace["research_layers.wang_industry.peer_ranking_hypothesis"] = _trace(
+        wang_source if _has_value(wang.get("peer_ranking_hypothesis")) else "missing",
+        "LLM hypothesis retained for review; not a verified peer ranking",
+    )
+    trace["research_layers.wang_industry.data_sufficiency"] = _trace(
+        "hardcode",
+        "Deterministic WANG input-sufficiency gate",
+    )
+
+
+def _set_wang_numeric_trace(
+    trace: dict[str, dict[str, str]],
+    value: Any,
+    path: str,
+    fields: tuple[str, ...],
+    status: Any,
+    wang_source: str,
+) -> None:
+    items = value if isinstance(value, list) else [value]
+    if path.endswith(".items") or path.endswith(".dimensions") or path == "logic_tree":
+        items = value if isinstance(value, list) else []
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            continue
+        base = f"{path}.{index}" if isinstance(value, list) else path
+        for field in fields:
+            field_path = f"research_layers.wang_industry.{base}.{field}"
+            trace[field_path] = _trace(
+                wang_source if status == "verified_input" and _has_value(item.get(field)) else "missing",
+                _sufficiency_detail_from_status(status),
+            )
+            hypothesis = f"{field}_hypothesis"
+            trace[f"research_layers.wang_industry.{base}.{hypothesis}"] = _trace(
+                wang_source if _has_value(item.get(hypothesis)) else "missing",
+                "LLM hypothesis retained for review; not a verified measurement",
+            )
+
+
+def _sufficiency_detail_from_status(status: Any) -> str:
+    if status == "missing":
+        return "Missing required structured WANG input; numeric output withheld"
+    if status == "verified_input":
+        return "Required structured input is present; conclusion remains LLM-generated"
+    return ""
+
+
 def _path_value(value: Any, path: str) -> Any:
     current = value
     for part in path.split("."):
@@ -368,20 +489,45 @@ def _trace_research_leaves(
     source: str,
     *,
     prefix: str = "",
+    root_trace: dict[str, Any] | None = None,
 ) -> None:
+    if root_trace is None and isinstance(value, dict):
+        candidate = value.get("source_trace")
+        root_trace = candidate if isinstance(candidate, dict) else {}
     if isinstance(value, dict):
         for key, item in value.items():
+            if key in {"source_trace", "provenance"}:
+                continue
             child = f"{prefix}.{key}" if prefix else str(key)
-            _trace_research_leaves(trace, layer_name, item, source, prefix=child)
+            _trace_research_leaves(
+                trace,
+                layer_name,
+                item,
+                source,
+                prefix=child,
+                root_trace=root_trace,
+            )
         return
     if isinstance(value, (list, tuple)):
         for index, item in enumerate(value):
             child = f"{prefix}.{index}" if prefix else str(index)
-            _trace_research_leaves(trace, layer_name, item, source, prefix=child)
+            _trace_research_leaves(
+                trace,
+                layer_name,
+                item,
+                source,
+                prefix=child,
+                root_trace=root_trace,
+            )
         return
     if prefix:
         path = f"research_layers.{layer_name}.{prefix}"
-        trace[path] = _trace(source if _has_value(value) else "missing")
+        top_field = prefix.split(".", 1)[0]
+        entry = (root_trace or {}).get(top_field)
+        field_source = entry.get("source") if isinstance(entry, dict) else entry
+        if field_source not in {"llm", "real_data", "fallback", "hardcode", "missing"}:
+            field_source = source
+        trace[path] = _trace(field_source if _has_value(value) else "missing")
 
 
 def _context_source(market_scout: dict[str, Any]) -> str:
@@ -389,6 +535,17 @@ def _context_source(market_scout: dict[str, Any]) -> str:
         return "missing"
     if market_scout.get("agent_error"):
         return "fallback"
+    nested_trace = market_scout.get("source_trace")
+    if isinstance(nested_trace, dict):
+        sources = {
+            entry.get("source")
+            for entry in nested_trace.values()
+            if isinstance(entry, dict) and entry.get("source") != "missing"
+        }
+        if len(sources) == 1:
+            return next(iter(sources))
+        if len(sources) > 1:
+            return "fallback"
     if (
         not _has_value(market_scout.get("evidence"))
         and not _has_value(market_scout.get("recent_catalysts"))

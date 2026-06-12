@@ -10,8 +10,8 @@ The findings below preserve the audited pre-remediation behavior. Current status
 | FAI-02 Trade Execution mixed-source laundering | Fixed at layer/leaf trace level; unknown fields remain fallback |
 | FAI-03 Public Equity conclusions without required data | Contained by data-sufficiency gates and hypothesis fields |
 | Missing production `peer_snapshot.metrics` | Partially fixed using verified peer quote returns only |
-| WANG unsupported numeric precision | Open |
-| News string-to-fact loss | Open |
+| WANG unsupported numeric precision | Contained by sufficiency gates and hypothesis-only retention |
+| News string-to-fact loss | Fixed with structured fact preservation and legacy compatibility |
 
 The validator now includes semantic checks (`V3-SEM-001` through `V3-SEM-005`) rather than checking source enums alone.
 

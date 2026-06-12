@@ -180,6 +180,13 @@ def _source_value(value: Any) -> str:
 
 def _intrinsic_fact_source(value: Any) -> str:
     items = value if isinstance(value, list) else [value]
+    declared_sources = {
+        _text(item.get("source_type"))
+        for item in items
+        if isinstance(item, dict) and _text(item.get("source_type")) in SOURCE_TYPES
+    }
+    if declared_sources:
+        return next(iter(declared_sources)) if len(declared_sources) == 1 else "fallback"
     supported = [
         item
         for item in items

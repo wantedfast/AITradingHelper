@@ -30,7 +30,38 @@ def build_stock_context(
 
     analysis = analysis or {}
     optimal = analysis.get("optimal") or {}
-    catalyst = build_market_catalyst_context(code, name)
+    catalyst = dict(build_market_catalyst_context(code, name))
+    fallback_source = "fallback" if catalyst.get("agent_error") else "llm"
+    catalyst_source = _lineage_source(catalyst, "market_catalyst", fallback_source)
+    news_source = _lineage_source(catalyst, "industry_news", fallback_source)
+    catalyst_facts = _fact_objects(
+        catalyst.get("market_catalyst")
+        or catalyst.get("structured_market_catalysts")
+        or catalyst.get("recent_catalysts"),
+        fallback_source=catalyst_source,
+    )
+    industry_news = _fact_objects(
+        catalyst.get("industry_news")
+        or catalyst.get("structured_industry_news")
+        or catalyst.get("news"),
+        fallback_source=news_source,
+    )
+    catalyst["market_catalyst"] = catalyst_facts
+    catalyst["structured_market_catalysts"] = catalyst_facts
+    catalyst["industry_news"] = industry_news
+    catalyst["structured_industry_news"] = industry_news
+    source_trace = catalyst.get("source_trace")
+    if not isinstance(source_trace, dict):
+        source_trace = {}
+        catalyst["source_trace"] = source_trace
+    source_trace["market_catalyst"] = {
+        "source": catalyst_source if catalyst_facts else "missing"
+    }
+    source_trace["industry_news"] = {
+        "source": news_source if industry_news else "missing"
+    }
+    legacy_catalysts = _fact_texts(catalyst_facts) or _legacy_texts(catalyst.get("recent_catalysts"))
+    legacy_news = _fact_texts(industry_news) or legacy_catalysts
     return {
         "company": {
             "code": code,
@@ -64,14 +95,17 @@ def build_stock_context(
             "pb": None,
         },
         "market_catalyst": catalyst,
-        "recent_catalysts": catalyst.get("recent_catalysts", []),
+        "recent_catalysts": legacy_catalysts,
+        "market_catalyst_facts": catalyst_facts,
+        "industry_news_facts": industry_news,
         "market_hype_reason": catalyst.get("market_hype_reason", "recent hype reason pending verification"),
         "traded_business_line": catalyst.get("traded_business_line", "pending verification"),
         "what_market_is_pricing": catalyst.get("what_market_is_pricing", "pending verification"),
         "evidence_quality": catalyst.get("evidence_quality", "low"),
         "unknowns": catalyst.get("unknowns", []),
         "evidence": catalyst.get("evidence", []),
-        "news": catalyst.get("recent_catalysts", []),
+        "news": legacy_news,
+        "structured_news": industry_news,
     }
 
 
@@ -98,3 +132,54 @@ def _number(value: Any) -> float:
         return round(float(value), 4)
     except Exception:
         return 0.0
+
+
+def _fact_objects(value: Any, *, fallback_source: str) -> list[dict[str, str]]:
+    items = value if isinstance(value, (list, tuple)) else [value]
+    result: list[dict[str, str]] = []
+    for item in items:
+        if isinstance(item, dict):
+            fact = str(item.get("fact") or item.get("event") or item.get("headline") or "").strip()
+            date_text = str(item.get("date") or item.get("as_of") or "").strip()
+            source = str(item.get("source") or "").strip()
+            source_type = str(item.get("source_type") or fallback_source).strip().lower()
+        else:
+            fact = str(item or "").strip()
+            date_text = ""
+            source = ""
+            source_type = fallback_source
+        if not fact:
+            continue
+        if source_type not in {"llm", "fallback", "missing"}:
+            source_type = fallback_source if fallback_source in {"llm", "fallback", "missing"} else "missing"
+        result.append(
+            {
+                "fact": fact,
+                "date": date_text,
+                "source": source or source_type,
+                "source_type": source_type,
+            }
+        )
+    return result
+
+
+def _fact_texts(value: list[dict[str, str]]) -> list[str]:
+    return [item["fact"] for item in value if item.get("fact")]
+
+
+def _legacy_texts(value: Any) -> list[str]:
+    items = value if isinstance(value, (list, tuple)) else [value]
+    return [
+        str(item).strip()
+        for item in items
+        if item not in (None, "", [], {}) and not isinstance(item, dict)
+    ]
+
+
+def _lineage_source(payload: dict[str, Any], field: str, default: str) -> str:
+    trace = payload.get("source_trace")
+    entry = trace.get(field) if isinstance(trace, dict) else None
+    source = entry.get("source") if isinstance(entry, dict) else entry
+    if source in {"llm", "fallback", "missing"}:
+        return source
+    return default if default in {"llm", "fallback", "missing"} else "missing"

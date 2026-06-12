@@ -5,7 +5,8 @@
 - **P0 fixed:** Market Scout and Trade Execution now inherit field-level provenance instead of defaulting mixed content to `real_data`.
 - **P0 contained:** Public Equity now clears unsupported rating, financial validation, valuation odds, and expectation-gap score when verified inputs are absent. Original LLM text is retained only as an explicit hypothesis.
 - **P1 partially fixed:** verified Trade Execution peer returns now feed `peer_snapshot.metrics`; Better Opportunity remains `missing` when no verified peer quote rows exist.
-- **Still open:** WANG fake-precision fields, raw financial/valuation providers, structured news facts, industry-specific KPI gates, and end-user provenance display.
+- **Second batch complete:** WANG unsupported numeric fields are now gated and moved to hypotheses; structured catalyst/news facts retain `fact/date/source/source_type`.
+- **Still open after batch two:** raw financial/valuation providers, calibrated WANG datasets, industry-specific KPI gates, and end-user provenance display.
 
 Implementation evidence:
 

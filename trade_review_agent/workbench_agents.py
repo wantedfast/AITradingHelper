@@ -685,6 +685,19 @@ def run_wang_workbench_agent(context: dict[str, Any]) -> dict[str, Any]:
     include_memo = _research_model_tier(context) == "better"
     system_prompt = _research_json_system_prompt("WANG industry-chain", include_memo=include_memo)
     user_prompt = _wang_research_json_user_prompt(context, include_memo=include_memo)
+    sufficiency = wang_data_sufficiency(context)
+    user_prompt = f"""{user_prompt}
+
+DATA SUFFICIENCY:
+{json.dumps(sufficiency, ensure_ascii=False)}
+
+Strict rules:
+- Without a structured profit-pool dataset, profit_flow.items[].share_pct must be null.
+- Without structured peer moat samples, moat_radar scores and dimension numbers must be null.
+- Without calibrated probability inputs, logic_tree[].certainty_pct must be null.
+- Without structured peer metrics, peer_ranking must be empty.
+- Unsupported values are hypotheses pending verification, not verified measurements.
+"""
     started = time.perf_counter()
     payload = _call_json_agent(
         system_prompt,
@@ -693,7 +706,7 @@ def run_wang_workbench_agent(context: dict[str, Any]) -> dict[str, Any]:
         max_output_tokens=_research_json_max_output_tokens(include_memo),
         allow_web=False,
     )
-    return _research_agent_payload(
+    result = _research_agent_payload(
         "wang",
         payload,
         model=model,
@@ -702,6 +715,7 @@ def run_wang_workbench_agent(context: dict[str, Any]) -> dict[str, Any]:
         input_text=f"{system_prompt}\n{user_prompt}",
         seconds=time.perf_counter() - started,
     )
+    return apply_wang_sufficiency(result, context)
 
 
 def run_public_equity_workbench_agent(context: dict[str, Any]) -> dict[str, Any]:
@@ -899,6 +913,113 @@ _INSUFFICIENT_MARKERS = {
 }
 
 
+def wang_data_sufficiency(context: dict[str, Any]) -> dict[str, Any]:
+    context = context if isinstance(context, dict) else {}
+    profit_pool_sections = [
+        context.get("profit_pool"),
+        context.get("profit_pool_data"),
+        context.get("industry_profit_pool"),
+        context.get("structured_profit_pool"),
+    ]
+    peer_moat_sections = [
+        context.get("peer_moat_samples"),
+        context.get("moat_benchmarks"),
+        context.get("peer_barrier_samples"),
+        context.get("industry_moat_benchmarks"),
+    ]
+    probability_sections = [
+        context.get("probability_calibration"),
+        context.get("calibrated_probabilities"),
+        context.get("thesis_probabilities"),
+        context.get("logic_tree_calibration"),
+    ]
+    peer_metric_sections = [
+        context.get("peer_snapshot"),
+        context.get("peer_metrics"),
+        context.get("comparable_companies"),
+        context.get("peers"),
+    ]
+    availability = {
+        "profit_pool": any(_contains_verified_data(value) for value in profit_pool_sections),
+        "peer_moat_samples": any(_contains_verified_data(value) for value in peer_moat_sections),
+        "probability_calibration": any(
+            _contains_verified_data(value) for value in probability_sections
+        ),
+        "peer_metrics": any(_contains_peer_metrics(value) for value in peer_metric_sections),
+    }
+    return {
+        **availability,
+        "verified_inputs": [name for name, available in availability.items() if available],
+        "missing_inputs": [name for name, available in availability.items() if not available],
+    }
+
+
+def apply_wang_sufficiency(payload: object, context: dict[str, Any]) -> dict[str, Any]:
+    data = deepcopy(payload) if isinstance(payload, dict) else {}
+    if data.get("_agent_error") or data.get("agent_error"):
+        return data
+
+    sufficiency = wang_data_sufficiency(context)
+    field_status = {
+        "profit_flow.items.share_pct": (
+            "verified_input" if sufficiency["profit_pool"] else "missing"
+        ),
+        "moat_radar.numeric_scores": (
+            "verified_input" if sufficiency["peer_moat_samples"] else "missing"
+        ),
+        "logic_tree.certainty_pct": (
+            "verified_input" if sufficiency["probability_calibration"] else "missing"
+        ),
+        "peer_ranking": "verified_input" if sufficiency["peer_metrics"] else "missing",
+    }
+
+    profit_flow = data.get("profit_flow")
+    if isinstance(profit_flow, dict):
+        for item in profit_flow.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            if not sufficiency["profit_pool"]:
+                _move_nested_number_to_hypothesis(item, "share_pct")
+                item["share_pct"] = None
+
+    moat = data.get("moat_radar")
+    if isinstance(moat, dict):
+        if not sufficiency["peer_moat_samples"]:
+            for field in ("company_score", "industry_average"):
+                _move_nested_number_to_hypothesis(moat, field)
+                moat[field] = None
+            for dimension in moat.get("dimensions") or []:
+                if not isinstance(dimension, dict):
+                    continue
+                for field in ("company", "average"):
+                    _move_nested_number_to_hypothesis(dimension, field)
+                    dimension[field] = None
+
+    logic_tree = data.get("logic_tree")
+    if isinstance(logic_tree, list):
+        for node in logic_tree:
+            if not isinstance(node, dict):
+                continue
+            if not sufficiency["probability_calibration"]:
+                _move_nested_number_to_hypothesis(node, "certainty_pct")
+                node["certainty_pct"] = None
+
+    if not sufficiency["peer_metrics"]:
+        _move_to_hypothesis(data, "peer_ranking")
+        data["peer_ranking"] = []
+
+    data["data_sufficiency"] = {
+        **sufficiency,
+        "field_status": field_status,
+        "narrative_status": (
+            "verified_inputs_available"
+            if not sufficiency["missing_inputs"]
+            else "llm_hypothesis_pending_verification"
+        ),
+    }
+    return data
+
+
 def public_equity_data_sufficiency(context: dict[str, Any]) -> dict[str, Any]:
     context = context if isinstance(context, dict) else {}
     financial_sections = [
@@ -1024,6 +1145,28 @@ def _move_to_hypothesis(data: dict[str, Any], field: str) -> None:
     value = data.get(field)
     if _contains_verified_data(value):
         data[f"{field}_hypothesis"] = value
+
+
+def _move_nested_number_to_hypothesis(data: dict[str, Any], field: str) -> None:
+    value = data.get(field)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        data[f"{field}_hypothesis"] = value
+
+
+def _contains_peer_metrics(value: Any) -> bool:
+    if isinstance(value, dict):
+        metrics = value.get("metrics")
+        if isinstance(metrics, dict) and _contains_verified_data(metrics):
+            return True
+        return any(
+            _contains_peer_metrics(item)
+            for key, item in value.items()
+            if str(key).strip().lower()
+            not in {"source", "sources", "provider", "as_of", "updated_at", "status", "note"}
+        )
+    if isinstance(value, (list, tuple)):
+        return any(_contains_peer_metrics(item) for item in value)
+    return False
 
 
 def _mapping_values(value: Any, keys: tuple[str, ...]) -> dict[str, Any]:

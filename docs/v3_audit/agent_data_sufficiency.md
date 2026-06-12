@@ -8,6 +8,8 @@ Completed in the first remediation batch:
 2. Public Equity cannot expose unsupported high-value fields as verified conclusions.
 3. Real peer quote returns can populate `peer_snapshot.metrics`.
 4. Semantic validator fixtures reject unsupported Public Equity conclusions and execution judgments labeled `real_data`.
+5. WANG unsupported formal numbers are withheld unless matching structured inputs exist.
+6. Catalyst/news facts retain structured metadata and explicit LLM/fallback lineage.
 
 Remaining data gaps:
 

@@ -39,6 +39,21 @@ class V3ProvenanceSemanticsTests(unittest.TestCase):
         self.assertEqual("llm", result["source_trace"]["market_theme"]["source"])
         self.assertEqual("real_data", result["source_trace"]["sector_strength"]["source"])
 
+    def test_fact_source_type_prevents_llm_summary_from_becoming_real_data(self) -> None:
+        result = run_market_scout(
+            {
+                "market_catalyst": [
+                    {
+                        "fact": "Web result summarized by an LLM",
+                        "source": "Publisher",
+                        "source_type": "llm",
+                    }
+                ]
+            }
+        )
+
+        self.assertEqual("llm", result["source_trace"]["market_catalyst"]["source"])
+
     def test_llm_output_and_input_fallback_keep_distinct_sources(self) -> None:
         result = run_market_scout(
             {

@@ -394,6 +394,69 @@ def _validate_provenance_semantics(
                 )
             )
 
+    wang = layers.get("wang_industry")
+    wang = wang if isinstance(wang, dict) else {}
+    wang_sufficiency = wang.get("data_sufficiency")
+    wang_sufficiency = wang_sufficiency if isinstance(wang_sufficiency, dict) else {}
+    if wang_sufficiency:
+        profit_flow = wang.get("profit_flow")
+        profit_flow = profit_flow if isinstance(profit_flow, dict) else {}
+        if not bool(wang_sufficiency.get("profit_pool")):
+            for index, item in enumerate(profit_flow.get("items") or []):
+                if isinstance(item, dict) and not _is_missing_value(item.get("share_pct")):
+                    issues.append(
+                        ContractIssue(
+                            "V3-SEM-006",
+                            f"{label}.research_layers.wang_industry.profit_flow.items.{index}.share_pct",
+                            "profit share requires structured profit-pool input data",
+                        )
+                    )
+        moat = wang.get("moat_radar")
+        moat = moat if isinstance(moat, dict) else {}
+        if not bool(wang_sufficiency.get("peer_moat_samples")):
+            for field in ("company_score", "industry_average"):
+                if not _is_missing_value(moat.get(field)):
+                    issues.append(
+                        ContractIssue(
+                            "V3-SEM-007",
+                            f"{label}.research_layers.wang_industry.moat_radar.{field}",
+                            "moat score requires structured peer moat samples",
+                        )
+                    )
+            for index, dimension in enumerate(moat.get("dimensions") or []):
+                if not isinstance(dimension, dict):
+                    continue
+                for field in ("company", "average"):
+                    if not _is_missing_value(dimension.get(field)):
+                        issues.append(
+                            ContractIssue(
+                                "V3-SEM-007",
+                                f"{label}.research_layers.wang_industry.moat_radar.dimensions.{index}.{field}",
+                                "moat dimension score requires structured peer moat samples",
+                            )
+                        )
+        if not bool(wang_sufficiency.get("probability_calibration")):
+            for index, node in enumerate(wang.get("logic_tree") or []):
+                if isinstance(node, dict) and not _is_missing_value(node.get("certainty_pct")):
+                    issues.append(
+                        ContractIssue(
+                            "V3-SEM-008",
+                            f"{label}.research_layers.wang_industry.logic_tree.{index}.certainty_pct",
+                            "certainty percentage requires calibrated probability input",
+                        )
+                    )
+        if (
+            not bool(wang_sufficiency.get("peer_metrics"))
+            and not _is_missing_value(wang.get("peer_ranking"))
+        ):
+            issues.append(
+                ContractIssue(
+                    "V3-SEM-009",
+                    f"{label}.research_layers.wang_industry.peer_ranking",
+                    "peer ranking requires structured peer metrics",
+                )
+            )
+
     execution = layers.get("trade_execution")
     execution = execution if isinstance(execution, dict) else {}
     execution_prefix = "research_layers.trade_execution"
@@ -776,6 +839,15 @@ def run_self_test() -> list[ContractIssue]:
     semantic["research_layers"]["trade_execution"] = {
         "trade_execution_notes": {"buy_verdict": "good"}
     }
+    semantic["research_layers"]["wang_industry"] = {
+        "profit_flow": {"items": [{"share_pct": 42}]},
+        "data_sufficiency": {
+            "profit_pool": False,
+            "peer_moat_samples": False,
+            "probability_calibration": False,
+            "peer_metrics": False,
+        },
+    }
     semantic["source_trace"].update(
         {
             "research_layers.public_equity.investment_rating": {"source": "llm"},
@@ -785,6 +857,21 @@ def run_self_test() -> list[ContractIssue]:
             "research_layers.trade_execution.trade_execution_notes.buy_verdict": {
                 "source": "real_data"
             },
+            "research_layers.wang_industry.profit_flow.items.0.share_pct": {
+                "source": "llm"
+            },
+            "research_layers.wang_industry.data_sufficiency.profit_pool": {
+                "source": "hardcode"
+            },
+            "research_layers.wang_industry.data_sufficiency.peer_moat_samples": {
+                "source": "hardcode"
+            },
+            "research_layers.wang_industry.data_sufficiency.probability_calibration": {
+                "source": "hardcode"
+            },
+            "research_layers.wang_industry.data_sufficiency.peer_metrics": {
+                "source": "hardcode"
+            },
         }
     )
     semantic_issues = _validate_provenance_semantics(
@@ -793,7 +880,7 @@ def run_self_test() -> list[ContractIssue]:
         label="self_test.semantic",
     )
     semantic_codes = {issue.code for issue in semantic_issues}
-    if not {"V3-SEM-001", "V3-SEM-002"}.issubset(semantic_codes):
+    if not {"V3-SEM-001", "V3-SEM-002", "V3-SEM-006"}.issubset(semantic_codes):
         failures.append(
             ContractIssue(
                 "V3-SELF-005",
