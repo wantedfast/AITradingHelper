@@ -556,7 +556,11 @@ def _context_source(market_scout: dict[str, Any]) -> str:
 def _agent_source(agent: dict[str, Any]) -> str:
     if not agent:
         return "missing"
-    return "fallback" if agent.get("agent_error") else "llm"
+    metrics = _dict(agent.get("research_metrics"))
+    status = str(metrics.get("status") or "").lower()
+    if agent.get("agent_error") or agent.get("_agent_error") or metrics.get("fallback_used") or status in {"error", "rate_limited"}:
+        return "fallback"
+    return "llm"
 
 
 def _pick_with_source(*candidates: tuple[Any, str]) -> tuple[str, str]:

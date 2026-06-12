@@ -90,7 +90,12 @@ def data_sufficiency_error(context: dict[str, Any]) -> str:
     return ""
 
 
-def missing_better_opportunity(reason: str, *, peer_snapshot: list[Any] | None = None) -> dict[str, Any]:
+def missing_better_opportunity(
+    reason: str,
+    *,
+    peer_snapshot: list[Any] | None = None,
+    research_metrics: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     return {
         "status": MISSING,
         "better_candidates": [],
@@ -98,6 +103,7 @@ def missing_better_opportunity(reason: str, *, peer_snapshot: list[Any] | None =
         "confidence": None,
         "replacement_thesis": MISSING,
         "missing_reason": reason,
+        "research_metrics": research_metrics or {},
         "evaluated_peers": len(peer_snapshot or []),
         "source_trace": {
             "better_candidates": {"source": "missing", "detail": reason},
@@ -114,6 +120,9 @@ def normalize_better_opportunity(
     allowed_peers: list[dict[str, Any]],
 ) -> dict[str, Any]:
     data = payload if isinstance(payload, dict) else {}
+    research_metrics = _dict(data.get("_report_llm_call"))
+    if data.get("_agent_error") and research_metrics:
+        research_metrics = {**research_metrics, "status": "error", "error": _text(data.get("_agent_error"))}
     allowed = {
         (_text(peer.get("code")), _text(peer.get("name")))
         for peer in allowed_peers
@@ -144,6 +153,7 @@ def normalize_better_opportunity(
         return missing_better_opportunity(
             "LLM output lacked a supported candidate or required conclusion fields",
             peer_snapshot=allowed_peers,
+            research_metrics=research_metrics,
         )
     return {
         "status": "available",
@@ -152,6 +162,7 @@ def normalize_better_opportunity(
         "confidence": confidence,
         "replacement_thesis": replacement_thesis,
         "missing_reason": "",
+        "research_metrics": research_metrics,
         "evaluated_peers": len(allowed_peers),
         "source_trace": {
             "better_candidates": {"source": "llm"},

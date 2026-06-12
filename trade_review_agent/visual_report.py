@@ -19,6 +19,7 @@ from .industry_agent import get_workbench_profile_data
 from .industry_profiles import DEFAULT_PROFILE, IndustryProfile
 from .io import read_trade_file
 from .peer_snapshot import build_peer_snapshot
+from .report_usage import collect_report_llm_calls, estimate_tokens, make_llm_call_record, summarize_token_usage
 from .schema import Trade
 from .sector_strength import build_sector_signal
 from .trade_rounds import TradeRound, split_trade_rounds
@@ -178,6 +179,9 @@ def build_round_html(
     research_model_tier: str = "standard",
 ) -> VisualReportResult:
     timings: dict[str, float] = {}
+    report_started = time.perf_counter()
+    timings["input_parse_seconds"] = 0.0
+    timings["ocr_seconds"] = 0.0
     output = Path(output)
     profile = profile or _base_report_profile(trade_round.code, trade_round.name)
     start = trade_round.start_date - timedelta(days=25)
@@ -260,6 +264,15 @@ def build_round_html(
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(render_workbench_report(presenter_data), encoding="utf-8")
     timings["write_artifacts_seconds"] = _elapsed_seconds(write_started)
+    timings["total_report_generation_seconds"] = _elapsed_seconds(report_started)
+    presenter_data["generation_diagnostics"] = _report_generation_diagnostics(
+        workbench=workbench_data,
+        execution_payload=execution_payload,
+        presenter_data=presenter_data,
+        timings=timings,
+    )
+    write_workbench_json(Path(output).with_suffix(".presenter.json"), presenter_data)
+    output.write_text(render_workbench_report(presenter_data), encoding="utf-8")
     _write_timings(output.with_suffix(".timings.json"), timings)
     research_model = workbench_data.get("research_model") if isinstance(workbench_data, dict) else {}
     if not isinstance(research_model, dict):
@@ -554,15 +567,56 @@ def _v3_execution_provenance(execution_payload: dict[str, Any]) -> dict[str, Any
 
 def _v3_llm_caller(research_model_tier: str):
     model = research_model_metadata(research_model_tier)["model"]
+    stages = iter(
+        (
+            ("v3_better_opportunity", "Better Opportunity Agent"),
+            ("v3_trade_coach", "Trade Coach Agent"),
+        )
+    )
 
     def call(system_prompt: str, user_prompt: str) -> dict[str, Any]:
-        return _call_json_agent(
-            system_prompt,
-            user_prompt,
-            model_override=model,
-            max_output_tokens=2200,
-            allow_web=False,
-        )
+        stage, agent = next(stages, ("v3_llm", "V3 LLM"))
+        started = time.perf_counter()
+        max_output_tokens = 2200
+        try:
+            payload = _call_json_agent(
+                system_prompt,
+                user_prompt,
+                model_override=model,
+                max_output_tokens=max_output_tokens,
+                allow_web=False,
+            )
+            payload["_report_llm_call"] = make_llm_call_record(
+                stage=stage,
+                agent=agent,
+                model=model,
+                mode=stage,
+                allow_web=False,
+                max_output_tokens=max_output_tokens,
+                seconds=_elapsed_seconds(started),
+                api_usage=payload.get("_api_usage"),
+                estimated_input_tokens=estimate_tokens(system_prompt) + estimate_tokens(user_prompt),
+                estimated_output_tokens=max_output_tokens,
+            )
+            return payload
+        except Exception as exc:
+            return {
+                "_agent_error": f"{stage}_failed: {exc}",
+                "_report_llm_call": make_llm_call_record(
+                    stage=stage,
+                    agent=agent,
+                    model=model,
+                    mode=stage,
+                    allow_web=False,
+                    max_output_tokens=max_output_tokens,
+                    seconds=_elapsed_seconds(started),
+                    status="error",
+                    error=str(exc),
+                    estimated_input_tokens=estimate_tokens(system_prompt) + estimate_tokens(user_prompt),
+                    estimated_output_tokens=max_output_tokens,
+                    fallback_used=True,
+                ),
+            }
 
     return call
 
@@ -584,12 +638,29 @@ def _report_generation_diagnostics(
     timings: dict[str, float],
 ) -> dict[str, Any]:
     errors = list(workbench.get("agent_errors") if isinstance(workbench.get("agent_errors"), list) else [])
+    catalyst = workbench.get("market_catalyst") if isinstance(workbench, dict) else None
+    if isinstance(catalyst, dict) and catalyst.get("agent_error"):
+        errors.append(str(catalyst["agent_error"]))
+    data_status = execution_payload.get("data_source_status") if isinstance(execution_payload, dict) else None
+    if isinstance(data_status, dict) and isinstance(data_status.get("errors"), list):
+        errors.extend(str(error) for error in data_status["errors"] if error)
     execution_llm = execution_payload.get("llm_output") if isinstance(execution_payload, dict) else None
     if isinstance(execution_llm, dict) and execution_llm.get("_agent_error"):
         errors.append(str(execution_llm["_agent_error"]))
     presenter_errors = presenter_data.get("agent_errors") if isinstance(presenter_data, dict) else None
     if isinstance(presenter_errors, list):
         errors.extend(str(error) for error in presenter_errors if error)
+    llm_calls = collect_report_llm_calls(
+        workbench=workbench,
+        execution_payload=execution_payload,
+        presenter_data=presenter_data,
+    )
+    for call in llm_calls:
+        if call.get("status") in {"error", "rate_limited"} and call.get("error"):
+            errors.append(f"{call.get('stage')}: {call.get('error')}")
+    token_usage = summarize_token_usage(llm_calls)
+    cache_diagnostics = workbench.get("cache_diagnostics") if isinstance(workbench, dict) else {}
+    cache_diagnostics = dict(cache_diagnostics if isinstance(cache_diagnostics, dict) else {})
     final_answer = workbench.get("ai_final_answer") if isinstance(workbench.get("ai_final_answer"), dict) else {}
     status = "ok"
     if errors:
@@ -598,9 +669,24 @@ def _report_generation_diagnostics(
         status = "partial"
     return {
         "status": status,
-        "errors": errors[:8],
+        "errors": _dedupe_strings(errors)[:12],
         "timings": dict(timings),
+        "llm_calls": llm_calls,
+        "token_usage": token_usage,
+        "cache_diagnostics": cache_diagnostics,
     }
+
+
+def _dedupe_strings(items: list[Any]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in items:
+        text = str(item or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
+    return result
 
 
 def _write_timings(path: Path, timings: dict[str, float]) -> None:

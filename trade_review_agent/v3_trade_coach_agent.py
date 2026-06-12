@@ -195,6 +195,7 @@ def missing_trade_coach_answer(
     *,
     answer_evidence: dict[str, Any],
     context: dict[str, Any] | None = None,
+    research_metrics: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     safe_context = context if isinstance(context, dict) else {}
     return {
@@ -209,6 +210,7 @@ def missing_trade_coach_answer(
         },
         "answer_evidence": answer_evidence,
         "missing_reason": reason,
+        "research_metrics": research_metrics or {},
         "source_trace": build_final_answer_source_trace(
             safe_context,
             source="missing",
@@ -224,6 +226,9 @@ def normalize_trade_coach_answer(
     answer_evidence: dict[str, Any],
 ) -> dict[str, Any]:
     data = payload if isinstance(payload, dict) else {}
+    research_metrics = _dict(data.get("_report_llm_call"))
+    if data.get("_agent_error") and research_metrics:
+        research_metrics = {**research_metrics, "status": "error", "error": _text(data.get("_agent_error"))}
     answer = _dict(data.get("ai_final_answer")) or data
     score = _score(answer.get("score") if "score" in answer else answer.get("ai_score"))
     verdict = _text(answer.get("verdict"))
@@ -244,6 +249,7 @@ def normalize_trade_coach_answer(
             "LLM output lacked required final-answer fields",
             answer_evidence=answer_evidence,
             context=context,
+            research_metrics=research_metrics,
         )
 
     better_status = _dict(context.get("better_opportunity")).get("status")
@@ -252,6 +258,7 @@ def normalize_trade_coach_answer(
             "LLM better_choice was not present in supported better candidates",
             answer_evidence=answer_evidence,
             context=context,
+            research_metrics=research_metrics,
         )
     if better_status != "available":
         better_choice = MISSING
@@ -277,6 +284,7 @@ def normalize_trade_coach_answer(
         },
         "answer_evidence": answer_evidence,
         "missing_reason": "",
+        "research_metrics": research_metrics,
         "source_trace": build_final_answer_source_trace(context, source="llm"),
     }
 

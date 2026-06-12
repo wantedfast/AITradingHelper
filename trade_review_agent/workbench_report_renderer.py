@@ -258,20 +258,38 @@ def _diagnostic_panel(diagnostics: dict[str, Any], trade: dict[str, Any]) -> str
     status = _s(diagnostics.get("status"), "unknown")
     errors = _list(diagnostics.get("errors"))
     timings = _d(diagnostics.get("timings"))
+    token_usage = _d(diagnostics.get("token_usage"))
+    cost = _d(token_usage.get("cost_estimate"))
+    llm_calls = _list(diagnostics.get("llm_calls"))
+    cache = _d(diagnostics.get("cache_diagnostics"))
     rows = _list(trade.get("rows"))
     timing_items = [
+        ("Total", timings.get("total_report_generation_seconds")),
         ("行情拉取", timings.get("market_fetch_seconds")),
         ("Workbench Agents", timings.get("workbench_agents_seconds")),
         ("交易执行", timings.get("trade_execution_seconds")),
         ("交易执行 LLM", timings.get("trade_execution_llm_seconds")),
         ("V3 Pipeline", timings.get("v3_pipeline_seconds")),
         ("Presenter", timings.get("presenter_seconds")),
+        ("Analysis", timings.get("analysis_seconds")),
+        ("Write", timings.get("write_artifacts_seconds")),
     ]
     timing_html = "".join(
         f"<div><b>{escape(label)}</b><span>{_format_seconds(value)}</span></div>"
         for label, value in timing_items
         if value not in (None, "")
     )
+    token_html = "".join(
+        [
+            f"<div><b>LLM calls</b><span>{_num(token_usage.get('observed_call_count'), 0):.0f} observed / {_num(token_usage.get('missing_usage_call_count'), 0):.0f} missing usage</span></div>",
+            f"<div><b>Actual tokens</b><span>{_num(token_usage.get('actual_total_tokens'), 0):.0f} total ({_num(token_usage.get('actual_input_tokens'), 0):.0f} in / {_num(token_usage.get('actual_output_tokens'), 0):.0f} out)</span></div>",
+            f"<div><b>Estimated tokens</b><span>{_num(token_usage.get('estimated_total_tokens'), 0):.0f}</span></div>",
+            f"<div><b>Actual cost</b><span>${_num(cost.get('usd'), 0):.4f} / RMB {_num(cost.get('cny'), 0):.2f}</span></div>",
+            f"<div><b>Estimated cost</b><span>${_num(cost.get('estimated_usd'), 0):.4f} / RMB {_num(cost.get('estimated_cny'), 0):.2f}</span></div>",
+            f"<div><b>Cache</b><span>hit={escape(_s(cache.get('cache_hit'), 'False'))} stale={escape(_s(cache.get('cache_stale'), 'False'))}</span></div>",
+        ]
+    )
+    call_html = _llm_call_rows(llm_calls)
     error_html = _li(errors) if errors else "<li>未记录到 Agent 错误。</li>"
     return f"""
     <section class="section">
@@ -289,12 +307,45 @@ def _diagnostic_panel(diagnostics: dict[str, Any], trade: dict[str, Any]) -> str
           <div class="kv">{timing_html or '<div><b>暂无</b><span>未记录</span></div>'}</div>
         </article>
       </div>
+      <div class="status-grid" style="margin-top:18px">
+        <article class="mini-card">
+          <h3>Token & Cost</h3>
+          <div class="kv">{token_html}</div>
+        </article>
+        <article class="mini-card">
+          <h3>LLM Calls</h3>
+          <div class="kv">{call_html or '<div><b>None</b><span>not recorded</span></div>'}</div>
+        </article>
+      </div>
       <div style="margin-top:18px">
         <h2>交易记录</h2>
         <table class="trade-table"><thead><tr><th>日期</th><th>方向</th><th>价格</th><th>数量</th><th>金额</th></tr></thead><tbody>{_trade_rows(rows)}</tbody></table>
       </div>
     </section>
 """
+
+
+def _llm_call_rows(items: list[Any]) -> str:
+    rows = []
+    for item in items[:8]:
+        item = _d(item)
+        stage = _s(item.get("stage"), "unknown")
+        status = _s(item.get("status"), "unknown")
+        tokens = _num(item.get("actual_total_tokens") or item.get("estimated_total_tokens"), 0)
+        seconds = _format_seconds(item.get("seconds"))
+        suffix = " actual" if _num(item.get("actual_total_tokens"), 0) else " estimated"
+        flags = []
+        if item.get("fallback_used"):
+            flags.append("fallback")
+        if item.get("cache_hit"):
+            flags.append("cache")
+        if item.get("retry_after"):
+            flags.append(f"retry_after={_s(item.get('retry_after'), '')}")
+        flag_text = f" | {', '.join(flags)}" if flags else ""
+        rows.append(
+            f"<div><b>{escape(stage)}</b><span>{escape(status)} | {seconds} | {tokens:.0f}{suffix}{escape(flag_text)}</span></div>"
+        )
+    return "".join(rows)
 
 
 def _format_seconds(value: Any) -> str:

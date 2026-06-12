@@ -29,7 +29,9 @@ class IndustryAgentPerformanceTests(unittest.TestCase):
                 industry_agent.build_stock_context = fail_context
                 result = industry_agent.get_workbench_profile_data("600000", "Test")
 
-                self.assertEqual(cached, result)
+                self.assertEqual(cached["company"], result["company"])
+                self.assertEqual(True, result["cache_diagnostics"]["cache_hit"])
+                self.assertEqual(key, result["cache_diagnostics"]["cache_key"])
             finally:
                 industry_agent.CACHE_PATH = original_cache
                 industry_agent.build_stock_context = original_build_context

@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from typing import Any
 
 import pandas as pd
 
 from .industry_profiles import IndustryProfile
+from .report_usage import estimate_tokens
 from .workbench_agents import _call_json_agent, _model, _parse_json_object_text, _post_json
 
 
@@ -186,13 +188,29 @@ def run_presenter_workbench_agent(*, fallback: dict[str, Any], workbench: dict[s
     except Exception as exc:
         errors.append(f"presenter_structured_output_failed: {exc}")
 
+    system_prompt = _presenter_system_prompt()
+    user_prompt = _presenter_user_prompt(fallback, workbench, analysis)
+    max_output_tokens = _presenter_max_output_tokens()
+    started = time.perf_counter()
     try:
         agent_data = _call_json_agent(
-            _presenter_system_prompt(),
-            _presenter_user_prompt(fallback, workbench, analysis),
-            max_output_tokens=_presenter_max_output_tokens(),
+            system_prompt,
+            user_prompt,
+            max_output_tokens=max_output_tokens,
             allow_web=False,
         )
+        if isinstance(agent_data, dict):
+            agent_data["research_metrics"] = {
+                "seconds": round(time.perf_counter() - started, 4),
+                "model": os.getenv("PRESENTER_AGENT_MODEL") or _model(None),
+                "mode": "presenter_json_fallback",
+                "allow_web": False,
+                "max_output_tokens": max_output_tokens,
+                "estimated_input_tokens": estimate_tokens(system_prompt) + estimate_tokens(user_prompt),
+                "estimated_output_tokens": max_output_tokens,
+                "api_usage": agent_data.get("_api_usage"),
+                "fallback_used": True,
+            }
     except Exception as exc:
         errors.append(f"presenter_json_fallback_failed: {exc}")
         return _presenter_failed_fallback(fallback, errors)
@@ -260,6 +278,7 @@ def _presenter_user_prompt(fallback: dict[str, Any], workbench: dict[str, Any], 
 
 
 def _call_presenter_structured_json(system_prompt: str, user_prompt: str, *, max_output_tokens: int | None = None) -> dict[str, Any]:
+    started = time.perf_counter()
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
     if not api_key or "your-openai-api-key" in api_key:
         raise RuntimeError("OPENAI_API_KEY is required for presenter agent")
@@ -282,7 +301,18 @@ def _call_presenter_structured_json(system_prompt: str, user_prompt: str, *, max
         raise RuntimeError(f"presenter agent refused structured output: {message.get('refusal')}")
     content = str(message.get("content") or "")
     try:
-        return _parse_json_object_text(content)
+        parsed = _parse_json_object_text(content)
+        parsed["research_metrics"] = {
+            "seconds": round(time.perf_counter() - started, 4),
+            "model": model,
+            "mode": "presenter_structured",
+            "allow_web": False,
+            "max_output_tokens": max_output,
+            "estimated_input_tokens": estimate_tokens(system_prompt) + estimate_tokens(user_prompt),
+            "estimated_output_tokens": max_output,
+            "api_usage": _dict(data.get("usage")),
+        }
+        return parsed
     except Exception as exc:
         raise PresenterJSONError(str(exc), raw_text=content) from exc
 
@@ -291,7 +321,9 @@ def _repair_presenter_json(raw_text: Any) -> dict[str, Any]:
     raw = str(raw_text or "").strip()
     if not raw:
         return {"_agent_error": "presenter json repair skipped: empty raw text"}
-    return _call_json_agent(
+    started = time.perf_counter()
+    max_output_tokens = 2600
+    repaired = _call_json_agent(
         "修复一个损坏的 Presenter JSON。只返回合法 JSON 对象，不要 Markdown，不要解释。所有面向用户文本必须为简体中文。",
         json.dumps(
             {
@@ -325,9 +357,22 @@ def _repair_presenter_json(raw_text: Any) -> dict[str, Any]:
             },
             ensure_ascii=False,
         ),
-        max_output_tokens=2600,
+        max_output_tokens=max_output_tokens,
         allow_web=False,
     )
+    if isinstance(repaired, dict):
+        repaired["research_metrics"] = {
+            "seconds": round(time.perf_counter() - started, 4),
+            "model": os.getenv("PRESENTER_AGENT_MODEL") or _model(None),
+            "mode": "presenter_json_repair",
+            "allow_web": False,
+            "max_output_tokens": max_output_tokens,
+            "estimated_input_tokens": estimate_tokens(raw[:12000]),
+            "estimated_output_tokens": max_output_tokens,
+            "api_usage": repaired.get("_api_usage"),
+            "fallback_used": True,
+        }
+    return repaired
 
 
 def _presenter_json_schema() -> dict[str, Any]:

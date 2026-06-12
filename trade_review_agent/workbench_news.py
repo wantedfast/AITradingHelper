@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import os
+import time
 from typing import Any
 
+from .report_usage import estimate_tokens
 from .workbench_agents import _call_json_agent
 
 NEWS_CONTEXT_MODEL = "gpt-4.1"
@@ -19,18 +21,46 @@ def build_market_catalyst_context(code: str, name: str) -> dict[str, Any]:
         return _fallback_market_catalyst(code, name)
 
     queries = _market_catalyst_queries(code, name)
+    started = time.perf_counter()
+    system_prompt = _market_catalyst_system_prompt()
+    user_prompt = _market_catalyst_user_prompt(code, name, queries)
+    max_output_tokens = _news_max_output_tokens()
+    model = _news_context_model()
     try:
         raw = _call_json_agent(
-            _market_catalyst_system_prompt(),
-            _market_catalyst_user_prompt(code, name, queries),
-            model_override=_news_context_model(),
-            max_output_tokens=_news_max_output_tokens(),
+            system_prompt,
+            user_prompt,
+            model_override=model,
+            max_output_tokens=max_output_tokens,
             allow_web=True,
         )
-        return _normalize_market_catalyst(raw, code, name, queries)
+        result = _normalize_market_catalyst(raw, code, name, queries)
+        result["research_metrics"] = {
+            "seconds": round(time.perf_counter() - started, 4),
+            "model": model,
+            "mode": "market_catalyst",
+            "allow_web": True,
+            "max_output_tokens": max_output_tokens,
+            "estimated_input_tokens": estimate_tokens(system_prompt) + estimate_tokens(user_prompt),
+            "estimated_output_tokens": max_output_tokens,
+            "api_usage": raw.get("_api_usage") if isinstance(raw, dict) else {},
+        }
+        return result
     except Exception as exc:
         data = _fallback_market_catalyst(code, name, queries)
         data["agent_error"] = f"market_catalyst_failed: {exc}"
+        data["research_metrics"] = {
+            "seconds": round(time.perf_counter() - started, 4),
+            "model": model,
+            "mode": "market_catalyst",
+            "allow_web": True,
+            "max_output_tokens": max_output_tokens,
+            "estimated_input_tokens": estimate_tokens(system_prompt) + estimate_tokens(user_prompt),
+            "estimated_output_tokens": max_output_tokens,
+            "status": "error",
+            "error": str(exc),
+            "fallback_used": True,
+        }
         data["unknowns"].append("无法稳定获取最新市场催化剂，需要人工复核公告、异动和研报。")
         return data
 

@@ -11,6 +11,7 @@ import pandas as pd
 from .data_provider import MarketDataProvider
 from .execution_structurer import structure_trade_execution_payload
 from .industry_profiles import IndustryProfile
+from .report_usage import estimate_tokens
 from .trade_execution_agent import analyze_trade_execution
 from .trade_execution_data import build_trade_execution_data_context
 from .trade_rounds import TradeRound
@@ -62,18 +63,26 @@ def enhance_trade_execution_with_llm(
     context = _compact_execution_llm_context(execution_payload, workbench)
     model_context = {"research_model_tier": research_model_tier, "research_model": _dict(workbench.get("research_model"))}
     model = os.getenv("TRADE_EXECUTION_LLM_MODEL") or _research_model(model_context)
+    system_prompt = _trade_execution_llm_system_prompt()
+    user_prompt = _trade_execution_llm_user_prompt(context)
+    max_output_tokens = _trade_execution_llm_max_output_tokens()
     try:
         llm_output = _call_json_agent(
-            _trade_execution_llm_system_prompt(),
-            _trade_execution_llm_user_prompt(context),
+            system_prompt,
+            user_prompt,
             model_override=model,
-            max_output_tokens=_trade_execution_llm_max_output_tokens(),
+            max_output_tokens=max_output_tokens,
             allow_web=False,
         )
         llm_output["research_metrics"] = {
             "seconds": round(time.perf_counter() - started, 4),
             "model": model,
             "mode": "trade_execution_llm",
+            "allow_web": False,
+            "max_output_tokens": max_output_tokens,
+            "estimated_input_tokens": estimate_tokens(system_prompt) + estimate_tokens(user_prompt),
+            "estimated_output_tokens": max_output_tokens,
+            "api_usage": llm_output.get("_api_usage") if isinstance(llm_output, dict) else {},
         }
         enhanced = _merge_trade_execution_llm_output(execution_payload, llm_output)
         _write_json(output.with_suffix(".trade_execution_llm_output.json"), llm_output)
@@ -82,7 +91,18 @@ def enhance_trade_execution_with_llm(
     except Exception as exc:
         error_payload = {
             "_agent_error": f"trade_execution_llm_failed: {exc}",
-            "research_metrics": {"seconds": round(time.perf_counter() - started, 4), "model": model},
+            "research_metrics": {
+                "seconds": round(time.perf_counter() - started, 4),
+                "model": model,
+                "mode": "trade_execution_llm",
+                "allow_web": False,
+                "max_output_tokens": max_output_tokens,
+                "estimated_input_tokens": estimate_tokens(system_prompt) + estimate_tokens(user_prompt),
+                "estimated_output_tokens": max_output_tokens,
+                "status": "error",
+                "error": str(exc),
+                "fallback_used": True,
+            },
         }
         _write_json(output.with_suffix(".trade_execution_llm_output.json"), error_payload)
         execution_payload = dict(execution_payload if isinstance(execution_payload, dict) else {})

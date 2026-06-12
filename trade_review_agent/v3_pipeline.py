@@ -54,6 +54,8 @@ def run_v3_pipeline(
         "wang_industry": wang if isinstance(wang, dict) else {},
         "public_equity": public_equity if isinstance(public_equity, dict) else {},
         "trade_execution": execution_layer,
+        "better_opportunity": _without_key(better, "source_trace"),
+        "trade_coach": _without_key(coach, "source_trace"),
     }
     return {
         "schema_version": "yinghang-v3-pipeline",
@@ -126,15 +128,17 @@ def _merge_source_trace(
         "",
         default="fallback" if _has_value(trade_execution) else "missing",
     )
+    wang_source = _agent_payload_source(wang)
+    public_source = _agent_payload_source(public_equity)
     trace: dict[str, Any] = {
         "research_layers.market_scout": _source_entry(
             market_source
         ),
         "research_layers.wang_industry": _source_entry(
-            "llm" if _has_value(wang) else "missing"
+            wang_source
         ),
         "research_layers.public_equity": _source_entry(
-            "llm" if _has_value(public_equity) else "missing"
+            public_source
         ),
         "research_layers.trade_execution": _source_entry(
             execution_source,
@@ -145,7 +149,7 @@ def _merge_source_trace(
         ),
         "answer_evidence.investment_thesis": _source_entry(
             "llm"
-            if _has_value(wang) or _has_value(public_equity)
+            if wang_source == "llm" or public_source == "llm"
             else "missing"
         ),
         "answer_evidence.better_candidates": _source_entry(
@@ -171,13 +175,13 @@ def _merge_source_trace(
         trace,
         "research_layers.wang_industry",
         wang,
-        source_for_path=lambda _path: "llm",
+        source_for_path=lambda _path: wang_source,
     )
     _trace_leaves(
         trace,
         "research_layers.public_equity",
         public_equity,
-        source_for_path=lambda _path: "llm",
+        source_for_path=lambda _path: public_source,
     )
     _trace_leaves(
         trace,
@@ -191,7 +195,7 @@ def _merge_source_trace(
     )
     evidence_sources = {
         "why_stock_moved": market_source,
-        "investment_thesis": "llm",
+        "investment_thesis": "llm" if wang_source == "llm" or public_source == "llm" else "missing",
         "better_candidates": "llm" if better_available else "missing",
         "mistake_diagnosis": "llm" if coach_available else "missing",
         "future_rules": "llm" if coach_available else "missing",
@@ -218,6 +222,17 @@ def _has_market_facts(market_scout: dict[str, Any]) -> bool:
 
 def _has_value(value: Any) -> bool:
     return value not in (None, "", [], {}, "missing", "pending verification")
+
+
+def _agent_payload_source(payload: Any) -> str:
+    data = payload if isinstance(payload, dict) else {}
+    if not _has_value(data):
+        return "missing"
+    metrics = _dict(data.get("research_metrics"))
+    status = str(metrics.get("status") or "").lower()
+    if data.get("_agent_error") or metrics.get("fallback_used") or status in {"error", "rate_limited"}:
+        return "fallback"
+    return "llm"
 
 
 def _source_entry(source: str, detail: str = "") -> dict[str, str]:

@@ -4,12 +4,14 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 from pathlib import Path
+import time
 from typing import Any
 
 import pandas as pd
 
 from .config import load_env
 from .industry_profiles import DEFAULT_PROFILE, IndustryProfile
+from .report_usage import estimate_tokens
 from .workbench_agents import normalize_research_model_tier, research_model_metadata, run_public_equity_workbench_agent, run_wang_workbench_agent
 from .workbench_composer import compose_workbench_data, profile_from_workbench
 from .workbench_context import build_stock_context
@@ -59,7 +61,7 @@ def get_workbench_profile_data(
     if not _refresh_enabled():
         cached = cache.get(key)
         if isinstance(cached, dict):
-            return cached
+            return _with_cache_diagnostics(cached, key)
 
     context = build_stock_context(
         code=code,
@@ -78,7 +80,7 @@ def get_workbench_profile_data(
     if not _refresh_enabled():
         cached = cache.get(key)
         if isinstance(cached, dict):
-            return cached
+            return _with_cache_diagnostics(cached, key)
 
     agent_errors: list[str] = []
     wang, equity, first_errors = _run_research_agents(context)
@@ -124,33 +126,77 @@ def _run_research_agents(context: dict[str, Any]) -> tuple[dict[str, Any], dict[
 
 
 def _run_wang_research_agent(context: dict[str, Any], tier: str) -> tuple[dict[str, Any], list[str]]:
+    started = time.perf_counter()
     try:
         candidate = run_wang_workbench_agent(context)
         if isinstance(candidate, dict) and candidate.get("_agent_error"):
-            return {}, [f"WANG agent failed ({tier}): {candidate.get('_agent_error')}"]
+            message = f"WANG agent failed ({tier}): {candidate.get('_agent_error')}"
+            return _failed_agent_payload("wang_industry", "WANG Agent", context, tier, started, message), [message]
         elif isinstance(candidate, dict) and _research_payload_present(candidate):
             return candidate, []
         elif isinstance(candidate, dict):
-            return {}, [f"WANG agent returned empty research payload ({tier})"]
+            message = f"WANG agent returned empty research payload ({tier})"
+            return _failed_agent_payload("wang_industry", "WANG Agent", context, tier, started, message), [message]
         else:
-            return {}, [f"WANG agent returned non-object data ({tier})"]
+            message = f"WANG agent returned non-object data ({tier})"
+            return _failed_agent_payload("wang_industry", "WANG Agent", context, tier, started, message), [message]
     except Exception as exc:
-        return {}, [f"WANG agent failed ({tier}): {exc}"]
+        message = f"WANG agent failed ({tier}): {exc}"
+        return _failed_agent_payload("wang_industry", "WANG Agent", context, tier, started, message), [message]
 
 
 def _run_public_equity_research_agent(context: dict[str, Any], tier: str) -> tuple[dict[str, Any], list[str]]:
+    started = time.perf_counter()
     try:
         candidate = run_public_equity_workbench_agent(context)
         if isinstance(candidate, dict) and candidate.get("_agent_error"):
-            return {}, [f"Public Equity agent failed ({tier}): {candidate.get('_agent_error')}"]
+            message = f"Public Equity agent failed ({tier}): {candidate.get('_agent_error')}"
+            return _failed_agent_payload("public_equity", "Public Equity Agent", context, tier, started, message), [message]
         elif isinstance(candidate, dict) and _research_payload_present(candidate):
             return candidate, []
         elif isinstance(candidate, dict):
-            return {}, [f"Public Equity agent returned empty research payload ({tier})"]
+            message = f"Public Equity agent returned empty research payload ({tier})"
+            return _failed_agent_payload("public_equity", "Public Equity Agent", context, tier, started, message), [message]
         else:
-            return {}, [f"Public Equity agent returned non-object data ({tier})"]
+            message = f"Public Equity agent returned non-object data ({tier})"
+            return _failed_agent_payload("public_equity", "Public Equity Agent", context, tier, started, message), [message]
     except Exception as exc:
-        return {}, [f"Public Equity agent failed ({tier}): {exc}"]
+        message = f"Public Equity agent failed ({tier}): {exc}"
+        return _failed_agent_payload("public_equity", "Public Equity Agent", context, tier, started, message), [message]
+
+
+def _failed_agent_payload(stage: str, agent: str, context: dict[str, Any], tier: str, started: float, message: str) -> dict[str, Any]:
+    model = research_model_metadata(tier).get("model") or "gpt-4.1"
+    return {
+        "_agent_error": message,
+        "research_metrics": {
+            "seconds": round(time.perf_counter() - started, 4),
+            "agent": agent,
+            "model": model,
+            "mode": stage,
+            "status": "error",
+            "error": message,
+            "fallback_used": True,
+            "estimated_input_tokens": estimate_tokens(json.dumps(context, ensure_ascii=False, default=str)),
+            "estimated_output_tokens": 0,
+        },
+    }
+
+
+def _with_cache_diagnostics(payload: dict[str, Any], key: str) -> dict[str, Any]:
+    data = dict(payload)
+    diagnostics = data.get("cache_diagnostics")
+    diagnostics = dict(diagnostics if isinstance(diagnostics, dict) else {})
+    diagnostics.update(
+        {
+            "cache_hit": True,
+            "cache_key": key,
+            "cache_stale": False,
+            "provider": "industry_profile_cache",
+        }
+    )
+    data["cache_diagnostics"] = diagnostics
+    return data
 
 
 def _memo_text(agent_data: dict[str, Any]) -> str:
