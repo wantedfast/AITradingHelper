@@ -14,6 +14,7 @@ from .data_provider import (
 )
 from .execution_structurer import normalize_execution_data_context
 from .industry_profiles import IndustryProfile
+from .peer_discovery_provider import PeerCandidate, PeerDiscoveryProvider
 from .trade_rounds import TradeRound
 
 
@@ -32,21 +33,6 @@ class QuoteFetch:
     source: str
     status: str
     errors: tuple[str, ...] = ()
-
-
-PEER_HINTS: dict[str, dict[str, Any]] = {
-    "002491": {
-        "concept": "光通信/光纤光缆",
-        "sector_symbol": "515880",
-        "peers": (
-            ("亨通光电", "600487"),
-            ("中天科技", "600522"),
-            ("烽火通信", "600498"),
-            ("特发信息", "000070"),
-            ("永鼎股份", "600105"),
-        ),
-    }
-}
 
 
 def build_trade_execution_data_context(
@@ -243,12 +229,13 @@ def _build_peer_quotes(
     start: date,
     end: date,
 ) -> tuple[list[dict[str, Any]], str, str, list[str]]:
-    peers = _peer_candidates(profile, trade_round.code)
+    peers = _peer_candidates(profile, trade_round.code, trade_round.name)
     rows: list[dict[str, Any]] = []
     sources: list[str] = []
     errors: list[str] = []
     target_date = trade_round.start_date
-    for name, code in peers:
+    for peer in peers:
+        name, code = peer.name, peer.code
         fetch = fetch_daily_with_source(provider=provider, table="stock_daily", symbol=code, start=start, end=end, kind="stock")
         errors.extend(fetch.errors)
         sources.append(fetch.source)
@@ -262,6 +249,8 @@ def _build_peer_quotes(
                 "five_day_pct": _window_return(fetch.frame, target_date, 5),
                 "twenty_day_pct": _window_return(fetch.frame, target_date, 20),
                 "source": fetch.source,
+                "universe_source": peer.universe_source,
+                "universe_detail": peer.universe_detail,
             }
         )
     status = "missing"
@@ -320,33 +309,17 @@ def _quote_rows(
 
 
 def _sector_identity(profile: IndustryProfile, code: str) -> tuple[str, str]:
-    hint = PEER_HINTS.get(code, {})
     name = str(getattr(profile, "theme", "") or "").strip()
     if not name or "待" in name or "寰" in name:
-        name = str(hint.get("concept") or getattr(profile, "node", "") or "板块/概念")
+        name = str(getattr(profile, "node", "") or "板块/概念")
     symbol = str(getattr(profile, "sector_symbol", "") or "").strip()
     if not symbol or symbol == "sh000300":
-        symbol = str(hint.get("sector_symbol") or "sh000300")
+        symbol = "sh000300"
     return name[:40], symbol
 
 
-def _peer_candidates(profile: IndustryProfile, code: str) -> list[tuple[str, str]]:
-    rows: list[tuple[str, str]] = []
-    for item in getattr(profile, "peers", ()) or ():
-        text = str(item or "").strip()
-        digits = "".join(ch for ch in text if ch.isdigit())
-        if len(digits) >= 6:
-            rows.append((text.replace(digits[-6:], "").strip(" -_()（）") or digits[-6:], digits[-6:]))
-    rows.extend(PEER_HINTS.get(code, {}).get("peers", ()))
-    seen = {code}
-    deduped = []
-    for name, peer_code in rows:
-        clean_code = "".join(ch for ch in str(peer_code) if ch.isdigit())[-6:]
-        if len(clean_code) != 6 or clean_code in seen:
-            continue
-        seen.add(clean_code)
-        deduped.append((str(name or clean_code), clean_code))
-    return deduped[:6]
+def _peer_candidates(profile: IndustryProfile, code: str, name: str = "") -> list[PeerCandidate]:
+    return PeerDiscoveryProvider().discover(code=code, name=name, profile=profile, limit=6)
 
 
 def _trade_dates(trade_round: TradeRound) -> list[date]:

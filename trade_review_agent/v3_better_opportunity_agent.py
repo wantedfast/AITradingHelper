@@ -20,6 +20,8 @@ def run_better_opportunity_agent(
         wang=wang,
         public_equity=public_equity,
     )
+    context["raw_peer_snapshot_count"] = len(context["peer_snapshot"])
+    context["peer_snapshot"] = _verified_comparable_peers(context)
     missing_reason = data_sufficiency_error(context)
     if missing_reason or llm_caller is None:
         return missing_better_opportunity(
@@ -61,21 +63,16 @@ def build_better_opportunity_context(
 def data_sufficiency_error(context: dict[str, Any]) -> str:
     peers = context.get("peer_snapshot")
     if not isinstance(peers, list) or not peers:
+        if context.get("raw_peer_snapshot_count"):
+            return "missing peer with verified comparable universe and real metrics"
         return "missing comparable peer_snapshot"
 
     target = _dict(context.get("company"))
     target_code = _text(target.get("code"))
     target_name = _text(target.get("name"))
-    comparable = [
-        peer
-        for peer in peers
-        if isinstance(peer, dict)
-        and (_text(peer.get("code")) != target_code or _text(peer.get("name")) != target_name)
-        and isinstance(peer.get("metrics"), dict)
-        and bool(peer.get("metrics"))
-    ]
+    comparable = _verified_comparable_peers(context, target_code=target_code, target_name=target_name)
     if not comparable:
-        return "missing peer with comparable real metrics"
+        return "missing peer with verified comparable universe and real metrics"
 
     has_industry_context = any(
         _has_value(value)
@@ -112,6 +109,39 @@ def missing_better_opportunity(
             "replacement_thesis": {"source": "missing", "detail": reason},
         },
     }
+
+
+def _verified_comparable_peers(
+    context: dict[str, Any],
+    *,
+    target_code: str | None = None,
+    target_name: str | None = None,
+) -> list[dict[str, Any]]:
+    peers = context.get("peer_snapshot")
+    if not isinstance(peers, list):
+        return []
+    if target_code is None or target_name is None:
+        target = _dict(context.get("company"))
+        target_code = _text(target.get("code"))
+        target_name = _text(target.get("name"))
+    verified: list[dict[str, Any]] = []
+    for peer in peers:
+        if not isinstance(peer, dict):
+            continue
+        if _text(peer.get("code")) == target_code and _text(peer.get("name")) == target_name:
+            continue
+        if not isinstance(peer.get("metrics"), dict) or not peer.get("metrics"):
+            continue
+        trace = _dict(peer.get("source_trace"))
+        code_trace = _dict(trace.get("code"))
+        name_trace = _dict(trace.get("name"))
+        metrics_trace = _dict(trace.get("metrics"))
+        if code_trace.get("source") != "real_data" or name_trace.get("source") != "real_data":
+            continue
+        if metrics_trace.get("source") != "real_data":
+            continue
+        verified.append(peer)
+    return verified
 
 
 def normalize_better_opportunity(

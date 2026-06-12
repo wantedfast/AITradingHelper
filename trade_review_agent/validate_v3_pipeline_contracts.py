@@ -179,6 +179,13 @@ def _market_facts() -> dict[str, Any]:
                 "metrics": {"order_growth_pct": 30, "return_20d_pct": 12},
                 "as_of": "2026-06-01",
                 "source": "tencent_finance",
+                "universe_source": "akshare",
+                "universe_detail": "AKShare industry constituents: Grid equipment",
+                "source_trace": {
+                    "code": {"source": "real_data"},
+                    "name": {"source": "real_data"},
+                    "metrics": {"source": "real_data"},
+                },
             }
         ],
     }

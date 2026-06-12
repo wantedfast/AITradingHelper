@@ -9,6 +9,12 @@ QUOTE_SOURCE_TYPES = {
     "fallback_existing": "fallback",
 }
 
+UNIVERSE_SOURCE_TYPES = {
+    "akshare": "real_data",
+    "profile": "fallback",
+    "missing": "missing",
+}
+
 
 def build_peer_snapshot(execution_data_context: Any) -> list[dict[str, Any]]:
     """Build comparable peer facts from verified Trade Execution quote rows."""
@@ -35,6 +41,9 @@ def build_peer_snapshot(execution_data_context: Any) -> list[dict[str, Any]]:
         metrics = _quote_metrics(peer)
         if not metrics:
             continue
+        universe_source = _text(peer.get("universe_source")) or "missing"
+        universe_source_type = UNIVERSE_SOURCE_TYPES.get(universe_source, "missing")
+        universe_detail = _text(peer.get("universe_detail")) or "Peer universe source unavailable"
         detail = f"Trade Execution peer quotes from {source}"
         snapshot.append(
             {
@@ -43,15 +52,18 @@ def build_peer_snapshot(execution_data_context: Any) -> list[dict[str, Any]]:
                 "metrics": metrics,
                 "as_of": as_of or "missing",
                 "source": source,
+                "universe_source": universe_source,
+                "universe_detail": universe_detail,
                 "source_trace": {
-                    "code": {"source": source_type, "detail": detail},
-                    "name": {"source": source_type, "detail": detail},
+                    "code": {"source": universe_source_type, "detail": universe_detail},
+                    "name": {"source": universe_source_type, "detail": universe_detail},
                     "metrics": {"source": source_type, "detail": detail},
                     "as_of": {
                         "source": "real_data" if as_of else "missing",
                         "detail": "Trade anchor date" if as_of else "Trade anchor date unavailable",
                     },
                     "source": {"source": source_type, "detail": detail},
+                    "universe_source": {"source": universe_source_type, "detail": universe_detail},
                 },
             }
         )

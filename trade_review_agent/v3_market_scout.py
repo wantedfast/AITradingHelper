@@ -326,6 +326,9 @@ def _normalize_peers(value: Any) -> list[dict[str, Any]]:
                 "metrics": metrics,
                 "as_of": _text(item.get("as_of")) or MISSING,
                 "source": _text(item.get("source")) or MISSING,
+                "universe_source": _text(item.get("universe_source")) or MISSING,
+                "universe_detail": _text(item.get("universe_detail")) or MISSING,
+                "source_trace": _dict(item.get("source_trace")),
             }
         )
     return result[:20]

@@ -54,6 +54,8 @@ class PeerSnapshotPipelineTests(unittest.TestCase):
                             "five_day_pct": 8.25,
                             "twenty_day_pct": 13.4,
                             "source": "tencent_finance",
+                            "universe_source": "akshare",
+                            "universe_detail": "AKShare industry constituents: verified sector",
                         }
                     ]
                 },
@@ -70,6 +72,7 @@ class PeerSnapshotPipelineTests(unittest.TestCase):
         )
         self.assertEqual("2026-05-11", snapshot[0]["as_of"])
         self.assertEqual("real_data", snapshot[0]["source_trace"]["metrics"]["source"])
+        self.assertEqual("real_data", snapshot[0]["source_trace"]["code"]["source"])
 
         market_scout = run_market_scout(
             {"market_theme": "verified sector", "peer_snapshot": snapshot}
@@ -103,6 +106,44 @@ class PeerSnapshotPipelineTests(unittest.TestCase):
         self.assertEqual("available", result["status"])
         self.assertEqual("600001", result["better_candidates"][0]["code"])
         self.assertEqual(1, len(calls))
+
+    def test_fallback_peer_snapshot_does_not_reach_better_opportunity(self) -> None:
+        snapshot = build_peer_snapshot(
+            {
+                "trade_facts": {"trades": [{"date": "2026-05-11"}]},
+                "market_data": {
+                    "peers": [
+                        {
+                            "code": "600001",
+                            "name": "Fallback Peer",
+                            "day_pct": 2.5,
+                            "five_day_pct": 8.25,
+                            "source": "fallback_existing",
+                            "universe_source": "profile",
+                            "universe_detail": "Industry profile peer list",
+                        }
+                    ]
+                },
+            }
+        )
+        called = False
+
+        def llm_caller(_system_prompt: str, _user_prompt: str) -> dict:
+            nonlocal called
+            called = True
+            return {}
+
+        result = run_better_opportunity_agent(
+            company={"code": "600000", "name": "Target"},
+            market_scout={"market_theme": "verified sector", "peer_snapshot": snapshot},
+            wang={"industry_position": "same sector"},
+            public_equity={},
+            llm_caller=llm_caller,
+        )
+
+        self.assertEqual("missing", result["status"])
+        self.assertIn("verified comparable universe", result["missing_reason"])
+        self.assertFalse(called)
 
     def test_missing_or_unverified_peer_data_stays_missing(self) -> None:
         snapshot = build_peer_snapshot(

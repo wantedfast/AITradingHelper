@@ -214,6 +214,8 @@ def _normalize_peer_quote(value: Any) -> dict[str, Any]:
         "five_day_pct": _num(value.get("five_day_pct")),
         "twenty_day_pct": _num(value.get("twenty_day_pct")),
         "source": _source(value.get("source")),
+        "universe_source": _text(value.get("universe_source")),
+        "universe_detail": _text(value.get("universe_detail")),
     }
 
 
