@@ -167,7 +167,9 @@ def build_judge_prompt(stock_name: str, stock_code: str, buy_date: str, buy_time
 - 买对了吗？
 - 买点质量如何？
 - 属于主线还是跟风？
-- 是否值得重来一次继续买？
+- 如果重来一次应该如何交易？
+
+给出综合评分：评分基于是否买对，买点质量，是否主线，相关公司比较等因素综合判断，满分100分。
 
 二、交易逻辑
 说明资金为什么买它。
@@ -210,7 +212,13 @@ def build_judge_prompt(stock_name: str, stock_code: str, buy_date: str, buy_time
 
 
 def call_doubao_search(api_key: str, prompt: str) -> dict[str, Any]:
-    body = {"model": ARK_MODEL, "input": prompt, "tools": [{"type": "web_search"}]}
+    body = {
+        "model": ARK_MODEL,
+        "input": prompt,
+        "tools": [{"type": "web_search"}],
+        "thinking": {"type": "enabled"},
+        "reasoning": {"effort": "medium"},
+    }
     request = urllib.request.Request(
         f"{ARK_BASE_URL}/responses",
         data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
