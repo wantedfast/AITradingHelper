@@ -34,14 +34,13 @@ type ReportPayload = {
   status_url?: string;
   count?: number;
   index_url?: string;
-  workbench_url?: string;
+  debug_url?: string;
   presenter_url?: string;
   requested_research_model_tier?: string;
   research_model_tier?: string;
   actual_research_model_tier?: string;
   wang_model?: string;
-  public_equity_model?: string;
-  reports?: Array<{ url?: string; workbench_url?: string; presenter_url?: string; title?: string; score?: number; rating?: string; requested_research_model_tier?: string; research_model_tier?: string; actual_research_model_tier?: string }>;
+  reports?: Array<{ url?: string; debug_url?: string; presenter_url?: string; title?: string; score?: number; rating?: string; requested_research_model_tier?: string; research_model_tier?: string; actual_research_model_tier?: string }>;
   error?: string;
   detail?: string;
   request_id?: string;
@@ -50,7 +49,7 @@ type ReportPayload = {
   retryable?: boolean;
 };
 
-type WorkbenchData = {
+type AgentSummaryData = {
   company?: {
     code?: string;
     name?: string;
@@ -115,7 +114,7 @@ const copy = {
     "\u4e0a\u4f20\u4ea4\u5272\u5355\u6216\u622a\u56fe\uff0c\u7cfb\u7edf\u4f1a\u8bc6\u522b\u4e70\u5356\u8bb0\u5f55\uff0c\u8c03\u7528\u884c\u60c5\u4e0e\u6295\u7814 Agent\uff0c\u751f\u6210\u80fd\u770b\u61c2\u3001\u80fd\u590d\u76d8\u3001\u80fd\u6c89\u6dc0\u89c4\u5219\u7684\u62a5\u544a\u3002",
   workflowTitle: "\u4ea4\u5272\u5355 \u2192 \u4ea4\u6613\u4e8b\u5b9e \u2192 \u5e02\u573a\u73af\u5883 \u2192 \u590d\u76d8\u7ed3\u8bba",
   workflowDesc:
-    "上传后系统会识别交易事实，调用产业链和上市公司投研 Agent，Workbench 会把研究 JSON 合并成可视化报告。",
+    "上传后系统会识别交易事实，调用正式 AI 复盘 Agent，并生成可打开的复盘报告。",
   uploadTitle: "\u4e0a\u4f20\u4ea4\u5272\u5355 / \u4ea4\u6613\u622a\u56fe",
   uploadReady: "\u4ea4\u5272\u5355\u5df2\u5c31\u7eea",
   uploadDesc:
@@ -130,7 +129,7 @@ const copy = {
     "\u6587\u4ef6\u4ec5\u7528\u4e8e\u672c\u6b21\u5206\u6790\uff1b\u5efa\u8bae\u4e0a\u4f20\u5b8c\u6574\u6210\u4ea4\u65f6\u95f4\u3001\u65b9\u5411\u3001\u4ef7\u683c\u3001\u6570\u91cf\u548c\u8d39\u7528\u3002",
   reportQuestion: "\u62a5\u544a\u5c06\u56de\u7b54\u4ec0\u4e48\uff1f",
   modulesTitle: "\u590d\u76d8\u4e0d\u662f\u8bb0\u8d26\uff0c\u662f\u628a\u4ea4\u6613\u80fd\u529b\u62c6\u5f00\u8bad\u7ec3\u3002",
-  reportTitle: "Research Workbench",
+  reportTitle: "AI复盘结果",
   reportDesc: "\u70b9\u51fb\u67e5\u770b\u62a5\u544a\u540e\uff0c\u4f1a\u5728\u5f53\u524d\u5e94\u7528\u5185\u6253\u5f00\u62a5\u544a\u8be6\u60c5\u9875\u3002",
   openNew: "\u67e5\u770b\u62a5\u544a",
   openBrowser: "\u6253\u5f00\u62a5\u544a",
@@ -209,9 +208,9 @@ export default function ReviewPage() {
   const [generating, setGenerating] = useState(false);
   const [reportUrl, setReportUrl] = useState("");
   const [reportRoute, setReportRoute] = useState("");
-  const [workbenchUrl, setWorkbenchUrl] = useState("");
-  const [workbenchData, setWorkbenchData] = useState<WorkbenchData | null>(null);
-  const [workbenchLoading, setWorkbenchLoading] = useState(false);
+  const [agentSummaryUrl, setAgentSummaryUrl] = useState("");
+  const [agentSummaryData, setAgentSummaryData] = useState<AgentSummaryData | null>(null);
+  const [agentSummaryLoading, setAgentSummaryLoading] = useState(false);
   const [reportCount, setReportCount] = useState(0);
   const [researchModelTier, setResearchModelTier] = useState<"standard" | "better">("standard");
   const [researchModelLabel, setResearchModelLabel] = useState(STANDARD_REPORT_LABEL);
@@ -248,8 +247,8 @@ export default function ReviewPage() {
     setSelectedFile(file);
     setReportUrl("");
     setReportRoute("");
-    setWorkbenchUrl("");
-    setWorkbenchData(null);
+    setAgentSummaryUrl("");
+    setAgentSummaryData(null);
     setReportCount(0);
     setResearchModelLabel(selectedResearchModelLabel());
     setErrorText("");
@@ -338,8 +337,8 @@ export default function ReviewPage() {
     setGenerating(true);
     setErrorText("");
     setReportUrl("");
-    setWorkbenchUrl("");
-    setWorkbenchData(null);
+    setAgentSummaryUrl("");
+    setAgentSummaryData(null);
     setReportCount(0);
     showToast(copy.calling);
 
@@ -375,23 +374,28 @@ export default function ReviewPage() {
       if (!reportId) throw new Error(copy.noUrl);
 
       const nextReportRoute = `/review/report/${encodeURIComponent(reportId)}`;
-      const structuredUrl = firstReport?.presenter_url || payload.presenter_url || firstReport?.workbench_url || payload.workbench_url || "";
+      const structuredUrl =
+        firstReport?.presenter_url ||
+        payload.presenter_url ||
+        firstReport?.debug_url ||
+        payload.debug_url ||
+        "";
       setReportUrl(`${API_BASE}${firstReportUrl}`);
       setReportRoute(nextReportRoute);
-      setWorkbenchUrl(structuredUrl ? `${API_BASE}${structuredUrl}` : "");
+      setAgentSummaryUrl(structuredUrl ? `${API_BASE}${structuredUrl}` : "");
       setReportCount(payload.count || payload.reports?.length || 1);
       setResearchModelLabel(formatResearchModelLabel(payload));
       if (structuredUrl) {
-        setWorkbenchLoading(true);
+        setAgentSummaryLoading(true);
         try {
           const structuredResponse = await fetch(`${API_BASE}${structuredUrl}`, { cache: "no-store" });
           if (structuredResponse.ok) {
-            setWorkbenchData((await structuredResponse.json()) as WorkbenchData);
+            setAgentSummaryData((await structuredResponse.json()) as AgentSummaryData);
           }
         } catch {
-          setWorkbenchData(null);
+          setAgentSummaryData(null);
         } finally {
-          setWorkbenchLoading(false);
+          setAgentSummaryLoading(false);
         }
       }
       showToast(copy.done);
@@ -409,8 +413,8 @@ export default function ReviewPage() {
     setSelectedFile(null);
     setReportUrl("");
     setReportRoute("");
-    setWorkbenchUrl("");
-    setWorkbenchData(null);
+    setAgentSummaryUrl("");
+    setAgentSummaryData(null);
     setReportCount(0);
     setResearchModelLabel(selectedResearchModelLabel());
     setErrorText("");
@@ -424,16 +428,16 @@ export default function ReviewPage() {
 
 
   return (
-    <main className="review-workbench-page">
-      <aside className="review-workbench-rail">
-        <Link className="review-workbench-brand" href="/">
+    <main className="review-console-page">
+      <aside className="review-console-rail">
+        <Link className="review-console-brand" href="/">
           <span className="brand-mark">{"\u76c8"}</span>
           <span>
             <b>{"\u76c8\u822a"}</b>
             <small>REVIEW TERMINAL</small>
           </span>
         </Link>
-        <nav className="review-workbench-nav" aria-label={copy.navLabel}>
+        <nav className="review-console-nav" aria-label={copy.navLabel}>
           <Link className="active" href="/review">
             <FileUp />
             <span><b>{copy.review}</b></span>
@@ -448,19 +452,19 @@ export default function ReviewPage() {
           <span>{copy.railNote}</span>
         </div>
       </aside>
-      <section className="review-workbench-main">
-        <header className="review-workbench-topbar">
+      <section className="review-console-main">
+        <header className="review-console-topbar">
           <div className="review-topbar-title">
             <span className="topbar-icon"><FileUp /></span>
             <b>{copy.pageTitle}</b>
             <i>BETA</i>
           </div>
-          <div className="review-workbench-actions">
+          <div className="review-console-actions">
             <button type="button" onClick={() => showToast(copy.helpSoon)} aria-label="help"><CircleHelp /><span>{"\u5e2e\u52a9"}</span></button>
             <button type="button" onClick={() => showToast(copy.noNotice)} aria-label="notice"><BellRing /><span>{"\u901a\u77e5"}</span></button>
           </div>
         </header>
-        <section className="review-workbench-hero">
+        <section className="review-console-hero">
           <div className="review-hero-copy">
             <p className="review-kicker">AI REVIEW AGENT</p>
             <h1>
@@ -588,7 +592,7 @@ export default function ReviewPage() {
             })}
           </div>
         </section>
-        <section className="review-workbench-grid">
+        <section className="review-console-grid">
           <section className="research-panel report-outline-panel">
             <span className="card-label">{"\u62a5\u544a\u4f1a\u91cd\u70b9\u5206\u6790"}</span>
             <div className="report-analysis-layout">
@@ -645,7 +649,7 @@ export default function ReviewPage() {
                 {copy.openNew} <ArrowRight />
               </button>
             </div>
-            <WorkbenchSummary data={workbenchData} loading={workbenchLoading} url={workbenchUrl} />
+            <AgentSummary data={agentSummaryData} loading={agentSummaryLoading} url={agentSummaryUrl} />
           </section>
         )}
       </section>
@@ -660,11 +664,11 @@ function extractReportId(url?: string) {
 }
 
 
-function WorkbenchSummary({ data, loading, url }: { data: WorkbenchData | null; loading: boolean; url: string }) {
+function AgentSummary({ data, loading, url }: { data: AgentSummaryData | null; loading: boolean; url: string }) {
   if (loading) {
     return (
-      <section className="workbench-summary-panel">
-        <div className="workbench-summary-loading">
+      <section className="agent-summary-panel">
+        <div className="agent-summary-loading">
           <Loader2 className="spin-icon" />
           <span>{"\u6b63\u5728\u8bfb\u53d6\u7ed3\u6784\u5316\u7814\u7a76\u7ed3\u679c..."}</span>
         </div>
@@ -674,7 +678,7 @@ function WorkbenchSummary({ data, loading, url }: { data: WorkbenchData | null; 
 
   if (!data) {
     return (
-      <section className="workbench-summary-panel is-empty">
+      <section className="agent-summary-panel is-empty">
         <span>{"\u7ed3\u6784\u5316\u7814\u7a76 JSON \u6682\u672a\u8fd4\u56de"}</span>
         {url && <a href={url} target="_blank" rel="noreferrer">{"\u67e5\u770b\u539f\u59cb JSON"}</a>}
       </section>
@@ -692,17 +696,17 @@ function WorkbenchSummary({ data, loading, url }: { data: WorkbenchData | null; 
   const recheck = cleanList(data.action?.recheck_conditions).slice(0, 4);
 
   return (
-    <section className="workbench-summary-panel">
-      <div className="workbench-summary-hero">
+    <section className="agent-summary-panel">
+      <div className="agent-summary-hero">
         <div>
           <span className="card-label">Structured Research</span>
           <h3>{companyName}</h3>
           <p>{companyCode}{companyCode && themeOrSector ? " - " : ""}{themeOrSector}</p>
-          <div className="workbench-chip-row">
+          <div className="agent-chip-row">
             {tags.map((tag) => <span key={tag}>{tag}</span>)}
           </div>
         </div>
-        <div className="workbench-rating-grid">
+        <div className="agent-rating-grid">
           <MetricCard label={"\u884c\u4e1a\u8bc4\u7ea7"} value={data.hero?.industry_rating || "-"} />
           <MetricCard label={"\u6295\u8d44\u8bc4\u7ea7"} value={data.hero?.investment_rating || "-"} />
           <MetricCard label={"\u4ea4\u6613\u8bc4\u5206"} value={formatValue(data.trade_review?.trade_score, "-")} />
@@ -710,7 +714,7 @@ function WorkbenchSummary({ data, loading, url }: { data: WorkbenchData | null; 
         </div>
       </div>
 
-      <div className="workbench-summary-grid">
+      <div className="agent-summary-grid">
         <article>
           <h4>{"\u6838\u5fc3\u7ed3\u8bba"}</h4>
           <ul className="cyan-bullets">
@@ -779,7 +783,7 @@ function WorkbenchSummary({ data, loading, url }: { data: WorkbenchData | null; 
 }
 function MetricCard({ label, value }: { label: string; value: string | number }) {
   return (
-    <div className="workbench-metric-card">
+    <div className="agent-metric-card">
       <span>{label}</span>
       <b>{value}</b>
     </div>

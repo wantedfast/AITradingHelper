@@ -2,7 +2,7 @@ $ErrorActionPreference = "Stop"
 
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Frontend = Join-Path $Root "frontend"
-$Node = "C:\Users\wantedfast\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe"
+$Node = "C:\Users\GERALT\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe"
 $Python = "D:\an\python.exe"
 $BackendBase = "http://127.0.0.1:8600"
 
@@ -109,7 +109,7 @@ if (-not $env:INTERNAL_API_BASE) {
 }
 
 $BackendProcess = Start-Process -FilePath $Python `
-  -ArgumentList @("-m", "trade_review_agent.simple_api") `
+  -ArgumentList @("-m", "trade_review_agent.api.simple_api") `
   -WorkingDirectory $Root `
   -WindowStyle Hidden `
   -PassThru
