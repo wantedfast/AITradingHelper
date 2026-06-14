@@ -56,6 +56,7 @@ type Presenter = {
     };
     items?: ReviewItem[];
     nextActions?: {
+      text?: string | null;
       items?: NextAction[];
     };
   };

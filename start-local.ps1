@@ -2,16 +2,55 @@ $ErrorActionPreference = "Stop"
 
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Frontend = Join-Path $Root "frontend"
-$Node = "C:\Users\GERALT\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe"
-$Python = "D:\an\python.exe"
+$RuntimeRoot = Join-Path $env:USERPROFILE ".cache\codex-runtimes\codex-primary-runtime\dependencies"
+$BundledNode = Join-Path $RuntimeRoot "node\bin\node.exe"
+$BundledPython = Join-Path $RuntimeRoot "python\python.exe"
+$Node = $null
+$Python = $null
 $BackendBase = "http://127.0.0.1:8600"
 
-if (-not (Test-Path $Node)) {
-  throw "Node runtime not found: $Node"
+if (Test-Path $BundledNode) {
+  $Node = $BundledNode
+} else {
+  $NodeCommand = Get-Command node -ErrorAction SilentlyContinue
+  if ($NodeCommand) {
+    $Node = $NodeCommand.Source
+  }
 }
 
-if (-not (Test-Path $Python)) {
-  $Python = "python"
+if (-not $Node -or -not (Test-Path $Node)) {
+  throw "Node runtime not found. Checked bundled runtime and system node."
+}
+
+function Test-PythonRuntime {
+  param([string]$Candidate)
+
+  if (-not $Candidate -or -not (Test-Path $Candidate)) {
+    return $false
+  }
+  $PreviousErrorPreference = $ErrorActionPreference
+  $ErrorActionPreference = "SilentlyContinue"
+  & $Candidate -c "import pandas, requests" 2>$null
+  $Succeeded = $LASTEXITCODE -eq 0
+  $ErrorActionPreference = $PreviousErrorPreference
+  return $Succeeded
+}
+
+$PythonCandidates = @($BundledPython, "D:\an\python.exe")
+$PythonCommand = Get-Command python -ErrorAction SilentlyContinue
+if ($PythonCommand) {
+  $PythonCandidates += $PythonCommand.Source
+}
+
+foreach ($Candidate in $PythonCandidates | Select-Object -Unique) {
+  if (Test-PythonRuntime -Candidate $Candidate) {
+    $Python = $Candidate
+    break
+  }
+}
+
+if (-not $Python) {
+  throw "Python runtime with pandas and requests was not found."
 }
 
 function Stop-PortListeners {
@@ -51,7 +90,7 @@ function Import-DotEnv {
     $parts = $line.Split("=", 2)
     $key = $parts[0].Trim().TrimStart([char]0xFEFF)
     $value = $parts[1].Trim().Trim('"').Trim("'")
-    if ($key -and -not [System.Environment]::GetEnvironmentVariable($key, "Process")) {
+    if ($key) {
       [System.Environment]::SetEnvironmentVariable($key, $value, "Process")
     }
   }
