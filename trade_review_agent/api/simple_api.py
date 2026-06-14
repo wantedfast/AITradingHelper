@@ -7,6 +7,7 @@ import re
 import socket
 import threading
 import traceback
+import csv
 from dataclasses import asdict
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -36,10 +37,12 @@ from trade_review_agent.auth_system import (
     submit_feedback,
 )
 from trade_review_agent.watch.alerts import AlertPlan, evaluate_plans, event_dedupe_key, load_plans, save_plans
-from trade_review_agent.ocr.ai_trade_parser import OpenAITradeParsingError
+from trade_review_agent.ocr.ai_trade_parser import TradeParsingError
 from trade_review_agent.common.config import load_env
 from trade_review_agent.ocr.ocr_trades import trade_file_to_trade_csv
 from trade_review_agent.common.openai_agent_api import OpenAIAgentError
+from trade_review_agent.market.stock_resolver import resolve_stock_code
+from trade_review_agent.review.final_wang_agent.agent import FinalWangAgentError
 from trade_review_agent.review.simple_wang_report import run_simple_wang_review
 from trade_review_agent.watch.voice_settings import VoiceSettings, load_voice_settings, normalize_voice_settings, save_voice_settings, voice_settings_payload
 from trade_review_agent.watch.watch_agent import build_watch_plan, narrate_alert_event, preview_voice_line
@@ -343,25 +346,36 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                 return
 
             filename, data, fields = self._read_multipart_form(content_type)
-            if not filename or data is None:
+            manual_trade = _manual_trade_from_fields(fields)
+            if not manual_trade and (not filename or data is None):
                 self._json({"error": "missing file"}, status=400)
                 return
             research_model_tier = normalize_research_model_tier(fields.get("research_model_tier") or fields.get("better_report"))
 
-            filename = Path(filename or "upload.csv").name
-            suffix = Path(filename).suffix.lower()
-            if suffix not in ALLOWED_SUFFIXES:
+            upload_path: Path | None = None
+            suffix = ""
+            if not manual_trade:
+                filename = Path(filename or "upload.csv").name
+                suffix = Path(filename).suffix.lower()
+            if not manual_trade and suffix not in ALLOWED_SUFFIXES:
                 self._json({"error": "仅支持 xls/xlsx/csv/txt 成交记录文件或 png/jpg/jpeg/webp 成交截图"}, status=400)
                 return
 
             self._set_stage("create_run")
             run_id = uuid4().hex
             run_dir = REPORT_DIR / run_id
-            self._set_stage("write_upload", run_id=run_id)
-            upload_path = UPLOAD_DIR / f"{run_id}{suffix}"
             UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
             run_dir.mkdir(parents=True, exist_ok=True)
-            upload_path.write_bytes(data)
+            if manual_trade:
+                self._set_stage("write_manual_trade", run_id=run_id)
+                (run_dir / "manual_trade_source.json").write_text(
+                    json.dumps(manual_trade, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+            else:
+                self._set_stage("write_upload", run_id=run_id)
+                upload_path = UPLOAD_DIR / f"{run_id}{suffix}"
+                upload_path.write_bytes(data or b"")
 
             self._set_stage("queued", run_id=run_id)
             _write_report_status(run_id, run_dir, status="queued", stage="queued", request_id=self._request_id)
@@ -369,6 +383,7 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                 run_id=run_id,
                 run_dir=run_dir,
                 upload_path=upload_path,
+                manual_trade=manual_trade,
                 research_model_tier=research_model_tier,
                 request_id=self._request_id,
             )
@@ -705,11 +720,99 @@ def _content_type_with_charset(filename: str) -> str:
     return content_type
 
 
+def _manual_trade_from_fields(fields: dict[str, str]) -> dict | None:
+    enabled = str(fields.get("manual_trade") or "").strip().lower()
+    if enabled not in {"1", "true", "yes", "on"}:
+        return None
+
+    stock_name = str(fields.get("manual_stock_name") or "").strip()
+    stock_code = "".join(ch for ch in str(fields.get("manual_stock_code") or "") if ch.isdigit())
+    trade_at = str(fields.get("manual_trade_at") or "").strip()
+    side = _manual_side(fields.get("manual_side"))
+    position = str(fields.get("manual_position") or "").strip()
+
+    if not stock_name:
+        raise ValueError("请填写股票名字")
+    if not stock_code:
+        stock_code = resolve_stock_code(stock_name)
+    if not stock_code:
+        raise ValueError(f"无法识别股票名称：{stock_name}")
+    if not trade_at:
+        raise ValueError("请选择交易时间")
+
+    trade_date, trade_time = _manual_trade_datetime(trade_at)
+    quantity = _manual_position_quantity(position) if position else 1.0
+    stock_code = stock_code.zfill(6)[-6:]
+    return {
+        "trade_date": trade_date,
+        "trade_time": trade_time,
+        "code": stock_code,
+        "name": stock_name,
+        "side": side,
+        "quantity": quantity,
+        "price": 1.0,
+        "amount": quantity,
+        "fee": 0.0,
+        "market": "A-share",
+        "source_text": f"manual input; position={position or 'not provided'}",
+        "position": position,
+    }
+
+
+def _manual_side(value: object) -> str:
+    text = str(value or "").strip().lower()
+    if text in {"sell", "s"} or "卖" in text:
+        return "sell"
+    return "buy"
+
+
+def _manual_trade_datetime(value: str) -> tuple[str, str]:
+    normalized = value.strip().replace("T", " ")
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+        try:
+            parsed = datetime.strptime(normalized, fmt)
+            return parsed.strftime("%Y-%m-%d"), parsed.strftime("%H:%M:%S")
+        except ValueError:
+            continue
+    raise ValueError("交易时间格式不正确")
+
+
+def _manual_position_quantity(position: str) -> float:
+    match = re.search(r"\d+(?:\.\d+)?", position.replace(",", ""))
+    if not match:
+        return 1.0
+    value = float(match.group(0))
+    return value if value > 0 else 1.0
+
+
+def _write_manual_trade_csv(manual_trade: dict, output_csv: Path) -> Path:
+    columns = [
+        "trade_date",
+        "trade_time",
+        "code",
+        "name",
+        "side",
+        "quantity",
+        "price",
+        "amount",
+        "fee",
+        "market",
+        "source_text",
+    ]
+    output_csv.parent.mkdir(parents=True, exist_ok=True)
+    with output_csv.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=columns)
+        writer.writeheader()
+        writer.writerow({column: manual_trade.get(column, "") for column in columns})
+    return output_csv
+
+
 def _start_report_generation_task(
     *,
     run_id: str,
     run_dir: Path,
-    upload_path: Path,
+    upload_path: Path | None,
+    manual_trade: dict | None,
     research_model_tier: str,
     request_id: str,
 ) -> None:
@@ -719,6 +822,7 @@ def _start_report_generation_task(
             "run_id": run_id,
             "run_dir": run_dir,
             "upload_path": upload_path,
+            "manual_trade": manual_trade,
             "research_model_tier": research_model_tier,
             "request_id": request_id,
         },
@@ -732,16 +836,22 @@ def _run_report_generation_task(
     *,
     run_id: str,
     run_dir: Path,
-    upload_path: Path,
+    upload_path: Path | None,
+    manual_trade: dict | None,
     research_model_tier: str,
     request_id: str,
 ) -> None:
     stage = "queued"
     try:
-        stage = "ocr_trade_file"
+        stage = "manual_trade_file" if manual_trade else "ocr_trade_file"
         _write_report_status(run_id, run_dir, status="running", stage=stage, request_id=request_id)
         trades_path = run_dir / "ai_trades.csv"
-        trade_file_to_trade_csv(upload_path, trades_path)
+        if manual_trade:
+            _write_manual_trade_csv(manual_trade, trades_path)
+        else:
+            if upload_path is None:
+                raise ValueError("missing upload file")
+            trade_file_to_trade_csv(upload_path, trades_path)
 
         stage = "build_ai_review"
         _write_report_status(run_id, run_dir, status="running", stage=stage, request_id=request_id)
@@ -830,10 +940,10 @@ def _recover_report_manifest(run_id: str, run_dir: Path | None) -> dict | None:
 
 
 def _api_error_payload(exc: Exception, *, request_id: str, run_id: str = "", stage: str = "") -> dict:
-    if isinstance(exc, OpenAITradeParsingError):
+    if isinstance(exc, TradeParsingError):
         payload = {
             "error": exc.user_message,
-            "detail": _openai_error_detail(exc),
+            "detail": _trade_parsing_error_detail(exc),
             "code": exc.code,
             "retryable": exc.retryable,
             "request_id": request_id,
@@ -853,6 +963,16 @@ def _api_error_payload(exc: Exception, *, request_id: str, run_id: str = "", sta
             "run_id": run_id,
             "stage": stage,
         }
+    if isinstance(exc, FinalWangAgentError):
+        return {
+            "error": exc.user_message,
+            "detail": _redact_sensitive(exc.detail),
+            "code": exc.code,
+            "retryable": exc.retryable,
+            "request_id": request_id,
+            "run_id": run_id,
+            "stage": stage,
+        }
     return {
         "error": "Internal Server Error",
         "detail": _redact_sensitive(str(exc)),
@@ -863,7 +983,7 @@ def _api_error_payload(exc: Exception, *, request_id: str, run_id: str = "", sta
 
 
 def _api_error_status(exc: Exception, fallback: int = 500) -> int:
-    if isinstance(exc, OpenAITradeParsingError):
+    if isinstance(exc, TradeParsingError):
         if exc.status_code == 429:
             return 429
         if exc.status_code in {400, 401, 403, 404}:
@@ -879,17 +999,25 @@ def _api_error_status(exc: Exception, fallback: int = 500) -> int:
         if exc.status_code and 500 <= exc.status_code <= 599:
             return 503
         return 503 if exc.retryable else 502
+    if isinstance(exc, FinalWangAgentError):
+        if exc.status_code == 429:
+            return 429
+        if exc.status_code in {400, 401, 403, 404}:
+            return 502
+        if exc.status_code and 500 <= exc.status_code <= 599:
+            return 503
+        return 503 if exc.retryable else 502
     return fallback
 
 
-def _openai_error_detail(exc: OpenAITradeParsingError) -> str:
+def _trade_parsing_error_detail(exc: TradeParsingError) -> str:
     if exc.status_code == 429:
-        return "OpenAI 请求过于频繁，已重试后仍被限流"
+        return "DeepSeek 识别请求过于频繁，已重试后仍被限流"
     if exc.status_code in {500, 502, 503, 504}:
-        return f"OpenAI 服务临时异常（HTTP {exc.status_code}），已重试后仍失败"
+        return f"DeepSeek 识别服务临时异常（HTTP {exc.status_code}），已重试后仍失败"
     if exc.status_code:
-        return f"OpenAI 解析请求失败（HTTP {exc.status_code}）"
-    return "OpenAI 解析请求失败"
+        return f"DeepSeek 识别请求失败（HTTP {exc.status_code}）"
+    return "DeepSeek 识别请求失败"
 
 
 def _openai_agent_error_detail(exc: OpenAIAgentError) -> str:

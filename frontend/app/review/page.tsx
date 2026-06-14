@@ -12,6 +12,7 @@ import {
   ChevronRight,
   CircleHelp,
   ClipboardCheck,
+  CalendarClock,
   FileSpreadsheet,
   FileText,
   FileUp,
@@ -57,6 +58,13 @@ type ReportPayload = {
     referral_count?: number;
     created_at?: string;
   };
+};
+
+type ManualTradeForm = {
+  stockName: string;
+  tradeDate: string;
+  tradeTime: string;
+  side: "buy" | "sell";
 };
 
 type AgentSummaryData = {
@@ -215,6 +223,13 @@ export default function ReviewPage() {
   const toastTimer = useRef<number | null>(null);
 
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [inputMode, setInputMode] = useState<"upload" | "manual">("upload");
+  const [manualTrade, setManualTrade] = useState<ManualTradeForm>({
+    stockName: "",
+    tradeDate: "",
+    tradeTime: "",
+    side: "buy",
+  });
   const [generating, setGenerating] = useState(false);
   const [reportUrl, setReportUrl] = useState("");
   const [reportRoute, setReportRoute] = useState("");
@@ -254,6 +269,7 @@ export default function ReviewPage() {
 
   function acceptFile(file?: File) {
     if (!file) return;
+    setInputMode("upload");
     setSelectedFile(file);
     setReportUrl("");
     setReportRoute("");
@@ -263,6 +279,37 @@ export default function ReviewPage() {
     setResearchModelLabel(selectedResearchModelLabel());
     setErrorText("");
     showToast(copy.accepted);
+  }
+
+  function updateManualTrade<K extends keyof ManualTradeForm>(key: K, value: ManualTradeForm[K]) {
+    setManualTrade((current) => ({ ...current, [key]: value }));
+    setErrorText("");
+  }
+
+  function manualTradeReady() {
+    return Boolean(
+      manualTrade.stockName.trim() &&
+        manualTrade.tradeDate.trim() &&
+        normalizedManualTradeTime(),
+    );
+  }
+
+  function normalizedManualTradeTime() {
+    const match = manualTrade.tradeTime.trim().match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+    if (!match) return "";
+    const hour = Number(match[1]);
+    const minute = Number(match[2]);
+    const second = match[3] === undefined ? 0 : Number(match[3]);
+    if (hour > 23 || minute > 59 || second > 59) return "";
+    return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}:${String(second).padStart(2, "0")}`;
+  }
+
+  function manualTradeError() {
+    if (!manualTrade.stockName.trim()) return "请填写股票名字";
+    if (!manualTrade.tradeDate.trim()) return "请选择交易日期";
+    if (!manualTrade.tradeTime.trim()) return "请填写交易时间";
+    if (!normalizedManualTradeTime()) return "交易时间请使用 HH:mm:ss，例如 09:25:00";
+    return "";
   }
 
   function handleDrop(event: React.DragEvent<HTMLDivElement>) {
@@ -338,8 +385,14 @@ export default function ReviewPage() {
   }
 
   async function generateReport() {
-    if (!selectedFile) {
+    if (inputMode === "upload" && !selectedFile) {
       openFilePicker();
+      return;
+    }
+    if (inputMode === "manual" && !manualTradeReady()) {
+      const message = manualTradeError();
+      setErrorText(message);
+      showToast(message);
       return;
     }
     if (generating) return;
@@ -359,8 +412,16 @@ export default function ReviewPage() {
 
     try {
       const formData = new FormData();
-      formData.append("file", selectedFile);
       formData.append("research_model_tier", researchModelTier);
+      if (inputMode === "manual") {
+        const tradeTime = normalizedManualTradeTime();
+        formData.append("manual_trade", "1");
+        formData.append("manual_stock_name", manualTrade.stockName.trim());
+        formData.append("manual_trade_at", `${manualTrade.tradeDate.trim()}T${tradeTime}`);
+        formData.append("manual_side", manualTrade.side);
+      } else if (selectedFile) {
+        formData.append("file", selectedFile);
+      }
 
       const response = await fetch(`${API_BASE}/api/reports`, {
         method: "POST",
@@ -440,6 +501,7 @@ export default function ReviewPage() {
 
   function resetUpload() {
     setSelectedFile(null);
+    setManualTrade({ stockName: "", tradeDate: "", tradeTime: "", side: "buy" });
     setReportUrl("");
     setReportRoute("");
     setAgentSummaryUrl("");
@@ -518,8 +580,28 @@ export default function ReviewPage() {
               accept=".xls,.xlsx,.csv,.txt,image/*"
               onChange={handleFileChange}
             />
+            <div className="trade-input-mode-toggle" aria-label="交割单输入方式">
+              <button
+                className={inputMode === "upload" ? "active" : ""}
+                type="button"
+                onClick={() => setInputMode("upload")}
+                disabled={generating}
+              >
+                <FileUp />
+                上传交割单
+              </button>
+              <button
+                className={inputMode === "manual" ? "active" : ""}
+                type="button"
+                onClick={() => setInputMode("manual")}
+                disabled={generating}
+              >
+                <ClipboardCheck />
+                临时手动输入
+              </button>
+            </div>
             <div
-              className={`upload-stage ${isDragging ? "is-dragging" : ""}`}
+              className={`upload-stage ${isDragging ? "is-dragging" : ""} ${inputMode === "manual" ? "is-hidden" : ""}`}
               onClick={openFilePicker}
               onDragEnter={(event) => {
                 event.preventDefault();
@@ -551,7 +633,66 @@ export default function ReviewPage() {
                 })}
               </div>
             </div>
-            {selectedFile && (
+            {inputMode === "manual" && (
+              <div className="manual-trade-stage">
+                <div className="manual-trade-head">
+                  <CalendarClock />
+                  <div>
+                    <h2>手动录入一笔交易</h2>
+                    <p>临时入口：不走 OCR，直接用你填写的交易事实生成复盘。</p>
+                  </div>
+                </div>
+                <div className="manual-trade-grid">
+                  <label>
+                    <span>股票名字</span>
+                    <input
+                      value={manualTrade.stockName}
+                      onChange={(event) => updateManualTrade("stockName", event.target.value)}
+                      placeholder="例如：东材科技"
+                      disabled={generating}
+                    />
+                  </label>
+                  <label>
+                    <span>交易日期</span>
+                    <input
+                      type="date"
+                      value={manualTrade.tradeDate}
+                      onChange={(event) => updateManualTrade("tradeDate", event.target.value)}
+                      disabled={generating}
+                    />
+                  </label>
+                  <label>
+                    <span>交易时间</span>
+                    <input
+                      value={manualTrade.tradeTime}
+                      onChange={(event) => updateManualTrade("tradeTime", event.target.value)}
+                      placeholder="09:25:00"
+                      inputMode="numeric"
+                      disabled={generating}
+                    />
+                  </label>
+                </div>
+                <div className="manual-side-toggle" aria-label="交易方向">
+                  <button
+                    className={manualTrade.side === "buy" ? "active" : ""}
+                    type="button"
+                    onClick={() => updateManualTrade("side", "buy")}
+                    disabled={generating}
+                  >
+                    买入
+                  </button>
+                  <button
+                    className={manualTrade.side === "sell" ? "active" : ""}
+                    type="button"
+                    onClick={() => updateManualTrade("side", "sell")}
+                    disabled={generating}
+                  >
+                    卖出
+                  </button>
+                </div>
+              </div>
+            )}
+            {(selectedFile || inputMode === "manual") && (
               <>
                 <div className="report-mode-toggle" aria-label="报告详细程度">
                   <button
@@ -597,7 +738,7 @@ export default function ReviewPage() {
                 <span>{errorText}</span>
               </div>
             )}
-            {selectedFile && (
+            {(selectedFile || inputMode === "manual") && (
               <div className="privacy-line">
                 <LockKeyhole />
                 <span>{copy.privacy}</span>

@@ -37,11 +37,11 @@ HEADERS = [
 
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
-MAX_OPENAI_ATTEMPTS = 3
+MAX_AI_OCR_ATTEMPTS = 3
 MAX_RETRY_SLEEP_SECONDS = 8.0
 
 
-class OpenAITradeParsingError(RuntimeError):
+class TradeParsingError(RuntimeError):
     def __init__(
         self,
         message: str,
@@ -50,7 +50,7 @@ class OpenAITradeParsingError(RuntimeError):
         retryable: bool = False,
         retry_after: float | None = None,
         user_message: str = "AI 解析服务暂时不可用，请稍后重试",
-        code: str = "openai_trade_parsing_failed",
+        code: str = "trade_parsing_failed",
     ):
         super().__init__(message)
         self.status_code = status_code
@@ -58,6 +58,9 @@ class OpenAITradeParsingError(RuntimeError):
         self.retry_after = retry_after
         self.user_message = user_message
         self.code = code
+
+
+OpenAITradeParsingError = TradeParsingError
 
 
 @dataclass(frozen=True)
@@ -120,7 +123,7 @@ def parse_trade_image_to_intents(image_path: str | Path) -> list[TradeIntent]:
             ],
         },
     ]
-    return _normalize_intents(_openai_extract(messages), f"vision:{image_path.name}")
+    return _normalize_intents(_ai_extract(messages), f"vision:{image_path.name}")
 
 
 def parse_trade_text_to_intents(text: str, source: str | Path | None = None) -> list[TradeIntent]:
@@ -128,7 +131,7 @@ def parse_trade_text_to_intents(text: str, source: str | Path | None = None) -> 
         {"role": "system", "content": _system_prompt("text")},
         {"role": "user", "content": f"source={source or ''}\n{text[:16000]}"},
     ]
-    return _normalize_intents(_openai_extract(messages), f"text:{source or ''}")
+    return _normalize_intents(_ai_extract(messages), f"text:{source or ''}")
 
 
 def intents_to_frame(intents: list[TradeIntent]) -> pd.DataFrame:
@@ -169,29 +172,29 @@ def _system_prompt(mode: str) -> str:
     )
 
 
-def _openai_extract(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _ai_extract(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     load_env(BASE_DIR / ".env")
-    api_key = os.getenv("OPENAI_API_KEY", "").strip()
-    if not api_key or "your-openai-api-key" in api_key:
-        raise OpenAITradeParsingError(
-            "OPENAI_API_KEY is not configured",
+    api_key = _ocr_api_key()
+    if not api_key:
+        raise TradeParsingError(
+            "DeepSeek OCR API key is not configured",
             status_code=503,
             retryable=False,
-            user_message="AI 解析服务尚未配置，请检查 OPENAI_API_KEY",
-            code="openai_not_configured",
+            user_message="AI 解析服务尚未配置，请检查 DEEPSEEK_API_KEY",
+            code="deepseek_not_configured",
         )
 
     payload = {
-        "model": os.getenv("OPENAI_MODEL", "gpt-4.1-mini"),
+        "model": _ocr_model(),
         "messages": messages,
         "temperature": 0,
         "response_format": {"type": "json_object"},
     }
-    base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").strip().rstrip("/")
+    base_url = _ocr_base_url()
     parsed: dict[str, Any] | None = None
-    last_error: OpenAITradeParsingError | None = None
+    last_error: TradeParsingError | None = None
 
-    for attempt in range(1, MAX_OPENAI_ATTEMPTS + 1):
+    for attempt in range(1, MAX_AI_OCR_ATTEMPTS + 1):
         request = urllib.request.Request(
             f"{base_url}/chat/completions",
             data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
@@ -207,43 +210,65 @@ def _openai_extract(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         except urllib.error.HTTPError as exc:
             retry_after = _retry_after_seconds(exc)
             retryable = exc.code in RETRYABLE_STATUS_CODES
-            last_error = _openai_http_error(exc, retry_after=retry_after, retryable=retryable)
-            if not retryable or attempt >= MAX_OPENAI_ATTEMPTS:
+            last_error = _ai_http_error(exc, retry_after=retry_after, retryable=retryable)
+            if not retryable or attempt >= MAX_AI_OCR_ATTEMPTS:
                 raise last_error from exc
             _sleep_before_retry(attempt, retry_after)
         except (urllib.error.URLError, TimeoutError) as exc:
-            last_error = OpenAITradeParsingError(
-                "OpenAI trade parsing request failed",
+            last_error = TradeParsingError(
+                "DeepSeek trade parsing request failed",
                 status_code=503,
                 retryable=True,
                 user_message="AI 解析服务网络暂时不可用，请稍后重试",
-                code="openai_unavailable",
+                code="deepseek_unavailable",
             )
-            if attempt >= MAX_OPENAI_ATTEMPTS:
+            if attempt >= MAX_AI_OCR_ATTEMPTS:
                 raise last_error from exc
             _sleep_before_retry(attempt, None)
         except (json.JSONDecodeError, KeyError, IndexError) as exc:
-            raise OpenAITradeParsingError(
-                "OpenAI trade parsing returned invalid response",
+            raise TradeParsingError(
+                "DeepSeek trade parsing returned invalid response",
                 status_code=502,
                 retryable=True,
                 user_message="AI 解析服务返回异常，请稍后重试",
-                code="openai_invalid_response",
+                code="deepseek_invalid_response",
             ) from exc
 
     if parsed is None:
-        raise last_error or OpenAITradeParsingError("OpenAI trade parsing failed", status_code=503, retryable=True)
+        raise last_error or TradeParsingError("DeepSeek trade parsing failed", status_code=503, retryable=True)
 
     trades = parsed.get("trades", [])
     if not isinstance(trades, list):
-        raise OpenAITradeParsingError(
-            "OpenAI trade parsing returned invalid JSON: trades is not a list",
+        raise TradeParsingError(
+            "DeepSeek trade parsing returned invalid JSON: trades is not a list",
             status_code=502,
             retryable=True,
             user_message="AI 解析服务返回异常，请稍后重试",
-            code="openai_invalid_response",
+            code="deepseek_invalid_response",
         )
     return [item for item in trades if isinstance(item, dict)]
+
+
+def _ocr_api_key() -> str:
+    value = os.getenv("TRADE_OCR_API_KEY", "").strip().lstrip("\ufeff")
+    return value or os.getenv("DEEPSEEK_API_KEY", "").strip().lstrip("\ufeff")
+
+
+def _ocr_base_url() -> str:
+    return (
+        os.getenv("TRADE_OCR_BASE_URL")
+        or os.getenv("DEEPSEEK_BASE_URL")
+        or "https://api.deepseek.com"
+    ).strip().rstrip("/")
+
+
+def _ocr_model() -> str:
+    return (
+        os.getenv("TRADE_OCR_MODEL")
+        or os.getenv("DEEPSEEK_OCR_MODEL")
+        or os.getenv("DEEPSEEK_MODEL")
+        or "deepseek-chat"
+    ).strip()
 
 
 def _normalize_intents(items: list[dict[str, Any]], source_text: str) -> list[TradeIntent]:
@@ -392,36 +417,36 @@ def _digits(value: str) -> str:
     return "".join(ch for ch in str(value or "") if ch.isdigit())
 
 
-def _openai_http_error(
+def _ai_http_error(
     exc: urllib.error.HTTPError,
     *,
     retry_after: float | None,
     retryable: bool,
-) -> OpenAITradeParsingError:
+) -> TradeParsingError:
     if exc.code == 429:
-        return OpenAITradeParsingError(
-            "OpenAI trade parsing rate limited",
+        return TradeParsingError(
+            "DeepSeek trade parsing rate limited",
             status_code=429,
             retryable=True,
             retry_after=retry_after,
             user_message="AI 解析服务暂时繁忙，请稍后重试",
-            code="openai_rate_limited",
+            code="deepseek_rate_limited",
         )
     if retryable:
-        return OpenAITradeParsingError(
-            f"OpenAI trade parsing temporary error: HTTP {exc.code}",
+        return TradeParsingError(
+            f"DeepSeek trade parsing temporary error: HTTP {exc.code}",
             status_code=exc.code,
             retryable=True,
             retry_after=retry_after,
             user_message="AI 解析服务暂时不可用，请稍后重试",
-            code="openai_temporary_error",
+            code="deepseek_temporary_error",
         )
-    return OpenAITradeParsingError(
-        f"OpenAI trade parsing failed: HTTP {exc.code}",
+    return TradeParsingError(
+        f"DeepSeek trade parsing failed: HTTP {exc.code}",
         status_code=exc.code,
         retryable=False,
         user_message="AI 解析失败，请检查上传内容或稍后重试",
-        code="openai_request_failed",
+        code="deepseek_request_failed",
     )
 
 

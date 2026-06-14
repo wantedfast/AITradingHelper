@@ -30,7 +30,8 @@ const features = [
 ];
 
 export default function Page() {
-  const [user, setUser] = useState<UserProfile | null>(() => getStoredUser());
+  const [hydrated, setHydrated] = useState(false);
+  const [user, setUser] = useState<UserProfile | null>(null);
   const [feedback, setFeedback] = useState("");
   const [feedbackCategory, setFeedbackCategory] = useState("产品建议");
   const [feedbackMessage, setFeedbackMessage] = useState("");
@@ -38,6 +39,8 @@ export default function Page() {
   const [showUserMenu, setShowUserMenu] = useState(false);
 
   useEffect(() => {
+    setHydrated(true);
+    setUser(getStoredUser());
     refreshCurrentUser().then(setUser).catch(() => setUser(null));
     function handleAuth(event: Event) {
       setUser((event as CustomEvent<UserProfile | null>).detail || null);
@@ -107,8 +110,8 @@ export default function Page() {
             </button>
             <Link href="/review">AI 复盘</Link>
             <Link href="/watch">AI 盯盘</Link>
-            {user?.role === "admin" && <Link href="/admin">管理台</Link>}
-            {user ? (
+            {hydrated && user?.role === "admin" && <Link href="/admin">管理台</Link>}
+            {hydrated && user ? (
               <div className="home-user-menu">
                 <button className="login home-user-pill" type="button" onClick={() => setShowUserMenu((value) => !value)} aria-expanded={showUserMenu}>
                   <UserRound className="h-4 w-4" />
@@ -172,13 +175,13 @@ export default function Page() {
                 <Sparkles className="h-5 w-5" />
                 立即开始
               </Link>
-              {!user && (
+              {hydrated && !user && (
                 <Link className="secondary home-auth-link" href="/auth?redirect=/review">
                   手机号注册，首次免费
                 </Link>
               )}
             </div>
-            {user && (
+            {hydrated && user && (
               <div className="home-credit-strip">
                 <span>
                   <Gift className="h-4 w-4" />

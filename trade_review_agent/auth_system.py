@@ -657,12 +657,22 @@ def _ensure_admin(conn: sqlite3.Connection) -> None:
     password = os.getenv("ADMIN_PASSWORD", "").strip()
     if not phone or not password:
         return
-    _validate_password(password)
+    salt, password_hash = _hash_password(password)
     row = conn.execute("SELECT id FROM users WHERE phone = ?", (phone,)).fetchone()
     if row:
-        conn.execute("UPDATE users SET username = COALESCE(username, ?) WHERE id = ?", (phone, row["id"]))
+        conn.execute(
+            """
+            UPDATE users
+            SET username = COALESCE(username, ?),
+                password_hash = ?,
+                password_salt = ?,
+                role = 'admin',
+                status = 'active'
+            WHERE id = ?
+            """,
+            (phone, password_hash, salt, row["id"]),
+        )
         return
-    salt, password_hash = _hash_password(password)
     conn.execute(
         """
         INSERT INTO users (phone, username, password_hash, password_salt, role, invite_code, created_at)

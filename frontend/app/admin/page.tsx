@@ -169,7 +169,7 @@ export default function AdminPage() {
                     <div key={item.id}>
                       <span>{item.phone}</span>
                       <b>{item.used_count} 次使用</b>
-                      <em>{item.credits} 次余额</em>
+                      <em>{item.role === "admin" ? "无限免扣" : `${item.credits} 次余额`}</em>
                     </div>
                   ))}
                 </div>
