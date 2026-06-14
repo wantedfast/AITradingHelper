@@ -5,7 +5,7 @@ services:
     build: .
     container_name: trade-review-api
     restart: unless-stopped
-    command: ["python", "-m", "trade_review_agent.simple_api"]
+    command: ["python", "-m", "trade_review_agent.api.simple_api"]
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
