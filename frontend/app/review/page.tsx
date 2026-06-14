@@ -12,6 +12,7 @@ import {
   ChevronRight,
   CircleHelp,
   ClipboardCheck,
+  CalendarClock,
   FileSpreadsheet,
   FileText,
   FileUp,
@@ -27,6 +28,7 @@ import {
   Target,
   Upload,
 } from "lucide-react";
+import { getAuthToken, storeUser } from "@/lib/auth-client";
 
 type ReportPayload = {
   run_id?: string;
@@ -34,23 +36,38 @@ type ReportPayload = {
   status_url?: string;
   count?: number;
   index_url?: string;
-  workbench_url?: string;
+  debug_url?: string;
   presenter_url?: string;
   requested_research_model_tier?: string;
   research_model_tier?: string;
   actual_research_model_tier?: string;
   wang_model?: string;
-  public_equity_model?: string;
-  reports?: Array<{ url?: string; workbench_url?: string; presenter_url?: string; title?: string; score?: number; rating?: string; requested_research_model_tier?: string; research_model_tier?: string; actual_research_model_tier?: string }>;
+  reports?: Array<{ url?: string; debug_url?: string; presenter_url?: string; title?: string; score?: number; rating?: string; requested_research_model_tier?: string; research_model_tier?: string; actual_research_model_tier?: string }>;
   error?: string;
   detail?: string;
   request_id?: string;
   stage?: string;
   code?: string;
   retryable?: boolean;
+  user?: {
+    id?: number;
+    phone?: string;
+    role?: string;
+    invite_code?: string;
+    credits?: number;
+    referral_count?: number;
+    created_at?: string;
+  };
 };
 
-type WorkbenchData = {
+type ManualTradeForm = {
+  stockName: string;
+  tradeDate: string;
+  tradeTime: string;
+  side: "buy" | "sell";
+};
+
+type AgentSummaryData = {
   company?: {
     code?: string;
     name?: string;
@@ -115,7 +132,7 @@ const copy = {
     "\u4e0a\u4f20\u4ea4\u5272\u5355\u6216\u622a\u56fe\uff0c\u7cfb\u7edf\u4f1a\u8bc6\u522b\u4e70\u5356\u8bb0\u5f55\uff0c\u8c03\u7528\u884c\u60c5\u4e0e\u6295\u7814 Agent\uff0c\u751f\u6210\u80fd\u770b\u61c2\u3001\u80fd\u590d\u76d8\u3001\u80fd\u6c89\u6dc0\u89c4\u5219\u7684\u62a5\u544a\u3002",
   workflowTitle: "\u4ea4\u5272\u5355 \u2192 \u4ea4\u6613\u4e8b\u5b9e \u2192 \u5e02\u573a\u73af\u5883 \u2192 \u590d\u76d8\u7ed3\u8bba",
   workflowDesc:
-    "上传后系统会识别交易事实，调用产业链和上市公司投研 Agent，Workbench 会把研究 JSON 合并成可视化报告。",
+    "上传后系统会识别交易事实，调用正式 AI 复盘 Agent，并生成可打开的复盘报告。",
   uploadTitle: "\u4e0a\u4f20\u4ea4\u5272\u5355 / \u4ea4\u6613\u622a\u56fe",
   uploadReady: "\u4ea4\u5272\u5355\u5df2\u5c31\u7eea",
   uploadDesc:
@@ -130,7 +147,7 @@ const copy = {
     "\u6587\u4ef6\u4ec5\u7528\u4e8e\u672c\u6b21\u5206\u6790\uff1b\u5efa\u8bae\u4e0a\u4f20\u5b8c\u6574\u6210\u4ea4\u65f6\u95f4\u3001\u65b9\u5411\u3001\u4ef7\u683c\u3001\u6570\u91cf\u548c\u8d39\u7528\u3002",
   reportQuestion: "\u62a5\u544a\u5c06\u56de\u7b54\u4ec0\u4e48\uff1f",
   modulesTitle: "\u590d\u76d8\u4e0d\u662f\u8bb0\u8d26\uff0c\u662f\u628a\u4ea4\u6613\u80fd\u529b\u62c6\u5f00\u8bad\u7ec3\u3002",
-  reportTitle: "Research Workbench",
+  reportTitle: "AI复盘结果",
   reportDesc: "\u70b9\u51fb\u67e5\u770b\u62a5\u544a\u540e\uff0c\u4f1a\u5728\u5f53\u524d\u5e94\u7528\u5185\u6253\u5f00\u62a5\u544a\u8be6\u60c5\u9875\u3002",
   openNew: "\u67e5\u770b\u62a5\u544a",
   openBrowser: "\u6253\u5f00\u62a5\u544a",
@@ -206,12 +223,19 @@ export default function ReviewPage() {
   const toastTimer = useRef<number | null>(null);
 
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [inputMode, setInputMode] = useState<"upload" | "manual">("upload");
+  const [manualTrade, setManualTrade] = useState<ManualTradeForm>({
+    stockName: "",
+    tradeDate: "",
+    tradeTime: "",
+    side: "buy",
+  });
   const [generating, setGenerating] = useState(false);
   const [reportUrl, setReportUrl] = useState("");
   const [reportRoute, setReportRoute] = useState("");
-  const [workbenchUrl, setWorkbenchUrl] = useState("");
-  const [workbenchData, setWorkbenchData] = useState<WorkbenchData | null>(null);
-  const [workbenchLoading, setWorkbenchLoading] = useState(false);
+  const [agentSummaryUrl, setAgentSummaryUrl] = useState("");
+  const [agentSummaryData, setAgentSummaryData] = useState<AgentSummaryData | null>(null);
+  const [agentSummaryLoading, setAgentSummaryLoading] = useState(false);
   const [reportCount, setReportCount] = useState(0);
   const [researchModelTier, setResearchModelTier] = useState<"standard" | "better">("standard");
   const [researchModelLabel, setResearchModelLabel] = useState(STANDARD_REPORT_LABEL);
@@ -245,15 +269,47 @@ export default function ReviewPage() {
 
   function acceptFile(file?: File) {
     if (!file) return;
+    setInputMode("upload");
     setSelectedFile(file);
     setReportUrl("");
     setReportRoute("");
-    setWorkbenchUrl("");
-    setWorkbenchData(null);
+    setAgentSummaryUrl("");
+    setAgentSummaryData(null);
     setReportCount(0);
     setResearchModelLabel(selectedResearchModelLabel());
     setErrorText("");
     showToast(copy.accepted);
+  }
+
+  function updateManualTrade<K extends keyof ManualTradeForm>(key: K, value: ManualTradeForm[K]) {
+    setManualTrade((current) => ({ ...current, [key]: value }));
+    setErrorText("");
+  }
+
+  function manualTradeReady() {
+    return Boolean(
+      manualTrade.stockName.trim() &&
+        manualTrade.tradeDate.trim() &&
+        normalizedManualTradeTime(),
+    );
+  }
+
+  function normalizedManualTradeTime() {
+    const match = manualTrade.tradeTime.trim().match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+    if (!match) return "";
+    const hour = Number(match[1]);
+    const minute = Number(match[2]);
+    const second = match[3] === undefined ? 0 : Number(match[3]);
+    if (hour > 23 || minute > 59 || second > 59) return "";
+    return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}:${String(second).padStart(2, "0")}`;
+  }
+
+  function manualTradeError() {
+    if (!manualTrade.stockName.trim()) return "请填写股票名字";
+    if (!manualTrade.tradeDate.trim()) return "请选择交易日期";
+    if (!manualTrade.tradeTime.trim()) return "请填写交易时间";
+    if (!normalizedManualTradeTime()) return "交易时间请使用 HH:mm:ss，例如 09:25:00";
+    return "";
   }
 
   function handleDrop(event: React.DragEvent<HTMLDivElement>) {
@@ -329,33 +385,66 @@ export default function ReviewPage() {
   }
 
   async function generateReport() {
-    if (!selectedFile) {
+    if (inputMode === "upload" && !selectedFile) {
       openFilePicker();
       return;
     }
+    if (inputMode === "manual" && !manualTradeReady()) {
+      const message = manualTradeError();
+      setErrorText(message);
+      showToast(message);
+      return;
+    }
     if (generating) return;
+    const token = getAuthToken();
+    if (!token) {
+      router.push("/auth?redirect=/review");
+      return;
+    }
 
     setGenerating(true);
     setErrorText("");
     setReportUrl("");
-    setWorkbenchUrl("");
-    setWorkbenchData(null);
+    setAgentSummaryUrl("");
+    setAgentSummaryData(null);
     setReportCount(0);
     showToast(copy.calling);
 
     try {
       const formData = new FormData();
-      formData.append("file", selectedFile);
       formData.append("research_model_tier", researchModelTier);
+      if (inputMode === "manual") {
+        const tradeTime = normalizedManualTradeTime();
+        formData.append("manual_trade", "1");
+        formData.append("manual_stock_name", manualTrade.stockName.trim());
+        formData.append("manual_trade_at", `${manualTrade.tradeDate.trim()}T${tradeTime}`);
+        formData.append("manual_side", manualTrade.side);
+      } else if (selectedFile) {
+        formData.append("file", selectedFile);
+      }
 
       const response = await fetch(`${API_BASE}/api/reports`, {
         method: "POST",
         body: formData,
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
       });
       let payload = await parseJsonResponse(response);
 
       if (!response.ok) {
         throw new Error(formatReportError(payload, copy.errorTitle));
+      }
+      if (payload.user?.id && payload.user.phone && payload.user.role && payload.user.invite_code) {
+        storeUser({
+          id: payload.user.id,
+          phone: payload.user.phone,
+          role: payload.user.role as "user" | "admin",
+          invite_code: payload.user.invite_code,
+          credits: payload.user.credits || 0,
+          referral_count: payload.user.referral_count || 0,
+          created_at: payload.user.created_at || "",
+        });
       }
 
       if (isPendingReport(payload) && payload.status_url) {
@@ -375,23 +464,28 @@ export default function ReviewPage() {
       if (!reportId) throw new Error(copy.noUrl);
 
       const nextReportRoute = `/review/report/${encodeURIComponent(reportId)}`;
-      const structuredUrl = firstReport?.presenter_url || payload.presenter_url || firstReport?.workbench_url || payload.workbench_url || "";
+      const structuredUrl =
+        firstReport?.presenter_url ||
+        payload.presenter_url ||
+        firstReport?.debug_url ||
+        payload.debug_url ||
+        "";
       setReportUrl(`${API_BASE}${firstReportUrl}`);
       setReportRoute(nextReportRoute);
-      setWorkbenchUrl(structuredUrl ? `${API_BASE}${structuredUrl}` : "");
+      setAgentSummaryUrl(structuredUrl ? `${API_BASE}${structuredUrl}` : "");
       setReportCount(payload.count || payload.reports?.length || 1);
       setResearchModelLabel(formatResearchModelLabel(payload));
       if (structuredUrl) {
-        setWorkbenchLoading(true);
+        setAgentSummaryLoading(true);
         try {
           const structuredResponse = await fetch(`${API_BASE}${structuredUrl}`, { cache: "no-store" });
           if (structuredResponse.ok) {
-            setWorkbenchData((await structuredResponse.json()) as WorkbenchData);
+            setAgentSummaryData((await structuredResponse.json()) as AgentSummaryData);
           }
         } catch {
-          setWorkbenchData(null);
+          setAgentSummaryData(null);
         } finally {
-          setWorkbenchLoading(false);
+          setAgentSummaryLoading(false);
         }
       }
       showToast(copy.done);
@@ -407,10 +501,11 @@ export default function ReviewPage() {
 
   function resetUpload() {
     setSelectedFile(null);
+    setManualTrade({ stockName: "", tradeDate: "", tradeTime: "", side: "buy" });
     setReportUrl("");
     setReportRoute("");
-    setWorkbenchUrl("");
-    setWorkbenchData(null);
+    setAgentSummaryUrl("");
+    setAgentSummaryData(null);
     setReportCount(0);
     setResearchModelLabel(selectedResearchModelLabel());
     setErrorText("");
@@ -424,16 +519,16 @@ export default function ReviewPage() {
 
 
   return (
-    <main className="review-workbench-page">
-      <aside className="review-workbench-rail">
-        <Link className="review-workbench-brand" href="/">
+    <main className="review-console-page">
+      <aside className="review-console-rail">
+        <Link className="review-console-brand" href="/">
           <span className="brand-mark">{"\u76c8"}</span>
           <span>
             <b>{"\u76c8\u822a"}</b>
             <small>REVIEW TERMINAL</small>
           </span>
         </Link>
-        <nav className="review-workbench-nav" aria-label={copy.navLabel}>
+        <nav className="review-console-nav" aria-label={copy.navLabel}>
           <Link className="active" href="/review">
             <FileUp />
             <span><b>{copy.review}</b></span>
@@ -448,19 +543,19 @@ export default function ReviewPage() {
           <span>{copy.railNote}</span>
         </div>
       </aside>
-      <section className="review-workbench-main">
-        <header className="review-workbench-topbar">
+      <section className="review-console-main">
+        <header className="review-console-topbar">
           <div className="review-topbar-title">
             <span className="topbar-icon"><FileUp /></span>
             <b>{copy.pageTitle}</b>
             <i>BETA</i>
           </div>
-          <div className="review-workbench-actions">
+          <div className="review-console-actions">
             <button type="button" onClick={() => showToast(copy.helpSoon)} aria-label="help"><CircleHelp /><span>{"\u5e2e\u52a9"}</span></button>
             <button type="button" onClick={() => showToast(copy.noNotice)} aria-label="notice"><BellRing /><span>{"\u901a\u77e5"}</span></button>
           </div>
         </header>
-        <section className="review-workbench-hero">
+        <section className="review-console-hero">
           <div className="review-hero-copy">
             <p className="review-kicker">AI REVIEW AGENT</p>
             <h1>
@@ -485,8 +580,28 @@ export default function ReviewPage() {
               accept=".xls,.xlsx,.csv,.txt,image/*"
               onChange={handleFileChange}
             />
+            <div className="trade-input-mode-toggle" aria-label="交割单输入方式">
+              <button
+                className={inputMode === "upload" ? "active" : ""}
+                type="button"
+                onClick={() => setInputMode("upload")}
+                disabled={generating}
+              >
+                <FileUp />
+                上传交割单
+              </button>
+              <button
+                className={inputMode === "manual" ? "active" : ""}
+                type="button"
+                onClick={() => setInputMode("manual")}
+                disabled={generating}
+              >
+                <ClipboardCheck />
+                临时手动输入
+              </button>
+            </div>
             <div
-              className={`upload-stage ${isDragging ? "is-dragging" : ""}`}
+              className={`upload-stage ${isDragging ? "is-dragging" : ""} ${inputMode === "manual" ? "is-hidden" : ""}`}
               onClick={openFilePicker}
               onDragEnter={(event) => {
                 event.preventDefault();
@@ -518,7 +633,66 @@ export default function ReviewPage() {
                 })}
               </div>
             </div>
-            {selectedFile && (
+            {inputMode === "manual" && (
+              <div className="manual-trade-stage">
+                <div className="manual-trade-head">
+                  <CalendarClock />
+                  <div>
+                    <h2>手动录入一笔交易</h2>
+                    <p>临时入口：不走 OCR，直接用你填写的交易事实生成复盘。</p>
+                  </div>
+                </div>
+                <div className="manual-trade-grid">
+                  <label>
+                    <span>股票名字</span>
+                    <input
+                      value={manualTrade.stockName}
+                      onChange={(event) => updateManualTrade("stockName", event.target.value)}
+                      placeholder="例如：东材科技"
+                      disabled={generating}
+                    />
+                  </label>
+                  <label>
+                    <span>交易日期</span>
+                    <input
+                      type="date"
+                      value={manualTrade.tradeDate}
+                      onChange={(event) => updateManualTrade("tradeDate", event.target.value)}
+                      disabled={generating}
+                    />
+                  </label>
+                  <label>
+                    <span>交易时间</span>
+                    <input
+                      value={manualTrade.tradeTime}
+                      onChange={(event) => updateManualTrade("tradeTime", event.target.value)}
+                      placeholder="09:25:00"
+                      inputMode="numeric"
+                      disabled={generating}
+                    />
+                  </label>
+                </div>
+                <div className="manual-side-toggle" aria-label="交易方向">
+                  <button
+                    className={manualTrade.side === "buy" ? "active" : ""}
+                    type="button"
+                    onClick={() => updateManualTrade("side", "buy")}
+                    disabled={generating}
+                  >
+                    买入
+                  </button>
+                  <button
+                    className={manualTrade.side === "sell" ? "active" : ""}
+                    type="button"
+                    onClick={() => updateManualTrade("side", "sell")}
+                    disabled={generating}
+                  >
+                    卖出
+                  </button>
+                </div>
+              </div>
+            )}
+            {(selectedFile || inputMode === "manual") && (
               <>
                 <div className="report-mode-toggle" aria-label="报告详细程度">
                   <button
@@ -564,7 +738,7 @@ export default function ReviewPage() {
                 <span>{errorText}</span>
               </div>
             )}
-            {selectedFile && (
+            {(selectedFile || inputMode === "manual") && (
               <div className="privacy-line">
                 <LockKeyhole />
                 <span>{copy.privacy}</span>
@@ -588,7 +762,7 @@ export default function ReviewPage() {
             })}
           </div>
         </section>
-        <section className="review-workbench-grid">
+        <section className="review-console-grid">
           <section className="research-panel report-outline-panel">
             <span className="card-label">{"\u62a5\u544a\u4f1a\u91cd\u70b9\u5206\u6790"}</span>
             <div className="report-analysis-layout">
@@ -645,7 +819,7 @@ export default function ReviewPage() {
                 {copy.openNew} <ArrowRight />
               </button>
             </div>
-            <WorkbenchSummary data={workbenchData} loading={workbenchLoading} url={workbenchUrl} />
+            <AgentSummary data={agentSummaryData} loading={agentSummaryLoading} url={agentSummaryUrl} />
           </section>
         )}
       </section>
@@ -660,11 +834,11 @@ function extractReportId(url?: string) {
 }
 
 
-function WorkbenchSummary({ data, loading, url }: { data: WorkbenchData | null; loading: boolean; url: string }) {
+function AgentSummary({ data, loading, url }: { data: AgentSummaryData | null; loading: boolean; url: string }) {
   if (loading) {
     return (
-      <section className="workbench-summary-panel">
-        <div className="workbench-summary-loading">
+      <section className="agent-summary-panel">
+        <div className="agent-summary-loading">
           <Loader2 className="spin-icon" />
           <span>{"\u6b63\u5728\u8bfb\u53d6\u7ed3\u6784\u5316\u7814\u7a76\u7ed3\u679c..."}</span>
         </div>
@@ -674,7 +848,7 @@ function WorkbenchSummary({ data, loading, url }: { data: WorkbenchData | null; 
 
   if (!data) {
     return (
-      <section className="workbench-summary-panel is-empty">
+      <section className="agent-summary-panel is-empty">
         <span>{"\u7ed3\u6784\u5316\u7814\u7a76 JSON \u6682\u672a\u8fd4\u56de"}</span>
         {url && <a href={url} target="_blank" rel="noreferrer">{"\u67e5\u770b\u539f\u59cb JSON"}</a>}
       </section>
@@ -692,17 +866,17 @@ function WorkbenchSummary({ data, loading, url }: { data: WorkbenchData | null; 
   const recheck = cleanList(data.action?.recheck_conditions).slice(0, 4);
 
   return (
-    <section className="workbench-summary-panel">
-      <div className="workbench-summary-hero">
+    <section className="agent-summary-panel">
+      <div className="agent-summary-hero">
         <div>
           <span className="card-label">Structured Research</span>
           <h3>{companyName}</h3>
           <p>{companyCode}{companyCode && themeOrSector ? " - " : ""}{themeOrSector}</p>
-          <div className="workbench-chip-row">
+          <div className="agent-chip-row">
             {tags.map((tag) => <span key={tag}>{tag}</span>)}
           </div>
         </div>
-        <div className="workbench-rating-grid">
+        <div className="agent-rating-grid">
           <MetricCard label={"\u884c\u4e1a\u8bc4\u7ea7"} value={data.hero?.industry_rating || "-"} />
           <MetricCard label={"\u6295\u8d44\u8bc4\u7ea7"} value={data.hero?.investment_rating || "-"} />
           <MetricCard label={"\u4ea4\u6613\u8bc4\u5206"} value={formatValue(data.trade_review?.trade_score, "-")} />
@@ -710,7 +884,7 @@ function WorkbenchSummary({ data, loading, url }: { data: WorkbenchData | null; 
         </div>
       </div>
 
-      <div className="workbench-summary-grid">
+      <div className="agent-summary-grid">
         <article>
           <h4>{"\u6838\u5fc3\u7ed3\u8bba"}</h4>
           <ul className="cyan-bullets">
@@ -779,7 +953,7 @@ function WorkbenchSummary({ data, loading, url }: { data: WorkbenchData | null; 
 }
 function MetricCard({ label, value }: { label: string; value: string | number }) {
   return (
-    <div className="workbench-metric-card">
+    <div className="agent-metric-card">
       <span>{label}</span>
       <b>{value}</b>
     </div>
@@ -805,4 +979,3 @@ function clampPct(value: unknown) {
   if (typeof value !== "number" || !Number.isFinite(value)) return 8;
   return Math.max(4, Math.min(100, value));
 }
-

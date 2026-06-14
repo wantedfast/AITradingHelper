@@ -1,941 +1,1262 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { ArrowLeft, ExternalLink, FileText, Loader2, LockKeyhole } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+
+type ViewKey = "review" | "choice" | "theme" | "logic";
+
+type ReviewItem = {
+  key?: string;
+  label?: string;
+  text?: string;
+};
+
+type NextAction = {
+  text?: string;
+};
+
+type ReviewScore = {
+  key?: string;
+  label?: string;
+  value?: number;
+};
+
+type ReviewJudgment = {
+  key?: string;
+  label?: string;
+  text?: string;
+  summary?: string | null;
+};
+
+type ChainNode = {
+  label?: string;
+  role?: string | null;
+  level?: string;
+  name?: string;
+  current?: boolean;
+};
+
+type RankingItem = {
+  rank?: number | string;
+  name?: string;
+  reason?: string | null;
+};
+
+type Presenter = {
+  presenter_contract?: string;
+  review?: {
+    verdict?: {
+      text?: string | null;
+    } | null;
+    scores?: {
+      items?: ReviewScore[];
+    };
+    judgments?: {
+      items?: ReviewJudgment[];
+    };
+    items?: ReviewItem[];
+    nextActions?: {
+      text?: string | null;
+      items?: NextAction[];
+    };
+  };
+  bestChoice?: {
+    available?: boolean;
+    name?: string | null;
+    summary?: string | null;
+    ranking?: RankingItem[];
+  };
+  companyComparison?: {
+    shortTermCapitalRanking?: RankingItem[];
+    industryValueRanking?: RankingItem[];
+    summary?: string | null;
+  };
+  tradeLogic?: {
+    text?: string | null;
+    summary?: string | null;
+  };
+  themeAnalysis?: {
+    industryChain?: {
+      nodes?: ChainNode[];
+    };
+    profitFlow?: {
+      text?: string | null;
+    };
+  };
+};
 
 type ReviewReportPageProps = {
-  params: {
-    id: string;
-  };
+  params: { id: string };
 };
 
-type PresenterData = {
-  company?: {
-    name?: string;
-    code?: string;
-    subtitle?: string;
-    theme?: string;
-    node?: string;
-  };
-  hero?: {
-    kicker?: string;
-    title?: string;
-    industry_rating?: string;
-    investment_rating?: string;
-    tags?: string[];
-    claims?: string[];
-    note?: string;
-  };
-  profit_flow?: {
-    title?: string;
-    description?: string;
-    value_pool?: string;
-    items?: Array<{ name?: string; share_pct?: number; highlight?: boolean }>;
-    company_position?: string;
-    why_profit_flows_here?: string;
-  };
-  logic_tree?: Array<{ node?: string; certainty_pct?: number }>;
-  expectation_gap?: {
-    market_believes?: string[];
-    analyst_view?: string[];
-    gap_score?: number;
-    underestimated?: string;
-    overestimated?: string;
-  };
-  moat?: {
-    summary?: string;
-    items?: string[];
-  };
-  financial_validation?: string[];
-  valuation_odds?: string;
-  catalysts?: string[];
-  disconfirming_signals?: string[];
-  next_action?: {
-    current_action?: string;
-    suitable_for?: string;
-    not_suitable_for?: string;
-    recheck_conditions?: string[];
-  };
-  newbie_summary?: string;
-  claim_cards?: Array<{ title?: string; claim?: string; evidence?: string; confidence_pct?: number; risk?: string }>;
-  evidence_blocks?: Array<{ type?: string; title?: string; evidence?: string; status?: string }>;
-  chart_annotations?: Record<string, string[]>;
-  presenter_copy?: Record<string, string>;
-};
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://127.0.0.1:8600";
 
-type ReportManifest = {
-  trade_execution_url?: string;
-  reports?: Array<{
-    trade_execution_url?: string;
-  }>;
-};
+const views: Array<{ key: ViewKey; number: string; label: string }> = [
+  { key: "review", number: "1", label: "复盘评价" },
+  { key: "logic", number: "2", label: "交易逻辑" },
+  { key: "choice", number: "3", label: "同行对比" },
+  { key: "theme", number: "4", label: "题材分析" },
+];
 
-type TradeExecutionData = {
-  trade_timing?: {
-    buy_points?: unknown;
-    sell_points?: unknown;
-    [key: string]: unknown;
-  };
-  execution_advice?: {
-    summary?: unknown;
-    buy_issue?: unknown;
-    sell_issue?: unknown;
-    next_time_rules?: unknown;
-    confirmation_signals?: unknown;
-    [key: string]: unknown;
-  };
-  peer_comparison?: {
-    rows?: Array<Record<string, unknown>>;
-    [key: string]: unknown;
-  };
-  peer_recommendations?: {
-    basis?: unknown;
-    items?: Array<{
-      rank?: unknown;
-      name?: unknown;
-      code?: unknown;
-      why_strong?: unknown;
-      moat_reason?: unknown;
-      profit_flow_reason?: unknown;
-      risk_note?: unknown;
-      [key: string]: unknown;
-    }>;
-    [key: string]: unknown;
-  };
-  [key: string]: unknown;
-};
+function copy(value: unknown, fallback = "原始报告未提供") {
+  const text = String(value ?? "").trim();
+  return text || fallback;
+}
 
-type TradeExecutionState = {
-  data: TradeExecutionData | null;
-  status: "loading" | "ready" | "unavailable";
-  message: string;
-  src: string;
-};
-
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "";
+function scoreCopy(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? `${value}` : "--";
+}
 
 export default function ReviewReportPage({ params }: ReviewReportPageProps) {
   const reportId = decodeURIComponent(params.id);
-  const safeReportId = encodeURIComponent(reportId);
-  const presenterSrc = `${API_BASE}/api/reports/${safeReportId}/research_presenter_data.json`;
-  const manifestSrc = `${API_BASE}/api/reports/${safeReportId}/report_manifest.json`;
-  const htmlSrc = `${API_BASE}/api/reports/${safeReportId}/index.html`;
-  const [data, setData] = useState<PresenterData | null>(null);
-  const [tradeExecution, setTradeExecution] = useState<TradeExecutionState>({
-    data: null,
-    status: "loading",
-    message: "",
-    src: "",
-  });
-  const [loading, setLoading] = useState(true);
+  const presenterUrl = `${API_BASE}/api/reports/${encodeURIComponent(reportId)}/research_presenter_data.json`;
+  const [activeView, setActiveView] = useState<ViewKey>("review");
+  const [presenter, setPresenter] = useState<Presenter | null>(null);
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  const loadPresenter = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    setPresenter(null);
+
+    try {
+      const response = await fetch(presenterUrl, { cache: "no-store" });
+      if (!response.ok) {
+        throw new Error(`Presenter 请求失败：${response.status}`);
+      }
+      setPresenter((await response.json()) as Presenter);
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "Presenter 加载失败");
+    } finally {
+      setLoading(false);
+    }
+  }, [presenterUrl]);
 
   useEffect(() => {
-    let cancelled = false;
-    async function loadPresenterData() {
-      setLoading(true);
-      setError("");
-      try {
-        const response = await fetch(presenterSrc, { cache: "no-store" });
-        if (!response.ok) throw new Error(`Presenter JSON 加载失败：${response.status}`);
-        const payload = (await response.json()) as PresenterData;
-        if (!cancelled) setData(payload);
-      } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : "Presenter JSON 加载失败");
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }
-    loadPresenterData();
-    return () => {
-      cancelled = true;
-    };
-  }, [presenterSrc]);
+    void loadPresenter();
+  }, [loadPresenter]);
 
-  useEffect(() => {
-    let cancelled = false;
-    async function loadTradeExecutionData() {
-      setTradeExecution({ data: null, status: "loading", message: "", src: "" });
-      try {
-        const manifestResponse = await fetch(manifestSrc, { cache: "no-store" });
-        if (!manifestResponse.ok) {
-          throw new Error(`report_manifest.json \u52a0\u8f7d\u5931\u8d25\uff1a${manifestResponse.status}`);
-        }
-
-        const manifest = (await manifestResponse.json()) as ReportManifest;
-        const tradeExecutionUrl = manifest.reports?.[0]?.trade_execution_url || manifest.trade_execution_url || "";
-        if (!tradeExecutionUrl) {
-          if (!cancelled) {
-            setTradeExecution({
-              data: null,
-              status: "unavailable",
-              message: "\u4e70\u5356\u70b9\u6570\u636e\u672a\u751f\u6210/\u4e0d\u53ef\u7528",
-              src: "",
-            });
-          }
-          return;
-        }
-
-        const executionSrc = resolveReportAssetUrl(tradeExecutionUrl, safeReportId);
-        const executionResponse = await fetch(executionSrc, { cache: "no-store" });
-        if (!executionResponse.ok) {
-          throw new Error(`Trade Execution JSON \u52a0\u8f7d\u5931\u8d25\uff1a${executionResponse.status}`);
-        }
-
-        const payload = (await executionResponse.json()) as TradeExecutionData;
-        if (!cancelled) {
-          setTradeExecution({
-            data: payload,
-            status: "ready",
-            message: "",
-            src: executionSrc,
-          });
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setTradeExecution({
-            data: null,
-            status: "unavailable",
-            message:
-              err instanceof Error
-                ? err.message
-                : "\u4e70\u5356\u70b9\u6570\u636e\u672a\u751f\u6210/\u4e0d\u53ef\u7528",
-            src: "",
-          });
-        }
-      }
-    }
-
-    loadTradeExecutionData();
-    return () => {
-      cancelled = true;
-    };
-  }, [manifestSrc, safeReportId]);
+  const reviewItems = presenter?.review?.items?.slice(0, 4) || [];
+  const reviewScores = presenter?.review?.scores?.items || [];
+  const reviewJudgments = presenter?.review?.judgments?.items || [];
+  const nextActions = presenter?.review?.nextActions?.items || [];
+  const nextActionsText = presenter?.review?.nextActions?.text
+    || nextActions.map((item) => copy(item.text, "")).filter(Boolean).join("\n");
+  const shortTermRanking = presenter?.companyComparison?.shortTermCapitalRanking || presenter?.bestChoice?.ranking || [];
+  const chainNodes = presenter?.themeAnalysis?.industryChain?.nodes || [];
 
   return (
-    <main className="review-report-detail-page">
-      <header className="review-report-detail-topbar">
-        <Link href="/review" className="review-report-back">
-          <ArrowLeft />
-          返回复盘工作台
+    <main className="review-page">
+      <style dangerouslySetInnerHTML={{ __html: styles }} />
+
+      <header className="topbar glass">
+        <Link className="icon-button" href="/review" aria-label="返回复盘列表" title="返回复盘列表">
+          <span>返回复盘</span>
         </Link>
-        <div className="review-report-detail-title">
-          <span>
-            <FileText />
-            Research Workbench
-          </span>
-          <b>{reportId}</b>
+        <div className="report-brand">
+          <strong>Final WANG Agent</strong>
+          <span>{reportId}</span>
         </div>
-        <div className="review-report-secure">
-          <LockKeyhole />
-          结构化渲染
-        </div>
+        <button className="icon-button" type="button" onClick={() => void loadPresenter()} aria-label="刷新报告" title="刷新报告">
+          <span aria-hidden="true">↻</span>
+        </button>
       </header>
 
-      {loading && (
-        <section className="review-report-state">
-          <Loader2 className="spin-icon" />
-          <span>正在读取 Presenter JSON...</span>
-        </section>
-      )}
+      <div className="workspace">
+        <aside className="side-nav glass" aria-label="报告视图">
+          <p>REPORT MAP</p>
+          <div className="view-tabs" role="tablist" aria-label="报告章节">
+            {views.map((view) => (
+              <button
+                key={view.key}
+                className={activeView === view.key ? "active" : ""}
+                type="button"
+                role="tab"
+                aria-selected={activeView === view.key}
+                aria-controls={`${view.key}-panel`}
+                onClick={() => setActiveView(view.key)}
+              >
+                <b>{view.number}</b>
+                <span>{view.label}</span>
+              </button>
+            ))}
+          </div>
+        </aside>
 
-      {!loading && error && (
-        <section className="review-report-state">
-          <b>{error}</b>
-          <a href={htmlSrc} target="_blank" rel="noreferrer">
-            打开 HTML 兜底报告 <ExternalLink />
-          </a>
-        </section>
-      )}
+        <div className="content">
+          {loading && (
+            <section className="state glass" aria-live="polite">
+              <span className="state-mark" aria-hidden="true">...</span>
+              <p>正在读取报告</p>
+            </section>
+          )}
 
-      {!loading && !error && data && (
-        <StructuredWorkbench
-          data={data}
-          htmlSrc={htmlSrc}
-          presenterSrc={presenterSrc}
-          tradeExecution={tradeExecution}
-        />
-      )}
+          {!loading && error && (
+            <section className="state error glass" role="alert">
+              <span className="state-mark" aria-hidden="true">!</span>
+              <strong>报告加载失败</strong>
+              <p>{error}</p>
+              <button type="button" onClick={() => void loadPresenter()}>重试</button>
+            </section>
+          )}
+
+          {!loading && presenter && activeView === "review" && (
+            <section id="review-panel" className="report-view glass" role="tabpanel" aria-label="复盘评价">
+              <div className="view-heading">
+                <span>REVIEW VERDICT</span>
+                <h1>复盘评价</h1>
+              </div>
+
+              <div className="verdict">
+                <span>总评</span>
+                <p>{copy(presenter.review?.verdict?.text)}</p>
+              </div>
+
+              <div className="review-decision-layout">
+                <aside className="score-panel" aria-label="评分维度">
+                  <div className="total-score">
+                    <span>综合评分</span>
+                    <strong>{scoreCopy(reviewScores.find((item) => item.key === "total")?.value)}</strong>
+                    <small>来自原始报告</small>
+                  </div>
+
+                  <div className="score-list">
+                    {reviewScores.filter((item) => item.key !== "total").length > 0 ? (
+                      reviewScores.filter((item) => item.key !== "total").map((item) => (
+                        <article key={item.key || item.label}>
+                          <div>
+                            <span>{copy(item.label)}</span>
+                            <strong>{scoreCopy(item.value)}</strong>
+                          </div>
+                          <i><b style={{ width: `${Math.max(0, Math.min(100, Number(item.value) || 0))}%` }} /></i>
+                        </article>
+                      ))
+                    ) : (
+                      <p className="empty-copy">原始报告未提供评分</p>
+                    )}
+                  </div>
+                </aside>
+
+                <section className="judgment-panel" aria-label="判断结论">
+                  {reviewJudgments.length > 0 ? reviewJudgments.map((item, index) => (
+                    <article key={item.key || `${item.label}-${index}`}>
+                      <span>{String(index + 1).padStart(2, "0")}</span>
+                      <div>
+                        <h2>{copy(item.label, `判断 ${index + 1}`)}</h2>
+                        <p>{copy(item.summary || item.text)}</p>
+                      </div>
+                    </article>
+                  )) : reviewItems.length > 0 ? reviewItems.map((item, index) => (
+                    <article key={item.key || `${item.label}-${index}`}>
+                      <span>{String(index + 1).padStart(2, "0")}</span>
+                      <div>
+                        <h2>{copy(item.label, `判断 ${index + 1}`)}</h2>
+                        <p>{copy(item.text)}</p>
+                      </div>
+                    </article>
+                  )) : (
+                    <p className="empty-copy">原始报告未提供判断</p>
+                  )}
+                </section>
+              </div>
+
+              <div className="next-actions">
+                <div className="subheading">
+                  <span>NEXT ACTION</span>
+                  <h2>如果交易重来一次选谁</h2>
+                </div>
+                {nextActionsText ? (
+                  <article className="action-full-text">
+                    <p>{nextActionsText}</p>
+                  </article>
+                ) : (
+                  <p className="empty-copy">原始报告未提供下次行动</p>
+                )}
+              </div>
+            </section>
+          )}
+
+          {!loading && presenter && activeView === "choice" && (
+            <section id="choice-panel" className="report-view glass" role="tabpanel" aria-label="同行对比">
+              <div className="view-heading">
+                <span>PEER COMPARISON</span>
+                <h1>同行对比</h1>
+              </div>
+
+              {shortTermRanking.length === 0 ? (
+                <div className="unavailable">
+                  <span aria-hidden="true">—</span>
+                  <p>原始报告未提供同行对比</p>
+                </div>
+              ) : (
+                <div className="comparison-grid single">
+                  <RankingPanel title="同行标的对比" kicker="PEER TARGETS" items={shortTermRanking} />
+                </div>
+              )}
+            </section>
+          )}
+
+          {!loading && presenter && activeView === "theme" && (
+            <section id="theme-panel" className="report-view glass" role="tabpanel" aria-label="题材分析">
+              <div className="view-heading">
+                <span>THEME ANALYSIS</span>
+                <h1>题材分析</h1>
+              </div>
+
+              <div className="theme-section">
+                <div className="subheading">
+                  <span>INDUSTRY CHAIN</span>
+                  <h2>产业链</h2>
+                </div>
+
+                {chainNodes.length > 0 ? (
+                  <div className="chain-flow">
+                    {chainNodes.map((node, index) => (
+                      <div className="chain-step" key={`${node.role || node.level}-${node.label || node.name}-${index}`}>
+                        <article className={node.current ? "current" : ""}>
+                          {(node.role || node.level) && <span>{node.role || node.level}</span>}
+                          <strong>{copy(node.label || node.name)}</strong>
+                          {node.current && <small>当前标的</small>}
+                        </article>
+                        {index < chainNodes.length - 1 && (
+                          <>
+                            <span className="flow-arrow horizontal" aria-hidden="true">→</span>
+                            <span className="flow-arrow vertical" aria-hidden="true">↓</span>
+                          </>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="empty-copy">原始报告未提供产业链</p>
+                )}
+              </div>
+
+              <div className="theme-section profit-flow">
+                <div className="subheading">
+                  <span>PROFIT FLOW</span>
+                  <h2>利润流向</h2>
+                </div>
+                <p>{copy(presenter.themeAnalysis?.profitFlow?.text)}</p>
+              </div>
+            </section>
+          )}
+
+          {!loading && presenter && activeView === "logic" && (
+            <section id="logic-panel" className="report-view glass" role="tabpanel" aria-label="交易逻辑">
+              <div className="view-heading">
+                <span>TRADE LOGIC</span>
+                <h1>交易逻辑</h1>
+              </div>
+
+              {presenter.tradeLogic?.text ? (
+                <div className="trade-logic-content">
+                  {presenter.tradeLogic.summary && <strong>{presenter.tradeLogic.summary}</strong>}
+                  <p>{presenter.tradeLogic.text}</p>
+                </div>
+              ) : (
+                <p className="empty-copy">原始报告未提供交易逻辑</p>
+              )}
+            </section>
+          )}
+        </div>
+      </div>
     </main>
   );
 }
 
-function StructuredWorkbench({
-  data,
-  htmlSrc,
-  presenterSrc,
-  tradeExecution,
-}: {
-  data: PresenterData;
-  htmlSrc: string;
-  presenterSrc: string;
-  tradeExecution: TradeExecutionState;
-}) {
-  const company = data.company || {};
-  const hero = data.hero || {};
-  const profit = data.profit_flow || {};
-  const gap = data.expectation_gap || {};
-  const action = data.next_action || {};
-  const claims = list(hero.claims).slice(0, 4);
-  const tags = list(hero.tags).slice(0, 5);
-  const profitItems = list(profit.items).slice(0, 6);
-  const logicTree = list(data.logic_tree).slice(0, 6);
-  const marketBelieves = list(gap.market_believes).slice(0, 4);
-  const analystView = list(gap.analyst_view).slice(0, 4);
-  const moatItems = list(data.moat?.items).slice(0, 6);
-  const financialValidation = list(data.financial_validation).slice(0, 5);
-  const risks = list(data.disconfirming_signals).slice(0, 5);
-  const catalysts = list(data.catalysts).slice(0, 5);
-  const recheck = list(action.recheck_conditions).slice(0, 5);
-  const evidenceBlocks = list(data.evidence_blocks).slice(0, 6);
-  const claimCards = list(data.claim_cards).slice(0, 4);
-  const maxProfit = useMemo(() => Math.max(100, ...profitItems.map((item) => number(item?.share_pct, 0))), [profitItems]);
-
+function RankingPanel({ title, kicker, items }: { title: string; kicker: string; items: RankingItem[] }) {
   return (
-    <section className="structured-report-shell">
-      <div className="structured-report-links">
-        <a href={presenterSrc} target="_blank" rel="noreferrer">Presenter JSON <ExternalLink /></a>
-        <a href={htmlSrc} target="_blank" rel="noreferrer">HTML 兜底报告 <ExternalLink /></a>
+    <section className="ranking-panel">
+      <div className="subheading">
+        <span>{kicker}</span>
+        <h2>{title}</h2>
       </div>
 
-      <section className="structured-hero">
-        <div>
-          <p className="structured-kicker">{hero.kicker || "这家公司值得研究吗？"}</p>
-          <h1>{company.name || hero.title || "标的公司"}</h1>
-          <h2>{company.subtitle || `${company.code || ""} · ${company.theme || "待验证"} / ${company.node || "待验证"}`}</h2>
-          <div className="structured-rating-row">
-            <span>产业评级 {hero.industry_rating || "B"}</span>
-            <span>投资评级 {hero.investment_rating || "B"}</span>
-          </div>
-          <div className="structured-tag-row">
-            {tags.map((tag) => <span key={tag}>{tag}</span>)}
-          </div>
-        </div>
-        <article className="structured-conclusion-card">
-          <h3>一句话结论</h3>
-          <ul>
-            {(claims.length ? claims : ["研究结论待验证。"]).map((claim) => <li key={claim}>{claim}</li>)}
-          </ul>
-          <p>{hero.note || data.newbie_summary || "首屏回答它为什么值得研究、风险在哪里、下一步验证什么。"}</p>
-        </article>
-      </section>
-
-      {data.newbie_summary && (
-        <section className="structured-section">
-          <div className="structured-section-head">
-            <h2>新手摘要</h2>
-            <span>summary</span>
-          </div>
-          <p className="structured-body-text">{data.newbie_summary}</p>
-        </section>
-      )}
-
-      <TradeExecutionAdvicePanel tradeExecution={tradeExecution} />
-
-      <section className="structured-section">
-        <div className="structured-section-head">
-          <div>
-            <h2>{profit.title || "利润流向图"}</h2>
-            <p>{profit.description || data.presenter_copy?.profit_flow || "用资金流和利润池解释为什么是它。"}</p>
-          </div>
-          <span>核心模块</span>
-        </div>
-        <div className="structured-profit-grid">
-          <article className="structured-value-pool">
-            <b>{profit.value_pool || company.theme || "价值池"}</b>
-            <span>价值池 100%</span>
-          </article>
-          <div className="structured-flow-bars">
-            {profitItems.map((item, index) => {
-              const pct = number(item?.share_pct, 0);
-              return (
-                <div className={item?.highlight ? "is-highlight" : ""} key={`${item?.name || "profit"}-${index}`}>
-                  <span>{item?.name || `产业环节 ${index + 1}`}</span>
-                  <i><em style={{ width: `${Math.max(4, Math.min(100, (pct / maxProfit) * 100))}%` }} /></i>
-                  <b>{pct ? `${Math.round(pct)}%` : "待验证"}</b>
-                </div>
-              );
-            })}
-          </div>
-          <article className="structured-target-box">
-            <span>高亮位置</span>
-            <b>{company.name || "目标公司"}</b>
-            <p>{profit.company_position || company.node || "产业链位置待验证"}</p>
-            <p>{profit.why_profit_flows_here || "利润流向原因待验证"}</p>
-          </article>
-        </div>
-      </section>
-
-      <section className="structured-section">
-        <div className="structured-section-head">
-          <div>
-            <h2>产业逻辑树</h2>
-            <p>{data.presenter_copy?.logic_tree || "把上涨逻辑拆成节点，显示每一步的确定性。"}</p>
-          </div>
-          <span>因果链</span>
-        </div>
-        <div className="structured-logic-grid">
-          {(logicTree.length ? logicTree : [{ node: "逻辑待验证", certainty_pct: 50 }]).map((node, index) => (
-            <article key={`${node?.node || "logic"}-${index}`}>
-              <h3>{node?.node || `节点 ${index + 1}`}</h3>
-              <b>{Math.round(number(node?.certainty_pct, 50))}%</b>
-            </article>
-          ))}
-        </div>
-      </section>
-
-      <section className="structured-section">
-        <div className="structured-section-head">
-          <div>
-            <h2>市场预期差</h2>
-            <p>{data.presenter_copy?.expectation_gap || "展示市场叙事和研究判断之间的差距。"}</p>
-          </div>
-          <span>涨幅来源</span>
-        </div>
-        <div className="structured-gap-grid">
-          <article>
-            <h3>市场认为</h3>
-            <BulletList items={marketBelieves} fallback="市场共识待验证" />
-          </article>
-          <article className="structured-gap-score">
-            <b>{Math.round(number(gap.gap_score, 50))}</b>
-            <span>预期差</span>
-          </article>
-          <article>
-            <h3>实际情况</h3>
-            <BulletList items={analystView} fallback="研究判断待验证" />
-          </article>
-        </div>
-      </section>
-
-      <section className="structured-section">
-        <div className="structured-section-head">
-          <div>
-            <h2>产业壁垒与验证清单</h2>
-            <p>{data.presenter_copy?.moat_validation || "保留 Agent 的关键判断，防止图表把研究结论过度压扁。"}</p>
-          </div>
-          <span>moat</span>
-        </div>
-        <div className="structured-three-grid">
-          <InfoCard title="壁垒" items={moatItems} fallback={data.moat?.summary || "壁垒待验证"} />
-          <InfoCard title="财务验证" items={financialValidation} fallback="财务验证待补充" />
-          <InfoCard title="反证点" items={risks} fallback="反证点待验证" />
-        </div>
-      </section>
-
-      <section className="structured-section">
-        <div className="structured-section-head">
-          <div>
-            <h2>估值赔率、催化剂和下一步</h2>
-            <p>{data.presenter_copy?.decision || "把能不能研究进一步落到现在该怎么跟踪。"}</p>
-          </div>
-          <span>decision</span>
-        </div>
-        <div className="structured-three-grid">
-          <InfoCard title="估值赔率" items={data.valuation_odds ? [data.valuation_odds] : []} fallback="估值赔率待验证" />
-          <InfoCard title="催化剂" items={catalysts} fallback="催化剂待验证" />
-          <InfoCard title="复查条件" items={recheck} fallback={action.current_action || "复查条件待验证"} />
-        </div>
-      </section>
-
-      {(claimCards.length > 0 || evidenceBlocks.length > 0) && (
-        <section className="structured-section">
-          <div className="structured-section-head">
-            <div>
-              <h2>结论卡与证据块</h2>
-              <p>这里展示 Presenter Agent 给前端准备的表达型结构。</p>
-            </div>
-            <span>evidence</span>
-          </div>
-          <div className="structured-two-grid">
-            <InfoCard title="结论卡" items={claimCards.map((card) => `${card.title || "结论"}：${card.claim || "待验证"}（置信度 ${Math.round(number(card.confidence_pct, 0))}%）`)} fallback="结论卡待验证" />
-            <InfoCard title="证据块" items={evidenceBlocks.map((block) => `${block.title || block.type || "证据"}：${block.evidence || "待验证"}（${block.status || "待验证"}）`)} fallback="证据块待验证" />
-          </div>
-        </section>
-      )}
-    </section>
-  );
-}
-
-function TradeExecutionAdvicePanel({ tradeExecution }: { tradeExecution: TradeExecutionState }) {
-  const data = tradeExecution.data;
-  const buyPoints = useMemo(() => pointList(data?.trade_timing?.buy_points), [data?.trade_timing?.buy_points]);
-  const sellPoints = useMemo(() => pointList(data?.trade_timing?.sell_points), [data?.trade_timing?.sell_points]);
-  const peerRows = useMemo(
-    () => (Array.isArray(data?.peer_comparison?.rows) ? data.peer_comparison.rows : []),
-    [data?.peer_comparison?.rows],
-  );
-
-  return (
-    <section className="structured-section trade-execution-section">
-      <div className="structured-section-head">
-        <div>
-          <h2>{"\u4e70\u5356\u70b9\u8bc4\u4ef7"}</h2>
-          <p>
-            {
-              "\u57fa\u4e8e\u72ec\u7acb Trade Execution \u6570\u636e\uff0c\u805a\u7126\u8fd9\u7b14\u4ea4\u6613\u7684\u4e70\u70b9\u3001\u5356\u70b9\u548c\u4e0b\u6b21\u6267\u884c\u89c4\u5219\u3002"
-            }
-          </p>
-        </div>
-        <span>{"\u590d\u76d8\u5efa\u8bae"}</span>
-      </div>
-
-      {tradeExecution.status === "loading" && (
-        <div className="trade-execution-state">
-          <Loader2 className="spin-icon" />
-          <span>{"\u6b63\u5728\u8bfb\u53d6\u4e70\u5356\u70b9\u590d\u76d8\u6570\u636e..."}</span>
-        </div>
-      )}
-
-      {tradeExecution.status !== "loading" && !data && (
-        <div className="trade-execution-state is-unavailable">
-          <b>{"\u4e70\u5356\u70b9\u6570\u636e\u672a\u751f\u6210/\u4e0d\u53ef\u7528"}</b>
-          {tradeExecution.message && <span>{tradeExecution.message}</span>}
-        </div>
-      )}
-
-      {tradeExecution.status === "ready" && data && (
-        <div className="trade-execution-layout">
-          <CombinedTradeTimingCard buyPoints={buyPoints} sellPoints={sellPoints} />
-          <BuyDayComparisonChart point={buyPoints[0]} />
-          <ExecutionAdvicePanel advice={data.execution_advice} />
-          <PeerRecommendationsPanel recommendations={data.peer_recommendations} fallbackRows={peerRows} />
-        </div>
-      )}
-    </section>
-  );
-}
-
-function CombinedTradeTimingCard({
-  buyPoints,
-  sellPoints,
-}: {
-  buyPoints: Array<Record<string, unknown>>;
-  sellPoints: Array<Record<string, unknown>>;
-}) {
-  return (
-    <article className="trade-execution-card trade-timing-card">
-      <h3>{"\u4e70\u5356\u70b9\u4f9d\u636e"}</h3>
-      <div className="trade-timing-sections">
-        <TradePointSummaryCard title={"\u4e70\u70b9"} points={buyPoints} fallback={"\u4e70\u70b9\u8bc4\u4ef7\u6682\u672a\u751f\u6210"} tone="buy" />
-        <TradePointSummaryCard title={"\u5356\u70b9"} points={sellPoints} fallback={"\u5356\u70b9\u8bc4\u4ef7\u6682\u672a\u751f\u6210"} tone="sell" />
-      </div>
-    </article>
-  );
-}
-
-function TradePointSummaryCard({
-  title,
-  points,
-  fallback,
-  tone,
-}: {
-  title: string;
-  points: Array<Record<string, unknown>>;
-  fallback: string;
-  tone: "buy" | "sell";
-}) {
-  const summary = tradePointSummary(points, tone);
-
-  return (
-    <section className={`trade-point-summary-card is-${tone}`}>
-      <div className="trade-point-summary-head">
-        <h4>{title}</h4>
-        <span>{summary.count ? `${summary.count} \u7b14\u6210\u4ea4` : "\u6682\u65e0\u6570\u636e"}</span>
-      </div>
-      {summary.count ? (
-        <>
-          <div className="trade-point-deals">
-            {summary.deals.map((deal) => (
-              <span key={deal}>{deal}</span>
-            ))}
-          </div>
-          <div className="trade-point-verdict">
-            <span>{"\u6838\u5fc3\u5224\u65ad"}</span>
-            <strong>{summary.verdict}</strong>
-          </div>
-          <div className="trade-point-reason">
-            <span>{"\u5224\u65ad\u4f9d\u636e"}</span>
-            <p>{summary.reason}</p>
-          </div>
-          <dl className="trade-point-condition-grid">
-            {summary.conditions.map((item) => (
-              <div key={item.label}>
-                <dt>{item.label}</dt>
-                <dd>{item.value}</dd>
-              </div>
-            ))}
-          </dl>
-        </>
-      ) : (
-        <p className="trade-execution-muted">{fallback}</p>
-      )}
-    </section>
-  );
-}
-
-function BuyDayComparisonChart({ point }: { point?: Record<string, unknown> }) {
-  const items = buyDayChartItems(point);
-  const maxAbs = Math.max(1, ...items.map((item) => Math.abs(item.value)));
-
-  return (
-    <article className="trade-execution-card trade-buy-chart">
-      <h3>{"\u4e70\u5165\u65e5\u6da8\u5e45\u5bf9\u6bd4"}</h3>
-      {items.length ? (
-        <div className="trade-buy-bars">
-          {items.map((item) => {
-            const width = `${Math.max(3, (Math.abs(item.value) / maxAbs) * 50)}%`;
-            return (
-              <div className="trade-buy-bar-row" key={item.label}>
-                <span className="trade-buy-bar-label">{item.label}</span>
-                <div className="trade-buy-bar-track">
-                  <i />
-                  <span className={`trade-buy-bar ${item.value >= 0 ? "is-positive" : "is-negative"}`} style={{ width }} />
-                </div>
-                <strong>{formatPercent(item.value)}</strong>
-              </div>
-            );
-          })}
-        </div>
-      ) : (
-        <p className="trade-execution-muted">{"\u4e70\u5165\u65e5\u6da8\u5e45\u5bf9\u6bd4\u6682\u672a\u751f\u6210"}</p>
-      )}
-    </article>
-  );
-}
-
-function PeerRecommendationsPanel({
-  recommendations,
-  fallbackRows,
-}: {
-  recommendations?: TradeExecutionData["peer_recommendations"];
-  fallbackRows: Array<Record<string, unknown>>;
-}) {
-  const rows = peerRecommendationItems(recommendations, fallbackRows);
-
-  return (
-    <article className="trade-execution-card trade-peer-recommendations">
-      <h3>{"\u540c\u4e1a\u5f3a\u8005\u89c2\u5bdf"}</h3>
-      {hasMeaningfulValue(recommendations?.basis) && <p className="trade-peer-basis">{formatValue(recommendations?.basis)}</p>}
-      {rows.length ? (
-        <div className="trade-peer-recommendation-list">
-          {rows.map((item, index) => (
-            <section className="trade-peer-recommendation-card" key={`${formatValue(item.code)}-${index}`}>
-              <div className="trade-peer-recommendation-head">
-                <span>{formatRank(item.rank, index)}</span>
-                <strong>
-                  {formatValue(item.name)}
-                  {hasMeaningfulValue(item.code) && <small>{formatValue(item.code)}</small>}
-                </strong>
-              </div>
-              <div className="trade-peer-copy">
-                <b>{"\u4e3a\u4ec0\u4e48\u5f3a"}</b>
-                <p>{formatValue(item.why_strong)}</p>
-              </div>
-              <div className="trade-peer-detail-grid">
-                <PeerReason title={"\u58c1\u5792\u7406\u7531"} value={item.moat_reason} />
-                <PeerReason title={"\u5229\u6da6\u6d41\u5411"} value={item.profit_flow_reason} />
-                <PeerReason title={"\u98ce\u9669\u63d0\u793a"} value={item.risk_note} />
-              </div>
-            </section>
-          ))}
-        </div>
-      ) : (
-        <p className="trade-execution-muted">{"\u540c\u4e1a\u5f3a\u8005\u89c2\u5bdf\u6682\u672a\u751f\u6210"}</p>
-      )}
-    </article>
-  );
-}
-
-function PeerReason({ title, value }: { title: string; value: unknown }) {
-  return (
-    <div>
-      <span>{title}</span>
-      <p>{hasMeaningfulValue(value) ? formatValue(value) : "\u5f85\u8865\u5145"}</p>
-    </div>
-  );
-}
-
-function ExecutionAdvicePanel({ advice }: { advice?: TradeExecutionData["execution_advice"] }) {
-  const hasRuleAdvice = Boolean(
-    advice && (hasMeaningfulValue(advice.next_time_rules) || hasMeaningfulValue(advice.confirmation_signals)),
-  );
-  const hasAdvice = Boolean(
-    advice &&
-      ["summary", "next_time_rules", "confirmation_signals"].some((key) =>
-        hasMeaningfulValue(advice[key]),
-      ),
-  );
-
-  return (
-    <article className="trade-execution-card trade-advice-card is-subtle">
-      <h3>{"\u4e0b\u6b21\u6267\u884c\u89c4\u5219"}</h3>
-      {!hasAdvice || !advice ? (
-        <p className="trade-execution-muted">{"\u4e0b\u6b21\u6267\u884c\u89c4\u5219\u6682\u672a\u751f\u6210"}</p>
-      ) : (
-        <>
-          {hasMeaningfulValue(advice.summary) && (
-            <div className="trade-advice-summary">
-              <span>{"\u6267\u884c\u5907\u6ce8"}</span>
-              <p>{formatValue(advice.summary)}</p>
-            </div>
-          )}
-          {hasRuleAdvice && (
-            <div className="trade-advice-grid">
-              <AdviceItem title={"\u4e0b\u6b21\u6267\u884c\u89c4\u5219"} value={advice.next_time_rules} />
-              <AdviceItem title={"\u786e\u8ba4\u4fe1\u53f7"} value={advice.confirmation_signals} />
-            </div>
-          )}
-        </>
-      )}
-    </article>
-  );
-}
-
-function AdviceItem({ title, value }: { title: string; value: unknown }) {
-  if (!hasMeaningfulValue(value)) return null;
-  const items = adviceList(value);
-
-  return (
-    <div className="trade-advice-item">
-      <h4>{title}</h4>
-      {items.length > 1 ? (
-        <ul className="trade-advice-list">
+      {items.length > 0 ? (
+        <ol className="ranking-list">
           {items.map((item, index) => (
-            <li key={`${title}-${index}`}>{item}</li>
+            <li key={`${title}-${item.rank}-${item.name}-${index}`}>
+              <span className="rank">{copy(item.rank, String(index + 1))}</span>
+              <div>
+                <h3>{copy(item.name)}</h3>
+                <p>{copy(item.reason)}</p>
+              </div>
+            </li>
           ))}
-        </ul>
+        </ol>
       ) : (
-        <p>{items[0] || formatValue(value)}</p>
+        <p className="empty-copy">原始报告未提供这一榜单</p>
       )}
-    </div>
+    </section>
   );
 }
 
-function InfoCard({ title, items, fallback }: { title: string; items: string[]; fallback: string }) {
-  return (
-    <article className="structured-info-card">
-      <h3>{title}</h3>
-      <BulletList items={items} fallback={fallback} />
-    </article>
-  );
+const styles = `
+:root {
+  --page: #f5f9ff;
+  --surface: rgba(255, 255, 255, 0.72);
+  --surface-strong: rgba(255, 255, 255, 0.64);
+  --surface-soft: rgba(255, 255, 255, 0.46);
+  --text: #1d1d1f;
+  --muted: #6e6e73;
+  --blue: #007aff;
+  --blue-soft: rgba(0, 122, 255, 0.12);
+  --line: rgba(60, 60, 67, 0.13);
+  --glass-line: rgba(255, 255, 255, 0.82);
 }
 
-function BulletList({ items, fallback }: { items: string[]; fallback: string }) {
-  const rows = items.length ? items : [fallback];
-  return (
-    <ul>
-      {rows.map((item, index) => <li key={`${item}-${index}`}>{item}</li>)}
-    </ul>
-  );
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  color: var(--text);
+  background:
+    radial-gradient(circle at 11% 18%, rgba(0, 122, 255, 0.2), transparent 34%),
+    radial-gradient(circle at 88% 10%, rgba(255, 149, 0, 0.13), transparent 28%),
+    linear-gradient(135deg, #edf6ff 0%, #f7fbff 42%, #fffaf3 100%);
 }
 
-function list<T>(value?: T[] | T | null): T[] {
-  if (Array.isArray(value)) return value.filter((item) => item !== null && item !== undefined && item !== "");
-  if (value) return [value];
-  return [];
+button,
+a {
+  font: inherit;
 }
 
-function pointList(value: unknown): Array<Record<string, unknown>> {
-  if (Array.isArray(value)) return value.filter(isPlainObject);
-  if (isPlainObject(value)) return [value];
-  return [];
+.review-page {
+  width: 100%;
+  min-height: 100vh;
+  margin: 0 auto;
+  padding: 0 0 52px;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", "Microsoft YaHei", sans-serif;
+  letter-spacing: 0;
 }
 
-function number(value: unknown, fallback: number) {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : fallback;
+.glass {
+  border: 1px solid var(--glass-line);
+  background: var(--surface);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.98),
+    0 28px 80px rgba(33, 87, 150, 0.14);
+  backdrop-filter: blur(30px) saturate(1.45);
+  -webkit-backdrop-filter: blur(30px) saturate(1.45);
 }
 
-function tradePointTitle(point: Record<string, unknown>, index: number) {
-  const date = formatValue(point.date || point["\u65e5\u671f"]);
-  if (date !== "-") return date;
-  return `\u7b2c ${index + 1} \u7b14`;
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: grid;
+  grid-template-columns: 180px minmax(0, 1fr) 180px;
+  align-items: center;
+  min-height: 90px;
+  padding: 14px 20px;
+  border-width: 0 0 1px;
+  border-radius: 0 0 28px 28px;
 }
 
-function tradePointMeta(point: Record<string, unknown>) {
-  const price = formatValue(point.price || point["\u6210\u4ea4\u4ef7"]);
-  return price === "-" ? "\u6210\u4ea4\u4ef7\u5f85\u8865\u5145" : `\u6210\u4ea4\u4ef7 ${price}`;
+.icon-button {
+  width: fit-content;
+  min-width: 54px;
+  height: 56px;
+  display: grid;
+  place-items: center;
+  padding: 0 22px;
+  border: 0;
+  border-radius: 28px;
+  color: #3a3a3c;
+  background: rgba(255, 255, 255, 0.58);
+  text-decoration: none;
+  cursor: pointer;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.95), 0 10px 32px rgba(80, 130, 190, .1);
 }
 
-function tradePointSummary(points: Array<Record<string, unknown>>, tone: "buy" | "sell") {
-  const first = points[0];
-  const fallbackVerdict = tone === "buy" ? "\u4e70\u70b9\u5224\u65ad\u5f85\u8865\u5145" : "\u5356\u70b9\u5224\u65ad\u5f85\u8865\u5145";
-  const fallbackReason = tone === "buy" ? "\u7f3a\u5c11\u4e70\u70b9\u6761\u4ef6\u4f9d\u636e\u3002" : "\u7f3a\u5c11\u5356\u70b9\u6761\u4ef6\u4f9d\u636e\u3002";
-  return {
-    count: points.length,
-    deals: points.map((point, index) => `${tradePointTitle(point, index)} \u00b7 ${tradePointMeta(point)}`),
-    verdict: uniqueFormattedValues(points, ["judgment", "\u5224\u65ad"])[0] || fallbackVerdict,
-    reason: uniqueFormattedValues(points, ["reason", "\u539f\u56e0"]).join("\uff1b") || fallbackReason,
-    conditions: first ? tradePointConditions(first) : [],
-  };
+.icon-button span {
+  font-size: 18px;
+  font-weight: 760;
+  line-height: 1;
 }
 
-function tradePointConditions(point: Record<string, unknown>) {
-  return [
-    { label: "\u4e2a\u80a1\u5f53\u65e5", value: formatPercent(pointValue(point, ["stock_pct", "stock pct"])) },
-    { label: "\u6caa\u6df1300", value: formatPercent(pointValue(point, ["hs300_etf_pct", "hs300 etf pct"])) },
-    { label: "\u677f\u5757/\u6982\u5ff5", value: formatPercent(pointValue(point, ["sector_pct", "sector pct"])) },
-    { label: "\u76f8\u5bf9\u6caa\u6df1300", value: formatPercent(pointValue(point, ["excess_vs_hs300_pct", "vs_hs300_pct"])) },
-    { label: "\u76f8\u5bf9\u677f\u5757", value: formatPercent(pointValue(point, ["excess_vs_sector_pct", "vs_sector_pct"])) },
-    { label: "\u65e5\u5185\u4f4d\u7f6e", value: intradayPositionText(point.intraday_position) },
-  ].filter((item) => item.value !== "-");
+.icon-button:hover,
+.icon-button:focus-visible {
+  background: rgba(255, 255, 255, 0.86);
+  outline: none;
 }
 
-function pointValue(point: Record<string, unknown>, keys: string[]) {
-  return keys.map((key) => point[key]).find((value) => value !== null && value !== undefined && value !== "");
+.report-brand {
+  min-width: 0;
+  text-align: center;
 }
 
-function uniqueFormattedValues(points: Array<Record<string, unknown>>, keys: string[]) {
-  const seen = new Set<string>();
-  const values: string[] = [];
-  for (const point of points) {
-    const value = keys.map((key) => point[key]).find(hasMeaningfulValue);
-    const text = formatValue(value);
-    if (text === "-" || seen.has(text)) continue;
-    seen.add(text);
-    values.push(text);
+.report-brand strong {
+  display: block;
+  color: var(--text);
+  font-size: 22px;
+  font-weight: 820;
+}
+
+.report-brand span {
+  display: block;
+  margin-top: 4px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace {
+  display: grid;
+  grid-template-columns: 310px minmax(0, 1fr);
+  gap: 24px;
+  align-items: start;
+  width: min(1840px, calc(100vw - 32px));
+  margin: 28px auto 0;
+}
+
+.side-nav {
+  position: sticky;
+  top: 118px;
+  padding: 26px 24px;
+  border-radius: 40px;
+}
+
+.side-nav > p {
+  margin: 0 0 20px;
+  color: var(--muted);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: .08em;
+}
+
+.view-tabs {
+  display: grid;
+  gap: 6px;
+}
+
+.view-tabs button {
+  width: 100%;
+  min-height: 78px;
+  display: grid;
+  grid-template-columns: 54px minmax(0, 1fr);
+  gap: 14px;
+  align-items: center;
+  padding: 14px;
+  border: 1px solid transparent;
+  border-radius: 28px;
+  color: var(--muted);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.view-tabs button:hover,
+.view-tabs button:focus-visible {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.48);
+  outline: none;
+}
+
+.view-tabs button.active {
+  border-color: rgba(255, 255, 255, 0.9);
+  color: var(--blue);
+  background: rgba(218, 236, 255, 0.82);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.95);
+}
+
+.view-tabs b {
+  width: 50px;
+  height: 50px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 24px;
+  color: var(--blue);
+  background: rgba(255, 255, 255, 0.76);
+  font-size: 22px;
+}
+
+.view-tabs span {
+  min-width: 0;
+  font-size: 21px;
+  font-weight: 700;
+}
+
+.content {
+  min-width: 0;
+}
+
+.report-view {
+  min-height: calc(100vh - 146px);
+  padding: clamp(40px, 4vw, 64px);
+  border-radius: 40px;
+}
+
+.view-heading {
+  padding-bottom: 24px;
+  border-bottom: 0;
+}
+
+.view-heading > span,
+.subheading > span {
+  color: var(--blue);
+  font-size: 17px;
+  font-weight: 800;
+  letter-spacing: .08em;
+}
+
+.view-heading h1 {
+  margin: 10px 0 0;
+  font-size: clamp(72px, 7vw, 124px);
+  font-weight: 850;
+  line-height: .96;
+}
+
+.verdict {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
+  max-width: 980px;
+  margin-top: 10px;
+  padding: 0 0 28px;
+  border-bottom: 1px solid var(--line);
+}
+
+.verdict > span {
+  display: none;
+  color: var(--blue);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.verdict > p {
+  max-width: 920px;
+  margin: 0;
+  color: var(--muted);
+  font-size: clamp(20px, 1.5vw, 26px);
+  font-weight: 520;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.review-reasons {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 32px;
+  overflow: visible;
+  border: 0;
+  background: transparent;
+}
+
+.review-reasons article {
+  min-height: 190px;
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 16px;
+  padding: 24px;
+  border: 1px solid var(--line);
+  border-radius: 28px;
+  background: rgba(255, 255, 255, 0.62);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.9);
+}
+
+.review-reasons article > span,
+.action-list article > span {
+  color: var(--blue);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.review-reasons h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.review-reasons p,
+.action-list p,
+.ranking-list p {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.75;
+  white-space: pre-wrap;
+}
+
+.next-actions {
+  margin-top: 42px;
+  padding-top: 32px;
+  border-top: 1px solid var(--line);
+}
+
+.subheading h2 {
+  margin: 6px 0 0;
+  font-size: 26px;
+}
+
+.action-full-text {
+  margin-top: 20px;
+  padding: 26px 28px;
+  border: 1px solid var(--line);
+  border-radius: 28px;
+  background: rgba(255, 255, 255, 0.62);
+}
+
+.action-full-text p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1.9;
+  white-space: pre-wrap;
+}
+
+.choice-content,
+.comparison-grid {
+  padding-top: 34px;
+}
+
+.comparison-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.comparison-grid.single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.ranking-panel {
+  min-width: 0;
+  padding: 26px;
+  border: 1px solid var(--line);
+  border-radius: 30px;
+  background: rgba(255, 255, 255, 0.58);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.9);
+}
+
+.choice-name {
+  padding: 28px;
+  border: 1px solid var(--line);
+  border-radius: 28px;
+  background: linear-gradient(135deg, #1d1d1f, #303036 48%, #007aff);
+  color: #fff;
+}
+
+.choice-name > span {
+  color: rgba(255,255,255,.72);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.choice-name h2 {
+  margin: 12px 0 0;
+  overflow-wrap: anywhere;
+  font-size: clamp(30px, 5vw, 54px);
+  line-height: 1.08;
+}
+
+.choice-name p {
+  max-width: 780px;
+  margin: 16px 0 0;
+  color: rgba(255,255,255,.76);
+  line-height: 1.75;
+}
+
+.ranking-list {
+  margin: 24px 0 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--line);
+}
+
+.ranking-list li {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 24px;
+  padding: 24px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.rank {
+  width: 54px;
+  height: 54px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 18px;
+  color: var(--blue);
+  background: var(--blue-soft);
+  font-size: 18px;
+  font-weight: 800;
+}
+
+.ranking-list h3 {
+  margin: 2px 0 0;
+  font-size: 21px;
+}
+
+.unavailable {
+  min-height: 380px;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 12px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.unavailable span {
+  color: var(--blue);
+  font-size: 46px;
+  line-height: 1;
+}
+
+.unavailable p {
+  margin: 0;
+  font-size: 18px;
+}
+
+.theme-section {
+  padding-top: 34px;
+}
+
+.chain-flow {
+  display: flex;
+  align-items: stretch;
+  margin-top: 24px;
+  overflow-x: auto;
+  padding-bottom: 8px;
+}
+
+.chain-step {
+  display: flex;
+  flex: 1 0 auto;
+  align-items: center;
+}
+
+.chain-step article {
+  width: clamp(160px, 18vw, 220px);
+  min-height: 132px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: 28px;
+  background: rgba(255, 255, 255, 0.62);
+}
+
+.chain-step article.current {
+  border-color: rgba(0, 122, 255, .32);
+  background: rgba(218, 236, 255, 0.82);
+}
+
+.chain-step article > span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.chain-step article > strong {
+  margin-top: 8px;
+  font-size: 18px;
+}
+
+.chain-step article > small {
+  margin-top: 14px;
+  color: var(--blue);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.flow-arrow {
+  width: 44px;
+  flex: 0 0 44px;
+  color: var(--blue);
+  font-size: 23px;
+  text-align: center;
+}
+
+.flow-arrow.vertical {
+  display: none;
+}
+
+.profit-flow {
+  margin-top: 38px;
+  padding-top: 34px;
+  border-top: 1px solid var(--line);
+}
+
+.profit-flow > p {
+  margin: 22px 0 0;
+  padding: 24px;
+  border-left: 3px solid var(--blue);
+  color: #3a3a3c;
+  background: rgba(255, 255, 255, 0.62);
+  font-size: 16px;
+  line-height: 1.9;
+  white-space: pre-wrap;
+  border-radius: 0 24px 24px 0;
+}
+
+.trade-logic-content {
+  margin-top: 34px;
+  padding: clamp(26px, 4vw, 48px);
+  border: 1px solid var(--line);
+  border-radius: 30px;
+  background: rgba(255, 255, 255, 0.62);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.9);
+}
+
+.trade-logic-content strong {
+  display: block;
+  margin-bottom: 18px;
+  color: var(--blue);
+  font-size: 20px;
+}
+
+.trade-logic-content p {
+  margin: 0;
+  color: #3a3a3c;
+  font-size: clamp(18px, 2vw, 26px);
+  line-height: 1.9;
+  white-space: pre-wrap;
+}
+
+.empty-copy {
+  margin: 24px 0 0;
+  color: var(--muted);
+  line-height: 1.7;
+}
+
+.review-reasons > .empty-copy {
+  margin: 0;
+  padding: 24px;
+  background: var(--surface-strong);
+}
+
+.review-decision-layout {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.42fr) minmax(0, 0.58fr);
+  gap: 16px;
+  margin-top: 32px;
+}
+
+.score-panel {
+  display: grid;
+  gap: 14px;
+  align-content: start;
+}
+
+.total-score {
+  min-height: 230px;
+  display: grid;
+  align-content: center;
+  gap: 10px;
+  padding: 30px;
+  border-radius: 32px;
+  color: #fff;
+  background: linear-gradient(145deg, #1d1d1f, #303036 48%, #007aff);
+  box-shadow: 0 20px 54px rgba(0, 72, 160, .16);
+}
+
+.total-score span,
+.total-score small {
+  color: rgba(255, 255, 255, .72);
+  font-size: 13px;
+  font-weight: 780;
+}
+
+.total-score strong {
+  font-size: clamp(72px, 7vw, 116px);
+  line-height: .9;
+}
+
+.score-list {
+  display: grid;
+  gap: 10px;
+}
+
+.score-list article {
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.62);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.9);
+}
+
+.score-list article > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: baseline;
+}
+
+.score-list span {
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 760;
+}
+
+.score-list strong {
+  color: var(--blue);
+  font-size: 34px;
+  line-height: 1;
+}
+
+.score-list i {
+  display: block;
+  height: 8px;
+  margin-top: 14px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(60, 60, 67, .12);
+}
+
+.score-list b {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #007aff, #63d2ff);
+}
+
+.judgment-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.judgment-panel article {
+  min-height: 150px;
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 16px;
+  padding: 24px;
+  border: 1px solid var(--line);
+  border-radius: 28px;
+  background: rgba(255, 255, 255, 0.62);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.9);
+}
+
+.judgment-panel article > span {
+  color: var(--blue);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.judgment-panel h2 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.judgment-panel p {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.75;
+  white-space: pre-wrap;
+}
+
+.state {
+  min-height: calc(100vh - 112px);
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 10px;
+  padding: 32px;
+  border-radius: 8px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.state-mark {
+  color: var(--blue);
+  font-size: 32px;
+  font-weight: 800;
+}
+
+.state p {
+  margin: 0;
+}
+
+.state.error strong {
+  color: var(--text);
+}
+
+.state.error button {
+  margin-top: 10px;
+  padding: 9px 18px;
+  border: 1px solid var(--gold-line);
+  border-radius: 18px;
+  color: #fff;
+  background: var(--blue);
+  font-weight: 800;
+  cursor: pointer;
+}
+
+@media (max-width: 980px) {
+  .workspace {
+    grid-template-columns: 1fr;
   }
-  return values;
-}
 
-function intradayPositionText(value: unknown) {
-  const text = formatValue(value);
-  const labels: Record<string, string> = {
-    low: "\u65e5\u5185\u4f4e\u4f4d",
-    middle: "\u65e5\u5185\u4e2d\u4f4d",
-    high: "\u65e5\u5185\u9ad8\u4f4d",
-    unknown: "\u6682\u65e0\u65e5\u5185\u4f4d\u7f6e",
-  };
-  return labels[text] || text;
-}
-
-function buyDayChartItems(point?: Record<string, unknown>) {
-  if (!point) return [];
-  const stockPctKey = "stock" + " pct";
-  const hs300PctKey = "hs300 etf" + " pct";
-  const sectorPctKey = "sector" + " pct";
-  const chartKeys: Array<{ label: string; keys: string[] }> = [
-    { label: "\u4e2a\u80a1", keys: ["stock_pct", stockPctKey] },
-    { label: "\u6caa\u6df1300ETF", keys: ["hs300_etf_pct", hs300PctKey] },
-    { label: "\u6240\u5c5e\u677f\u5757/\u6982\u5ff5", keys: ["sector_pct", sectorPctKey] },
-  ];
-
-  return chartKeys.flatMap(({ label, keys }) => {
-    const value = pickValue(point, keys);
-    if (!hasMeaningfulValue(value)) return [];
-    const parsed = Number(value);
-    if (!Number.isFinite(parsed)) return [];
-    return [{ label, value: parsed }];
-  });
-}
-
-function peerRecommendationItems(
-  recommendations: TradeExecutionData["peer_recommendations"] | undefined,
-  fallbackRows: Array<Record<string, unknown>>,
-) {
-  const items = Array.isArray(recommendations?.items) ? recommendations.items : [];
-  if (items.length) return items.slice(0, 3);
-
-  return fallbackRows.slice(0, 3).map((row, index) => ({
-    rank: index + 1,
-    name: row.name || row.stock_name || row.symbol,
-    code: row.code || row.symbol,
-    why_strong: "\u540c\u884c\u8868\u73b0\u53c2\u8003\uff0c\u63a8\u8350\u7406\u7531\u5f85\u8865\u5145\u3002",
-    moat_reason: "\u58c1\u5792\u7406\u7531\u5f85\u8865\u5145\u3002",
-    profit_flow_reason: "\u5229\u6da6\u6d41\u5411\u7406\u7531\u5f85\u8865\u5145\u3002",
-    risk_note: "\u8be5\u6761\u4e3a\u4fdd\u5b88\u5360\u4f4d\uff0c\u4ec5\u4f9b\u540c\u884c\u8868\u73b0\u53c2\u8003\u3002",
-  }));
-}
-
-function formatRank(rank: unknown, index: number) {
-  const parsed = Number(rank);
-  return `#${Number.isFinite(parsed) ? Math.round(parsed) : index + 1}`;
-}
-
-function pickValue(source: Record<string, unknown>, keys: string[]) {
-  return keys.map((key) => source[key]).find(hasMeaningfulValue);
-}
-
-function formatPercent(value: unknown) {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) return formatValue(value);
-  const sign = parsed > 0 ? "+" : "";
-  return `${sign}${parsed.toFixed(2)}%`;
-}
-
-function hasMeaningfulValue(value: unknown): boolean {
-  if (value === null || value === undefined || value === "") return false;
-  if (Array.isArray(value)) return value.some(hasMeaningfulValue);
-  if (isPlainObject(value)) return Object.values(value).some(hasMeaningfulValue);
-  return true;
-}
-
-function adviceList(value: unknown): string[] {
-  if (!hasMeaningfulValue(value)) return [];
-  if (Array.isArray(value)) return value.flatMap((item) => adviceList(item)).filter((item) => item !== "-");
-  if (isPlainObject(value)) return Object.values(value).flatMap((item) => adviceList(item)).filter((item) => item !== "-");
-  return [formatValue(value)];
-}
-
-function resolveReportAssetUrl(url: string, safeReportId: string) {
-  const trimmed = url.trim();
-  if (!trimmed) return "";
-  if (/^https?:\/\//i.test(trimmed)) return trimmed;
-  if (trimmed.startsWith("/")) return `${API_BASE}${trimmed}`;
-  const cleaned = trimmed.replace(/^\.?\//, "");
-  return `${API_BASE}/api/reports/${safeReportId}/${cleaned}`;
-}
-
-function labelize(key: string) {
-  const labels: Record<string, string> = {
-    code: "\u4ee3\u7801",
-    name: "\u540d\u79f0",
-    symbol: "\u4ee3\u7801",
-    stock_name: "\u540d\u79f0",
-    day_pct: "\u5f53\u65e5\u6da8\u8dcc\u5e45",
-    five_day_pct: "5\u65e5\u6da8\u8dcc\u5e45",
-    twenty_day_pct: "20\u65e5\u6da8\u8dcc\u5e45",
-    pct_chg: "\u6da8\u8dcc\u5e45",
-    change_pct: "\u6da8\u8dcc\u5e45",
-    score: "\u8bc4\u5206",
-    note: "\u8bf4\u660e",
-    advantage: "\u4f18\u52bf",
-    weakness: "\u77ed\u677f",
-    judgment: "\u5224\u65ad",
-    reason: "\u539f\u56e0",
-    stock_pct: "\u4e2a\u80a1\u6da8\u8dcc\u5e45",
-    hs300_etf_pct: "\u6caa\u6df1300ETF\u6da8\u8dcc\u5e45",
-    sector_pct: "\u677f\u5757\u6da8\u8dcc\u5e45",
-    vs_hs300_pct: "\u76f8\u5bf9\u6caa\u6df1300ETF",
-    excess_vs_hs300_pct: "\u76f8\u5bf9\u6caa\u6df1300ETF",
-    vs_sector_pct: "\u76f8\u5bf9\u677f\u5757",
-    excess_vs_sector_pct: "\u76f8\u5bf9\u677f\u5757",
-    buy_issue: "\u4e70\u70b9\u95ee\u9898",
-    sell_issue: "\u5356\u70b9\u95ee\u9898",
-    next_time_rules: "\u4e0b\u6b21\u6267\u884c\u89c4\u5219",
-    confirmation_signals: "\u786e\u8ba4\u4fe1\u53f7",
-    summary: "\u6267\u884c\u5907\u6ce8",
-    date: "\u65e5\u671f",
-    price: "\u6210\u4ea4\u4ef7",
-  };
-  return labels[key] || "\u5176\u4ed6";
-}
-
-function formatValue(value: unknown): string {
-  if (value === null || value === undefined || value === "") return "-";
-  if (typeof value === "number") return Number.isInteger(value) ? String(value) : value.toFixed(2);
-  if (typeof value === "boolean") return value ? "\u662f" : "\u5426";
-  if (Array.isArray(value)) return value.map((item) => formatValue(item)).filter((item) => item !== "-").join("\uff1b");
-  if (isPlainObject(value)) {
-    return Object.entries(value)
-      .map(([key, item]) => `${labelize(key)}\uff1a${formatValue(item)}`)
-      .join("\uff1b");
+  .side-nav {
+    position: sticky;
+    top: 88px;
+    z-index: 15;
   }
-  return String(value);
+
+  .side-nav > p {
+    display: none;
+  }
+
+  .view-tabs {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .view-tabs button {
+    grid-template-columns: 28px minmax(0, 1fr);
+  }
+
+  .view-tabs b {
+    width: 28px;
+    height: 28px;
+  }
+
+  .report-view,
+  .state {
+    min-height: calc(100vh - 190px);
+  }
 }
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+@media (max-width: 720px) {
+  .review-page {
+    width: 100%;
+    padding: 0 0 28px;
+  }
+
+  .topbar {
+    top: 0;
+    border-width: 0 0 1px;
+    grid-template-columns: 110px minmax(0, 1fr) 62px;
+    min-height: 74px;
+    border-radius: 0 0 22px 22px;
+    padding: 10px;
+  }
+
+  .icon-button {
+    min-width: 52px;
+    height: 52px;
+    padding: 0 14px;
+  }
+
+  .icon-button span {
+    font-size: 14px;
+  }
+
+  .report-brand strong {
+    font-size: 18px;
+  }
+
+  .workspace {
+    gap: 10px;
+    margin: 10px;
+  }
+
+  .side-nav {
+    top: 70px;
+    padding: 8px;
+  }
+
+  .view-tabs button {
+    min-height: 44px;
+    grid-template-columns: 1fr;
+    justify-items: center;
+    gap: 0;
+    padding: 8px 4px;
+    text-align: center;
+  }
+
+  .view-tabs b {
+    display: none;
+  }
+
+  .view-tabs span {
+    font-size: 12px;
+  }
+
+  .report-view {
+    min-height: calc(100vh - 142px);
+    padding: 24px 18px 30px;
+    border-radius: 28px;
+  }
+
+  .view-heading h1 {
+    font-size: 48px;
+  }
+
+  .verdict {
+    grid-template-columns: 1fr;
+    gap: 10px;
+    padding: 24px 0;
+  }
+
+  .verdict > p {
+    font-size: 20px;
+  }
+
+  .review-reasons,
+  .action-list,
+  .review-decision-layout,
+  .comparison-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .review-reasons article {
+    min-height: 0;
+    padding: 20px;
+  }
+
+  .action-list article {
+    min-height: 0;
+  }
+
+  .ranking-list li {
+    grid-template-columns: 52px minmax(0, 1fr);
+    gap: 16px;
+  }
+
+  .rank {
+    width: 46px;
+    height: 46px;
+  }
+
+  .chain-flow {
+    display: grid;
+    overflow: visible;
+  }
+
+  .chain-step {
+    display: grid;
+    justify-items: stretch;
+  }
+
+  .chain-step article {
+    width: 100%;
+    min-height: 116px;
+  }
+
+  .flow-arrow.horizontal {
+    display: none;
+  }
+
+  .flow-arrow.vertical {
+    width: 100%;
+    height: 38px;
+    display: grid;
+    place-items: center;
+  }
+
+  .profit-flow > p {
+    padding: 18px;
+    font-size: 15px;
+  }
 }
+`;

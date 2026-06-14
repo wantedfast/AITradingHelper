@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useEffect, useRef } from "react";
 import * as THREE from "three";
@@ -139,6 +139,8 @@ export function GoldMagicCube() {
     };
 
     const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const twistDelay = reduceMotion ? 2800 : 2300;
+    const twistDuration = reduceMotion ? 1600 : 1300;
     const scratchGroup = new THREE.Group();
     root.add(scratchGroup);
 
@@ -156,6 +158,7 @@ export function GoldMagicCube() {
     let layerAxis: Axis = "y";
     let lastAngle = 0;
     let twisting = false;
+    let lastFrameTime = performance.now();
 
     const selectedCubelets = (axis: Axis, layer: number) =>
       cubelets.filter((cubelet) => Math.round(cubelet.userData.grid.getComponent(axisIndex[axis])) === layer);
@@ -204,21 +207,22 @@ export function GoldMagicCube() {
 
     const animate = (now: number) => {
       frame = requestAnimationFrame(animate);
-      if (!reduceMotion) {
-        root.rotation.y += 0.0032;
-        root.rotation.x = -0.34 + Math.sin(now * 0.00055) * 0.055;
+      const deltaMs = Math.min(48, Math.max(0, now - lastFrameTime));
+      lastFrameTime = now;
 
-        if (!twisting && now - twistStart > 2300) startTwist(now);
+      root.rotation.y += deltaMs * 0.00042;
+      root.rotation.x = -0.34 + Math.sin(now * 0.00055) * 0.055;
 
-        if (twisting) {
-          const plan = layerPlan[activeLayer % layerPlan.length];
-          const progress = Math.min(1, (now - twistStart) / 1300);
-          const angle = easeInOut(progress) * (Math.PI / 2) * plan.dir;
-          const delta = angle - lastAngle;
-          scratchGroup.rotation[layerAxis] += delta;
-          lastAngle = angle;
-          if (progress >= 1) finishTwist();
-        }
+      if (!twisting && now - twistStart > twistDelay) startTwist(now);
+
+      if (twisting) {
+        const plan = layerPlan[activeLayer % layerPlan.length];
+        const progress = Math.min(1, (now - twistStart) / twistDuration);
+        const angle = easeInOut(progress) * (Math.PI / 2) * plan.dir;
+        const delta = angle - lastAngle;
+        scratchGroup.rotation[layerAxis] += delta;
+        lastAngle = angle;
+        if (progress >= 1) finishTwist();
       }
       renderer.render(scene, camera);
     };

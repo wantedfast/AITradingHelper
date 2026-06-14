@@ -22,17 +22,35 @@ if (-not $Node -or -not (Test-Path $Node)) {
   throw "Node runtime not found. Checked bundled runtime and system node."
 }
 
-if (Test-Path $BundledPython) {
-  $Python = $BundledPython
-} elseif (Test-Path "D:\an\python.exe") {
-  $Python = "D:\an\python.exe"
-} else {
-  $PythonCommand = Get-Command python -ErrorAction SilentlyContinue
-  if ($PythonCommand) {
-    $Python = $PythonCommand.Source
-  } else {
-    $Python = "python"
+function Test-PythonRuntime {
+  param([string]$Candidate)
+
+  if (-not $Candidate -or -not (Test-Path $Candidate)) {
+    return $false
   }
+  $PreviousErrorPreference = $ErrorActionPreference
+  $ErrorActionPreference = "SilentlyContinue"
+  & $Candidate -c "import pandas, requests" 2>$null
+  $Succeeded = $LASTEXITCODE -eq 0
+  $ErrorActionPreference = $PreviousErrorPreference
+  return $Succeeded
+}
+
+$PythonCandidates = @($BundledPython, "D:\an\python.exe")
+$PythonCommand = Get-Command python -ErrorAction SilentlyContinue
+if ($PythonCommand) {
+  $PythonCandidates += $PythonCommand.Source
+}
+
+foreach ($Candidate in $PythonCandidates | Select-Object -Unique) {
+  if (Test-PythonRuntime -Candidate $Candidate) {
+    $Python = $Candidate
+    break
+  }
+}
+
+if (-not $Python) {
+  throw "Python runtime with pandas and requests was not found."
 }
 
 function Stop-PortListeners {
@@ -130,7 +148,7 @@ if (-not $env:INTERNAL_API_BASE) {
 }
 
 $BackendProcess = Start-Process -FilePath $Python `
-  -ArgumentList @("-m", "trade_review_agent.simple_api") `
+  -ArgumentList @("-m", "trade_review_agent.api.simple_api") `
   -WorkingDirectory $Root `
   -WindowStyle Hidden `
   -PassThru
