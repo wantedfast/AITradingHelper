@@ -137,8 +137,8 @@ const copy = {
   uploadReady: "\u4ea4\u5272\u5355\u5df2\u5c31\u7eea",
   uploadDesc:
     "\u70b9\u51fb\u4e0a\u4f20\u533a\u57df\u6216\u4e0b\u65b9\u6309\u94ae\u9009\u62e9\u6587\u4ef6\uff0c\u7cfb\u7edf\u4f1a\u7acb\u5373\u8bc6\u522b\u4ea4\u6613\u8bb0\u5f55\u5e76\u751f\u6210\u590d\u76d8\u62a5\u544a\u3002",
-  formatHint: "\u652f\u6301\u683c\u5f0f\uff1aExcel\u3001CSV\u3001TXT\u3001\u622a\u56fe OCR",
-  chooseFile: "\u9009\u62e9\u6587\u4ef6\u4e0a\u4f20",
+  formatHint: "\u76f4\u63a5\u8f93\u5165\u4ea4\u6613\u4e8b\u5b9e\uff0c\u7cfb\u7edf\u751f\u6210\u672c\u6b21\u590d\u76d8\u62a5\u544a\u3002",
+  chooseFile: "\u8f93\u5165\u4ea4\u5272\u5355",
   generate: "\u751f\u6210\u62a5\u544a",
   generating: "\u6b63\u5728\u751f\u6210\u62a5\u544a",
   reselect: "\u91cd\u65b0\u9009\u62e9",
@@ -223,7 +223,7 @@ export default function ReviewPage() {
   const toastTimer = useRef<number | null>(null);
 
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [inputMode, setInputMode] = useState<"upload" | "manual">("upload");
+  const [inputMode, setInputMode] = useState<"upload" | "manual">("manual");
   const [manualTrade, setManualTrade] = useState<ManualTradeForm>({
     stockName: "",
     tradeDate: "",
@@ -565,7 +565,7 @@ export default function ReviewPage() {
             </h1>
             <p>{copy.heroDesc}</p>
             <div className="review-hero-actions">
-              <button className="hero-primary-upload" type="button" onClick={openFilePicker} disabled={generating}>
+              <button className="hero-primary-upload" type="button" onClick={() => setInputMode("manual")} disabled={generating}>
                 <Upload />
                 {copy.chooseFile}
               </button>
@@ -584,8 +584,10 @@ export default function ReviewPage() {
               <button
                 className={inputMode === "upload" ? "active" : ""}
                 type="button"
-                onClick={() => setInputMode("upload")}
-                disabled={generating}
+                onClick={() => undefined}
+                disabled
+                aria-disabled="true"
+                title="上传交割单暂未开放"
               >
                 <FileUp />
                 上传交割单
@@ -597,7 +599,7 @@ export default function ReviewPage() {
                 disabled={generating}
               >
                 <ClipboardCheck />
-                临时手动输入
+                输入交割单
               </button>
             </div>
             <div

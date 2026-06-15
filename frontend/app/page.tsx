@@ -181,11 +181,11 @@ export default function Page() {
                 </Link>
               )}
             </div>
-            {hydrated && user && (
+            {hydrated && user && user.role !== "admin" && (
               <div className="home-credit-strip">
                 <span>
                   <Gift className="h-4 w-4" />
-                  {user.role === "admin" ? "管理员账号可直接使用普通功能" : `剩余 ${user.credits} 次免费机会`}
+                  {`剩余 ${user.credits} 次免费机会`}
                 </span>
                 <button type="button" onClick={copyInvite}>
                   <Copy className="h-4 w-4" />

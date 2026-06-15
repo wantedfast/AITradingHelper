@@ -218,7 +218,6 @@ export default function ReviewReportPage({ params }: ReviewReportPageProps) {
                   <div className="total-score">
                     <span>综合评分</span>
                     <strong>{scoreCopy(reviewScores.find((item) => item.key === "total")?.value)}</strong>
-                    <small>来自原始报告</small>
                   </div>
 
                   <div className="score-list">
@@ -232,9 +231,7 @@ export default function ReviewReportPage({ params }: ReviewReportPageProps) {
                           <i><b style={{ width: `${Math.max(0, Math.min(100, Number(item.value) || 0))}%` }} /></i>
                         </article>
                       ))
-                    ) : (
-                      <p className="empty-copy">原始报告未提供评分</p>
-                    )}
+                    ) : null}
                   </div>
                 </aside>
 
