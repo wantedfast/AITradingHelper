@@ -7,13 +7,11 @@ import {
   ArrowRight,
   BarChart3,
   BellRing,
-  Camera,
   CheckCircle2,
   ChevronRight,
   CircleHelp,
   ClipboardCheck,
   CalendarClock,
-  FileSpreadsheet,
   FileText,
   FileUp,
   Globe2,
@@ -132,25 +130,20 @@ const copy = {
     "\u8f93\u5165\u4ea4\u6613\u4e8b\u5b9e\uff0c\u7cfb\u7edf\u4f1a\u8c03\u7528\u884c\u60c5\u4e0e\u6295\u7814 Agent\uff0c\u751f\u6210\u80fd\u770b\u61c2\u3001\u80fd\u590d\u76d8\u3001\u80fd\u6c89\u6dc0\u89c4\u5219\u7684\u62a5\u544a\u3002",
   workflowTitle: "\u4ea4\u5272\u5355 \u2192 \u4ea4\u6613\u4e8b\u5b9e \u2192 \u5e02\u573a\u73af\u5883 \u2192 \u590d\u76d8\u7ed3\u8bba",
   workflowDesc:
-    "上传后系统会识别交易事实，调用正式 AI 复盘 Agent，并生成可打开的复盘报告。",
-  uploadTitle: "\u4e0a\u4f20\u4ea4\u5272\u5355 / \u4ea4\u6613\u622a\u56fe",
-  uploadReady: "\u4ea4\u5272\u5355\u5df2\u5c31\u7eea",
-  uploadDesc:
-    "\u70b9\u51fb\u4e0a\u4f20\u533a\u57df\u6216\u4e0b\u65b9\u6309\u94ae\u9009\u62e9\u6587\u4ef6\uff0c\u7cfb\u7edf\u4f1a\u7acb\u5373\u8bc6\u522b\u4ea4\u6613\u8bb0\u5f55\u5e76\u751f\u6210\u590d\u76d8\u62a5\u544a\u3002",
+    "\u8f93\u5165\u540e\u7cfb\u7edf\u4f1a\u8bc6\u522b\u4ea4\u6613\u4e8b\u5b9e\uff0c\u8c03\u7528\u6b63\u5f0f AI \u590d\u76d8 Agent\uff0c\u5e76\u751f\u6210\u53ef\u6253\u5f00\u7684\u590d\u76d8\u62a5\u544a\u3002",
   chooseFile: "\u8f93\u5165\u4ea4\u5272\u5355",
   generate: "\u751f\u6210\u62a5\u544a",
   generating: "\u6b63\u5728\u751f\u6210\u62a5\u544a",
   reselect: "\u91cd\u65b0\u9009\u62e9",
   errorTitle: "\u62a5\u544a\u751f\u6210\u5931\u8d25",
   privacy:
-    "\u6587\u4ef6\u4ec5\u7528\u4e8e\u672c\u6b21\u5206\u6790\uff1b\u5efa\u8bae\u4e0a\u4f20\u5b8c\u6574\u6210\u4ea4\u65f6\u95f4\u3001\u65b9\u5411\u3001\u4ef7\u683c\u3001\u6570\u91cf\u548c\u8d39\u7528\u3002",
+    "\u4ea4\u6613\u4e8b\u5b9e\u4ec5\u7528\u4e8e\u672c\u6b21\u5206\u6790\uff1b\u5efa\u8bae\u586b\u5199\u5b8c\u6574\u6210\u4ea4\u65f6\u95f4\u3001\u65b9\u5411\u548c\u6807\u7684\u540d\u79f0\u3002",
   reportQuestion: "\u62a5\u544a\u5c06\u56de\u7b54\u4ec0\u4e48\uff1f",
   modulesTitle: "\u590d\u76d8\u4e0d\u662f\u8bb0\u8d26\uff0c\u662f\u628a\u4ea4\u6613\u80fd\u529b\u62c6\u5f00\u8bad\u7ec3\u3002",
   reportTitle: "AI复盘结果",
   reportDesc: "\u70b9\u51fb\u67e5\u770b\u62a5\u544a\u540e\uff0c\u4f1a\u5728\u5f53\u524d\u5e94\u7528\u5185\u6253\u5f00\u62a5\u544a\u8be6\u60c5\u9875\u3002",
   openNew: "\u67e5\u770b\u62a5\u544a",
   openBrowser: "\u6253\u5f00\u62a5\u544a",
-  accepted: "\u4ea4\u5272\u5355\u5df2\u63a5\u6536\uff0c\u53ef\u4ee5\u751f\u6210\u62a5\u544a\u3002",
   calling: "\u6b63\u5728\u8c03\u7528\u540e\u7aef Agent \u751f\u6210\u771f\u5b9e\u62a5\u544a\u3002",
   modeFast: "快速报告",
   modeFastDesc: "只生成前端需要的研究 JSON，速度优先。",
@@ -163,16 +156,10 @@ const copy = {
 };
 
 const workflow = [
-  { icon: Upload, title: "\u4e0a\u4f20", text: "\u63d0\u4ea4\u4ea4\u5272\u5355\u6216\u622a\u56fe" },
-  { icon: ScanLine, title: "\u8bc6\u522b", text: "AI \u8bc6\u522b\u4ea4\u6613\u7ec6\u8282" },
+  { icon: Upload, title: "\u8f93\u5165", text: "\u586b\u5199\u4ea4\u6613\u4e8b\u5b9e" },
+  { icon: ScanLine, title: "\u6574\u7406", text: "AI \u6574\u7406\u4ea4\u6613\u7ec6\u8282" },
   { icon: LineChart, title: "\u7814\u7a76", text: "\u591a\u7ef4\u5ea6\u5206\u6790\u4ea4\u6613\u8868\u73b0" },
   { icon: ClipboardCheck, title: "\u62a5\u544a", text: "\u751f\u6210\u53ef\u6267\u884c\u62a5\u544a" },
-];
-const formats = [
-  { icon: FileSpreadsheet, label: "Excel (.xlsx)" },
-  { icon: FileSpreadsheet, label: "CSV (.csv)" },
-  { icon: FileText, label: "TXT (.txt)" },
-  { icon: Camera, label: "\u622a\u56fe OCR" },
 ];
 const reportBlocks = [
   "\u8fd9\u7b14\u4ea4\u6613\u7684\u6574\u4f53\u8868\u73b0\u5982\u4f55\uff1f\u6536\u76ca\u6765\u6e90\u4e0e\u4e8f\u635f\u539f\u56e0\u5206\u522b\u662f\u4ec0\u4e48\uff1f",
@@ -217,12 +204,9 @@ const capabilityCards = [
 
 export default function ReviewPage() {
   const router = useRouter();
-  const inputRef = useRef<HTMLInputElement>(null);
   const reportPanelRef = useRef<HTMLElement | null>(null);
   const toastTimer = useRef<number | null>(null);
 
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [inputMode, setInputMode] = useState<"upload" | "manual">("manual");
   const [manualTrade, setManualTrade] = useState<ManualTradeForm>({
     stockName: "",
     tradeDate: "",
@@ -240,7 +224,6 @@ export default function ReviewPage() {
   const [researchModelLabel, setResearchModelLabel] = useState(STANDARD_REPORT_LABEL);
   const [errorText, setErrorText] = useState("");
   const [toast, setToast] = useState("");
-  const [isDragging, setIsDragging] = useState(false);
 
   const reportReady = Boolean(reportUrl);
 
@@ -248,36 +231,6 @@ export default function ReviewPage() {
     setToast(text);
     if (toastTimer.current) window.clearTimeout(toastTimer.current);
     toastTimer.current = window.setTimeout(() => setToast(""), 2600);
-  }
-
-  function openFilePicker() {
-    if (!generating) inputRef.current?.click();
-  }
-
-  function handleUploadStageKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
-    if (event.key === "Enter" || event.key === " ") {
-      event.preventDefault();
-      openFilePicker();
-    }
-  }
-
-  function handleFileChange(event: React.ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    acceptFile(file);
-  }
-
-  function acceptFile(file?: File) {
-    if (!file) return;
-    setInputMode("upload");
-    setSelectedFile(file);
-    setReportUrl("");
-    setReportRoute("");
-    setAgentSummaryUrl("");
-    setAgentSummaryData(null);
-    setReportCount(0);
-    setResearchModelLabel(selectedResearchModelLabel());
-    setErrorText("");
-    showToast(copy.accepted);
   }
 
   function updateManualTrade<K extends keyof ManualTradeForm>(key: K, value: ManualTradeForm[K]) {
@@ -309,12 +262,6 @@ export default function ReviewPage() {
     if (!manualTrade.tradeTime.trim()) return "请填写交易时间";
     if (!normalizedManualTradeTime()) return "交易时间请使用 HH:mm:ss，例如 09:25:00";
     return "";
-  }
-
-  function handleDrop(event: React.DragEvent<HTMLDivElement>) {
-    event.preventDefault();
-    setIsDragging(false);
-    acceptFile(event.dataTransfer.files?.[0]);
   }
 
   async function parseJsonResponse(response: Response): Promise<ReportPayload> {
@@ -384,11 +331,7 @@ export default function ReviewPage() {
   }
 
   async function generateReport() {
-    if (inputMode === "upload" && !selectedFile) {
-      openFilePicker();
-      return;
-    }
-    if (inputMode === "manual" && !manualTradeReady()) {
+    if (!manualTradeReady()) {
       const message = manualTradeError();
       setErrorText(message);
       showToast(message);
@@ -412,15 +355,11 @@ export default function ReviewPage() {
     try {
       const formData = new FormData();
       formData.append("research_model_tier", researchModelTier);
-      if (inputMode === "manual") {
-        const tradeTime = normalizedManualTradeTime();
-        formData.append("manual_trade", "1");
-        formData.append("manual_stock_name", manualTrade.stockName.trim());
-        formData.append("manual_trade_at", `${manualTrade.tradeDate.trim()}T${tradeTime}`);
-        formData.append("manual_side", manualTrade.side);
-      } else if (selectedFile) {
-        formData.append("file", selectedFile);
-      }
+      const tradeTime = normalizedManualTradeTime();
+      formData.append("manual_trade", "1");
+      formData.append("manual_stock_name", manualTrade.stockName.trim());
+      formData.append("manual_trade_at", `${manualTrade.tradeDate.trim()}T${tradeTime}`);
+      formData.append("manual_side", manualTrade.side);
 
       const response = await fetch(`${API_BASE}/api/reports`, {
         method: "POST",
@@ -499,7 +438,6 @@ export default function ReviewPage() {
   }
 
   function resetUpload() {
-    setSelectedFile(null);
     setManualTrade({ stockName: "", tradeDate: "", tradeTime: "", side: "buy" });
     setReportUrl("");
     setReportRoute("");
@@ -508,7 +446,6 @@ export default function ReviewPage() {
     setReportCount(0);
     setResearchModelLabel(selectedResearchModelLabel());
     setErrorText("");
-    if (inputRef.current) inputRef.current.value = "";
     showToast(copy.reset);
   }
 
@@ -564,63 +501,22 @@ export default function ReviewPage() {
             </h1>
             <p>{copy.heroDesc}</p>
             <div className="review-hero-actions">
-              <button className="hero-primary-upload" type="button" onClick={() => setInputMode("manual")} disabled={generating}>
+              <button className="hero-primary-upload" type="button" disabled={generating}>
                 <Upload />
                 {copy.chooseFile}
               </button>
             </div>
           </div>
           <section className="research-panel upload-research-panel hero-upload-card">
-            <input
-              ref={inputRef}
-              type="file"
-              hidden
-              accept=".xls,.xlsx,.csv,.txt,image/*"
-              onChange={handleFileChange}
-            />
-            <div
-              className={`upload-stage ${isDragging ? "is-dragging" : ""} ${inputMode === "manual" ? "is-hidden" : ""}`}
-              onClick={openFilePicker}
-              onDragEnter={(event) => {
-                event.preventDefault();
-                setIsDragging(true);
-              }}
-              onDragOver={(event) => event.preventDefault()}
-              onDragLeave={() => setIsDragging(false)}
-              onDrop={handleDrop}
-              onKeyDown={handleUploadStageKeyDown}
-              role="button"
-              tabIndex={0}
-            >
-              <FileUp />
-              <h2>{selectedFile ? copy.uploadReady : "\u62d6\u62fd\u6216\u70b9\u51fb\u4e0a\u4f20\u4ea4\u5272\u5355\u4e0e\u4ea4\u6613\u622a\u56fe"}</h2>
-              <p>
-                {selectedFile
-                  ? `${selectedFile.name} \u5df2\u8fdb\u5165\u8bc6\u522b\u6d41\u7a0b\u3002\u70b9\u51fb\u4e0b\u65b9\u6309\u94ae\u751f\u6210\u62a5\u544a\u3002`
-                  : "\u6587\u4ef6\u5c06\u5728\u672c\u5730\u5904\u7406\uff0c\u7528\u4e8e\u751f\u6210\u672c\u6b21\u590d\u76d8\u62a5\u544a\u3002"}
-              </p>
-              <div className="upload-format-row">
-                {formats.map((format) => {
-                  const Icon = format.icon;
-                  return (
-                    <span key={format.label}>
-                      <Icon />
-                      {format.label}
-                    </span>
-                  );
-                })}
-              </div>
-            </div>
-            {inputMode === "manual" && (
-              <div className="manual-trade-stage">
-                <div className="manual-trade-head">
-                  <CalendarClock />
-                  <div>
-                    <h2>输入交割单</h2>
-                    <p>直接用你填写的交易事实生成复盘。</p>
-                  </div>
+            <div className="manual-trade-stage">
+              <div className="manual-trade-head">
+                <CalendarClock />
+                <div>
+                  <h2>输入交割单</h2>
+                  <p>直接用你填写的交易事实生成复盘。</p>
                 </div>
-                <div className="manual-trade-grid">
+              </div>
+              <div className="manual-trade-grid">
                   <label>
                     <span>股票名字</span>
                     <input
@@ -667,10 +563,9 @@ export default function ReviewPage() {
                   >
                     卖出
                   </button>
-                </div>
               </div>
-            )}
-            {(selectedFile || inputMode === "manual") && (
+            </div>
+            {(
               <>
                 <div className="report-mode-toggle" aria-label="报告详细程度">
                   <button
@@ -716,7 +611,7 @@ export default function ReviewPage() {
                 <span>{errorText}</span>
               </div>
             )}
-            {(selectedFile || inputMode === "manual") && (
+            {(
               <div className="privacy-line">
                 <LockKeyhole />
                 <span>{copy.privacy}</span>
@@ -783,7 +678,7 @@ export default function ReviewPage() {
         </section>
         <div className="review-security-line">
           <LockKeyhole />
-          <span>{"\u5168\u7a0b\u52a0\u5bc6\u4f20\u8f93 \u00b7 \u6587\u4ef6\u6700\u5c0f\u7559\u5b58 \u00b7 \u7ed3\u679c\u4ec5\u5f53\u524d\u4f1a\u8bdd\u53ef\u89c1"}</span>
+          <span>{"\u5168\u7a0b\u52a0\u5bc6\u4f20\u8f93 \u00b7 \u4ea4\u6613\u4e8b\u5b9e\u6700\u5c0f\u7559\u5b58 \u00b7 \u7ed3\u679c\u4ec5\u5f53\u524d\u4f1a\u8bdd\u53ef\u89c1"}</span>
         </div>
         {reportReady && (
           <section className="report-reader-section" ref={reportPanelRef}>
