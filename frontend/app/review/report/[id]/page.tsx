@@ -89,7 +89,7 @@ type ReviewReportPageProps = {
   params: { id: string };
 };
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://127.0.0.1:8600";
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "";
 
 const views: Array<{ key: ViewKey; number: string; label: string }> = [
   { key: "review", number: "1", label: "复盘评价" },

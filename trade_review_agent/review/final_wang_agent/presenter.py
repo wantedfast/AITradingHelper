@@ -542,10 +542,16 @@ def build_industry_nodes_from_json(value: Any, stock_name: str) -> list[dict[str
         return []
     nodes = []
     for item in value:
-        label = str(item).strip()
+        role = None
+        if isinstance(item, dict):
+            label = first_text(item.get("label"), item.get("name"), item.get("title")) or ""
+            role = first_text(item.get("role"), item.get("description"), item.get("summary"))
+        else:
+            label = str(item).strip()
         if not label:
             continue
-        nodes.append({"label": label, "role": None, "current": bool(stock_name and stock_name in label)})
+        current_text = " ".join(part for part in (label, role or "") if part)
+        nodes.append({"label": label, "role": role, "current": bool(stock_name and stock_name in current_text)})
     return nodes
 
 
@@ -1203,7 +1209,7 @@ def source_section_for(raw_line: str, sections: dict[str, str], fallback: str) -
 def specific_stock_name(value: str) -> str:
     clean = clean_text(value)
     clean = re.sub(r"^(?:仍然是|就是|选择|买入)", "", clean).strip()
-    clean = re.split(r"[（(，,。；;\-—]", clean, maxsplit=1)[0].strip()
+    clean = re.split(r"[（(。；;\-—]", clean, maxsplit=1)[0].strip()
     if not clean or any(word in clean for word in GENERIC_CHOICE_WORDS):
         return ""
     if re.fullmatch(r"\d{6}", clean):
@@ -1212,6 +1218,9 @@ def specific_stock_name(value: str) -> str:
         return clean
     if re.fullmatch(r"[\u4e00-\u9fff]{2,8}", clean):
         return clean
+    names = [part.strip() for part in re.split(r"[、，,]", clean) if part.strip()]
+    if len(names) > 1 and all(re.fullmatch(r"[\u4e00-\u9fff]{2,8}|\d{6}|[A-Z]{2,6}", name) for name in names):
+        return "、".join(names)
     return ""
 
 

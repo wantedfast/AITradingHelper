@@ -259,8 +259,8 @@ export default function ReviewPage() {
   function manualTradeError() {
     if (!manualTrade.stockName.trim()) return "请填写股票名字";
     if (!manualTrade.tradeDate.trim()) return "请选择交易日期";
-    if (!manualTrade.tradeTime.trim()) return "请填写交易时间";
-    if (!normalizedManualTradeTime()) return "交易时间请使用 HH:mm:ss，例如 09:25:00";
+    if (!manualTrade.tradeTime.trim()) return "请选择交易时间";
+    if (!normalizedManualTradeTime()) return "交易时间格式异常，请重新选择";
     return "";
   }
 
@@ -500,12 +500,6 @@ export default function ReviewPage() {
               {"\u4ea4\u6613\u7814\u7a76\u5de5\u4f5c\u53f0"}
             </h1>
             <p>{copy.heroDesc}</p>
-            <div className="review-hero-actions">
-              <button className="hero-primary-upload" type="button" disabled={generating}>
-                <Upload />
-                {copy.chooseFile}
-              </button>
-            </div>
           </div>
           <section className="research-panel upload-research-panel hero-upload-card">
             <div className="manual-trade-stage">
@@ -538,10 +532,10 @@ export default function ReviewPage() {
                   <label>
                     <span>交易时间</span>
                     <input
+                      type="time"
                       value={manualTrade.tradeTime}
                       onChange={(event) => updateManualTrade("tradeTime", event.target.value)}
-                      placeholder="09:25:00"
-                      inputMode="numeric"
+                      step={1}
                       disabled={generating}
                     />
                   </label>

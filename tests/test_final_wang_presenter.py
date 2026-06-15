@@ -643,6 +643,60 @@ AI服务器 → PCB → 覆铜板 → 树脂材料
         evidence = payload["audit"]["evidence_map"]["bestChoice.ranking[0].reason"]["evidence"]
         self.assertIn("情绪总龙头", evidence)
 
+    def test_parallel_company_names_in_same_rank_are_preserved(self):
+        payload = _present(
+            """
+五、相关公司比较
+
+- **第一名：沪硅产业、西安奕材（当日板块核心）**
+  - **理由：** 当日领涨结构中的绝对核心，20cm涨停。
+- **第二名：东材科技（主线强支线核心）**
+  - **理由：** 业绩爆发真实，产品具有全球独家性。
+- **第三名：金安国纪、宏昌电子（PCB/元件跟风）**
+  - **理由：** PCB/电子布涨价是支线逻辑。
+"""
+        )
+
+        self.assertEqual(
+            [item["name"] for item in payload["bestChoice"]["ranking"]],
+            ["沪硅产业、西安奕材", "东材科技", "金安国纪、宏昌电子"],
+        )
+        self.assertEqual(payload["bestChoice"]["name"], "沪硅产业、西安奕材")
+        self.assertFalse(payload["audit"]["parser_warnings"])
+
+    def test_json_industry_chain_nodes_use_label_and_role_fields(self):
+        payload = _present(
+            """
+{
+  "finalJudgment": {
+    "summary": "方向正确。",
+    "tradeCorrectness": {"boughtRight": "买对方向。", "score": 70},
+    "entryQuality": {"judgment": "一般。", "score": 55},
+    "mainlinePosition": {"level": "主线支线", "reason": "不是核心。", "score": 72},
+    "improvement": {"wouldBuyAgain": "会降低仓位。"},
+    "totalScore": 66
+  },
+  "industryChain": {
+    "nodes": [
+      {"label": "AI算力终端需求", "role": "英伟达等GPU厂商需求爆发"},
+      {"label": "东材科技", "role": "高端电子材料供应商"}
+    ]
+  },
+  "tradeLogic": {"coreLogic": "AI算力材料。"},
+  "barrierAndProfitFlow": {"profitFlow": "利润扩散。"},
+  "companyComparison": {"shortTermCapitalRanking": [{"rank": 1, "name": "沪硅产业", "reason": "更强。"}]},
+  "rerunChoice": {"shortTermFirstChoice": "沪硅产业"},
+  "oneLineConclusion": "买对主线，没买核心。"
+}
+"""
+        )
+
+        nodes = payload["themeAnalysis"]["industryChain"]["nodes"]
+        self.assertEqual(nodes[0]["label"], "AI算力终端需求")
+        self.assertEqual(nodes[0]["role"], "英伟达等GPU厂商需求爆发")
+        self.assertEqual(nodes[1]["label"], "东材科技")
+        self.assertTrue(nodes[1]["current"])
+
 
 if __name__ == "__main__":
     unittest.main()

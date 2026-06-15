@@ -764,57 +764,105 @@ def build_judge_prompt(stock_name: str, stock_code: str, buy_date: str, buy_time
 3. 错在哪里？
 4. 如果重来一次，应该买{stock_name}，还是同产业链更强标的？
 
-必须回答：
-1. 当天市场主线是什么？
-2. {stock_name}被交易的真正题材是什么？
-3. 它是主线核心、主线支线、边缘跟风，还是独立炒作？
-5. 产业链位置在哪里？
-6. 壁垒在哪里？
-7. 利润流向哪里？
-8. 同题材/同主线公司谁更强？
-9. 如果重来一次，优先级排序怎么排？
-10. 最终一句话结论。
+输出要求：
+- 只输出一个合法 JSON 对象。
+- 不要 markdown。
+- 不要代码块。
+- 不要在 JSON 外输出任何解释。
+- JSON 的 value 可以是完整中文段落，不限制字数；不要为了 JSON 变短。
+- 所有判断只能基于资料包；资料不足时写清“证据不足”，但仍要基于已有证据给出倾向判断。
+- 同行公司必须来自资料包中 Research Agent 搜到的相关公司，不允许凭空新增。
+- 相关公司比较必须排序，不允许只罗列公司。
 
-输出顺序必须是：
+JSON 结构必须严格使用以下 key：
 
-一、最终判断
-直接回答：
-- 买对了吗？
-- 买点质量如何？
-- 属于主线还是跟风？
-- 如果重来一次应该如何交易？
-
-给出综合评分：评分基于是否买对，买点质量，是否主线，相关公司比较等因素综合判断，满分100分。
-
-二、交易逻辑
-说明资金为什么买它。
-
-三、产业链位置
-用箭头画产业链。
-
-四、壁垒和利润流向
-说明它凭什么赚钱，利润是不是主要流向它。
-
-五、相关公司比较
-基于资料包中Research Agent搜到的相关公司进行判断。
-必须排序，不允许只罗列公司。
-格式：
-第一名：
-第二名：
-第三名：
-
-六、如果重来一次
-给出明确选择：
-- 优先买谁
-- {stock_name}排第几
-- 为什么
-
-七、一句话结论
+{{
+  "finalJudgment": {{
+    "summary": "总评，一句话说明这笔交易的性质",
+    "tradeCorrectness": {{
+      "boughtRight": "回答：买对了吗？",
+      "rightReasons": "回答：买对在哪里？",
+      "wrongReasons": "回答：买错在哪里？",
+      "score": 0,
+      "summary": "交易正确性的短总结"
+    }},
+    "entryQuality": {{
+      "judgment": "回答：买点质量如何？",
+      "isBestEntry": "是否属于最佳买点",
+      "timing": "买入时机判断",
+      "riskReward": "盈亏比判断",
+      "confirmation": "确认性判断",
+      "isChasing": "是否追涨",
+      "betterPosition": "是否有更优位置",
+      "score": 0,
+      "summary": "买点质量的短总结"
+    }},
+    "mainlinePosition": {{
+      "level": "只能填：主线核心 / 主线支线 / 边缘跟风 / 独立炒作",
+      "reason": "说明为什么是这个地位",
+      "score": 0,
+      "summary": "主线地位的短总结"
+    }},
+    "improvement": {{
+      "wouldBuyAgain": "如果重来一次还会不会买",
+      "shouldSwitchStrongerTarget": "是否应该换成更强标的",
+      "biggestCorrectPoint": "最大正确点是什么",
+      "biggestMistake": "最大错误是什么",
+      "summary": "改进建议短总结"
+    }},
+    "totalScore": 0
+  }},
+  "tradeLogic": {{
+    "marketMainline": "当天市场主线是什么",
+    "realTheme": "{stock_name}被交易的真正题材是什么",
+    "coreLogic": "资金为什么买它，核心逻辑是什么",
+    "catalyst": "催化剂是什么",
+    "performanceValidation": "业绩或基本面验证是什么",
+    "capitalRecognition": "资金认可的证据是什么",
+    "summary": "交易逻辑短总结"
+  }},
+  "industryChain": {{
+    "position": "{stock_name}在产业链哪里",
+    "arrowText": "用箭头画产业链，例如：终端需求 → 核心环节 → 材料环节 → {stock_name} → 下游客户",
+    "nodes": [
+      {{"label": "产业链节点名称", "role": "该节点角色说明"}}
+    ],
+    "benefitReason": "为什么受益",
+    "summary": "产业链位置短总结"
+  }},
+  "barrierAndProfitFlow": {{
+    "technologyBarrier": "技术壁垒在哪里",
+    "customerCertificationBarrier": "客户认证壁垒在哪里",
+    "domesticSubstitutionBarrier": "国产替代壁垒在哪里",
+    "scaleBarrier": "规模壁垒在哪里",
+    "profitFlow": "利润流向哪里",
+    "positionType": "利润核心 / 利润扩散受益者 / 间接受益者 / 证据不足",
+    "isProfitCenter": "利润是不是主要流向它",
+    "summary": "壁垒和利润流向短总结"
+  }},
+  "companyComparison": {{
+    "summary": "同题材/同主线公司谁更强的总判断",
+    "shortTermCapitalRanking": [
+      {{"rank": 1, "name": "第一名公司名", "reason": "为什么第一，比{stock_name}强在哪里或弱在哪里", "tradeMeaning": "这对交易的意义"}},
+      {{"rank": 2, "name": "第二名公司名", "reason": "为什么第二", "tradeMeaning": "这对交易的意义"}},
+      {{"rank": 3, "name": "第三名公司名", "reason": "为什么第三", "tradeMeaning": "这对交易的意义"}}
+    ],
+    "industryValueRanking": []
+  }},
+  "rerunChoice": {{
+    "shortTermFirstChoice": "如果重来一次，短线优先买谁",
+    "industryFirstChoice": "如果从产业链价值看优先买谁；如果证据不足就写证据不足",
+    "priority": ["第一优先级", "第二优先级", "第三优先级"],
+    "currentStockRank": "{stock_name}排第几",
+    "reason": "为什么这样排",
+    "summary": "如果重来一次的短总结"
+  }},
+  "oneLineConclusion": "30字以内交易员语言结论"
+}}
 
 写作要求：
 - 先结论，后依据。
 - 语言要像交易复盘，不像年报总结。
-- 不要 JSON。
 - 不要写“资料包显示”太多次。
 - 不要额外联网。
 - 不要安全提示。
