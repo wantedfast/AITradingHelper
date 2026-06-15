@@ -129,7 +129,7 @@ const copy = {
   noNotice: "\u6682\u65e0\u65b0\u901a\u77e5\u3002",
   heroTitle: "\u628a\u6bcf\u4e00\u7b14\u4ea4\u6613\uff0c\u62c6\u6210\u53ef\u6539\u8fdb\u7684\u80fd\u529b\u3002",
   heroDesc:
-    "\u4e0a\u4f20\u4ea4\u5272\u5355\u6216\u622a\u56fe\uff0c\u7cfb\u7edf\u4f1a\u8bc6\u522b\u4e70\u5356\u8bb0\u5f55\uff0c\u8c03\u7528\u884c\u60c5\u4e0e\u6295\u7814 Agent\uff0c\u751f\u6210\u80fd\u770b\u61c2\u3001\u80fd\u590d\u76d8\u3001\u80fd\u6c89\u6dc0\u89c4\u5219\u7684\u62a5\u544a\u3002",
+    "\u8f93\u5165\u4ea4\u6613\u4e8b\u5b9e\uff0c\u7cfb\u7edf\u4f1a\u8c03\u7528\u884c\u60c5\u4e0e\u6295\u7814 Agent\uff0c\u751f\u6210\u80fd\u770b\u61c2\u3001\u80fd\u590d\u76d8\u3001\u80fd\u6c89\u6dc0\u89c4\u5219\u7684\u62a5\u544a\u3002",
   workflowTitle: "\u4ea4\u5272\u5355 \u2192 \u4ea4\u6613\u4e8b\u5b9e \u2192 \u5e02\u573a\u73af\u5883 \u2192 \u590d\u76d8\u7ed3\u8bba",
   workflowDesc:
     "上传后系统会识别交易事实，调用正式 AI 复盘 Agent，并生成可打开的复盘报告。",
@@ -137,7 +137,6 @@ const copy = {
   uploadReady: "\u4ea4\u5272\u5355\u5df2\u5c31\u7eea",
   uploadDesc:
     "\u70b9\u51fb\u4e0a\u4f20\u533a\u57df\u6216\u4e0b\u65b9\u6309\u94ae\u9009\u62e9\u6587\u4ef6\uff0c\u7cfb\u7edf\u4f1a\u7acb\u5373\u8bc6\u522b\u4ea4\u6613\u8bb0\u5f55\u5e76\u751f\u6210\u590d\u76d8\u62a5\u544a\u3002",
-  formatHint: "\u76f4\u63a5\u8f93\u5165\u4ea4\u6613\u4e8b\u5b9e\uff0c\u7cfb\u7edf\u751f\u6210\u672c\u6b21\u590d\u76d8\u62a5\u544a\u3002",
   chooseFile: "\u8f93\u5165\u4ea4\u5272\u5355",
   generate: "\u751f\u6210\u62a5\u544a",
   generating: "\u6b63\u5728\u751f\u6210\u62a5\u544a",
@@ -569,7 +568,6 @@ export default function ReviewPage() {
                 <Upload />
                 {copy.chooseFile}
               </button>
-              <span>{copy.formatHint}</span>
             </div>
           </div>
           <section className="research-panel upload-research-panel hero-upload-card">
@@ -580,28 +578,6 @@ export default function ReviewPage() {
               accept=".xls,.xlsx,.csv,.txt,image/*"
               onChange={handleFileChange}
             />
-            <div className="trade-input-mode-toggle" aria-label="交割单输入方式">
-              <button
-                className={inputMode === "upload" ? "active" : ""}
-                type="button"
-                onClick={() => undefined}
-                disabled
-                aria-disabled="true"
-                title="上传交割单暂未开放"
-              >
-                <FileUp />
-                上传交割单
-              </button>
-              <button
-                className={inputMode === "manual" ? "active" : ""}
-                type="button"
-                onClick={() => setInputMode("manual")}
-                disabled={generating}
-              >
-                <ClipboardCheck />
-                输入交割单
-              </button>
-            </div>
             <div
               className={`upload-stage ${isDragging ? "is-dragging" : ""} ${inputMode === "manual" ? "is-hidden" : ""}`}
               onClick={openFilePicker}
@@ -640,8 +616,8 @@ export default function ReviewPage() {
                 <div className="manual-trade-head">
                   <CalendarClock />
                   <div>
-                    <h2>手动录入一笔交易</h2>
-                    <p>临时入口：不走 OCR，直接用你填写的交易事实生成复盘。</p>
+                    <h2>输入交割单</h2>
+                    <p>直接用你填写的交易事实生成复盘。</p>
                   </div>
                 </div>
                 <div className="manual-trade-grid">
