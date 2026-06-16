@@ -207,6 +207,7 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             AUTH_DB,
             phone=str(payload.get("phone") or ""),
             code=str(payload.get("code") or ""),
+            password=str(payload.get("password") or ""),
             invite_code=str(payload.get("invite_code") or ""),
             ip=self._client_ip(),
         )

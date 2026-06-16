@@ -20,7 +20,7 @@ PHONE_RE = re.compile(r"^1[3-9]\d{9}$")
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 USERNAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{3,31}$")
 SESSION_DAYS = 30
-INITIAL_FREE_CREDITS = 1
+INITIAL_FREE_CREDITS = 5
 REFERRAL_REWARD_CREDITS = 5
 FEEDBACK_REWARD_CREDITS = 10
 SMS_CODE_TTL_MINUTES = 5
@@ -264,20 +264,18 @@ def send_email_code(db_path: Path, *, email: str, purpose: str = "register", ip:
         return payload
 
 
-def register_user(db_path: Path, *, phone: str, code: str, invite_code: str = "", ip: str = "") -> dict[str, Any]:
+def register_user(db_path: Path, *, phone: str, code: str, password: str, invite_code: str = "", ip: str = "") -> dict[str, Any]:
     phone = normalize_phone(phone)
+    _validate_password(password)
     invite_code = invite_code.strip()
     now = _now()
     with _connect(db_path) as conn:
         _verify_sms_code(conn, phone, code, purpose="login")
-        existing_ip = _ip_registered_user(conn, ip)
-        if existing_ip:
-            raise AuthError("当前 IP 已注册过账号，请直接登录或联系管理员", 409)
         if _fetch_user_by_phone(conn, phone):
             raise AuthError("手机号已注册，请直接登录", 409)
 
         referrer = _fetch_user_by_invite_code(conn, invite_code) if invite_code else None
-        salt, password_hash = _hash_password(secrets.token_urlsafe(24))
+        salt, password_hash = _hash_password(password)
         user_invite_code = _new_invite_code(conn)
         cursor = conn.execute(
             """
@@ -322,9 +320,6 @@ def register_password_user(
     now = _now()
     with _connect(db_path) as conn:
         _verify_email_code(conn, email, email_code, purpose="register")
-        existing_ip = _ip_registered_user(conn, ip)
-        if existing_ip:
-            raise AuthError("当前 IP 已注册过账号，请直接登录或联系管理员", 409)
         if _fetch_user_by_username(conn, username):
             raise AuthError("账号名已被占用", 409)
         if _fetch_user_by_email(conn, email):
@@ -391,6 +386,8 @@ def login_password_user(db_path: Path, *, account: str, password: str, ip: str =
     with _connect(db_path) as conn:
         if EMAIL_RE.match(account):
             user = _fetch_user_by_email(conn, normalize_email(account))
+        elif account.isdigit():
+            user = _fetch_user_by_phone(conn, account)
         else:
             admin_phone = os.getenv("ADMIN_PHONE", "admin").strip()
             user = _fetch_user_by_phone(conn, account) if account == admin_phone else _fetch_user_by_username(conn, account)
