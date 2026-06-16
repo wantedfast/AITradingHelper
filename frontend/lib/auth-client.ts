@@ -82,5 +82,9 @@ export async function refreshCurrentUser() {
 
 export function inviteUrl(user: UserProfile | null) {
   if (typeof window === "undefined" || !user?.invite_code) return "";
-  return `${window.location.origin}/auth?invite=${encodeURIComponent(user.invite_code)}`;
+  const inviteCode = String(user.invite_code).replace(/[^A-Za-z0-9_-]/g, "").slice(0, 32);
+  if (!inviteCode) return "";
+  const url = new URL("/auth", window.location.origin);
+  url.searchParams.set("invite", inviteCode);
+  return url.toString();
 }
