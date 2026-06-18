@@ -103,20 +103,20 @@ function copy(value: unknown, fallback = "原始报告未提供") {
   return text || fallback;
 }
 
-function scoreCopy(value: unknown) {
-  const score = normalizedScore(value);
+function scoreCopy(value: unknown, forceHundredScale = false) {
+  const score = normalizedScore(value, forceHundredScale);
   if (score === null) return "--";
   return Number.isInteger(score) ? `${score}` : `${Number(score.toFixed(1))}`;
 }
 
-function normalizedScore(value: unknown) {
+function normalizedScore(value: unknown, forceHundredScale = false) {
   if (typeof value !== "number" || !Number.isFinite(value)) return null;
-  if (value > 10) return Math.max(0, Math.min(10, value / 10));
+  if (forceHundredScale || value > 10) return Math.max(0, Math.min(10, value / 10));
   return Math.max(0, Math.min(10, value));
 }
 
-function scorePercent(value: unknown) {
-  const score = normalizedScore(value);
+function scorePercent(value: unknown, forceHundredScale = false) {
+  const score = normalizedScore(value, forceHundredScale);
   return score === null ? 0 : score * 10;
 }
 
@@ -152,6 +152,9 @@ export default function ReviewReportPage({ params }: ReviewReportPageProps) {
 
   const reviewItems = presenter?.review?.items?.slice(0, 4) || [];
   const reviewScores = presenter?.review?.scores?.items || [];
+  const reviewScoresUseHundredScale = reviewScores.some(
+    (item) => typeof item.value === "number" && Number.isFinite(item.value) && item.value > 10,
+  );
   const reviewJudgments = presenter?.review?.judgments?.items || [];
   const nextActions = presenter?.review?.nextActions?.items || [];
   const nextActionsText = presenter?.review?.nextActions?.text
@@ -230,7 +233,7 @@ export default function ReviewReportPage({ params }: ReviewReportPageProps) {
                 <aside className="score-panel" aria-label="评分维度">
                   <div className="total-score">
                     <span>综合评分</span>
-                    <strong>{scoreCopy(reviewScores.find((item) => item.key === "total")?.value)}</strong>
+                    <strong>{scoreCopy(reviewScores.find((item) => item.key === "total")?.value, reviewScoresUseHundredScale)}</strong>
                     <small>满分 10 分</small>
                   </div>
 
@@ -240,9 +243,9 @@ export default function ReviewReportPage({ params }: ReviewReportPageProps) {
                         <article key={item.key || item.label}>
                           <div>
                             <span>{copy(item.label)}</span>
-                            <strong>{scoreCopy(item.value)}<small>/10</small></strong>
+                            <strong>{scoreCopy(item.value, reviewScoresUseHundredScale)}<small>/10</small></strong>
                           </div>
-                          <i><b style={{ width: `${scorePercent(item.value)}%` }} /></i>
+                          <i><b style={{ width: `${scorePercent(item.value, reviewScoresUseHundredScale)}%` }} /></i>
                         </article>
                       ))
                     ) : null}

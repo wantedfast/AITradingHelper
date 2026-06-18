@@ -278,8 +278,11 @@ def build_structured_json_contract(data: dict[str, Any], answer: str, stock_name
         ("total", "综合评分", final.get("totalScore"), "finalJudgment.totalScore"),
     ]
     review_scores: list[dict[str, Any]] = []
+    score_specs_use_hundred_scale = any(
+        (score := numeric_score(value)) is not None and score > 10 for _, _, value, _ in score_specs
+    )
     for key, label, value, path in score_specs:
-        score = review_score(value)
+        score = review_score(value, force_hundred_scale=score_specs_use_hundred_scale)
         if score is None:
             missing_fields.append(path)
             continue
@@ -491,11 +494,11 @@ def numeric_score(value: Any) -> int | None:
     return None
 
 
-def review_score(value: Any) -> float | None:
+def review_score(value: Any, *, force_hundred_scale: bool = False) -> float | None:
     score = numeric_score(value)
     if score is None:
         return None
-    normalized = score / 10 if score > 10 else float(score)
+    normalized = score / 10 if force_hundred_scale or score > 10 else float(score)
     normalized = max(0.0, min(10.0, normalized))
     return int(normalized) if normalized.is_integer() else round(normalized, 1)
 
@@ -827,6 +830,15 @@ def extract_review_scores(sections: dict[str, str]) -> list[dict[str, Any]]:
                 "_confidence": "high",
             }
         )
+    use_hundred_scale = any(
+        isinstance(item.get("value"), (int, float)) and not isinstance(item.get("value"), bool) and item["value"] > 10
+        for item in result
+    )
+    if use_hundred_scale:
+        for item in result:
+            normalized = review_score(item.get("value"), force_hundred_scale=True)
+            if normalized is not None:
+                item["value"] = normalized
     return result
 
 
@@ -841,7 +853,7 @@ def find_score_line(text: str, label: str) -> tuple[float, str] | None:
         match = pattern.match(normalized)
         if not match:
             continue
-        value = review_score(match.group("score"))
+        value = numeric_score(match.group("score"))
         if value is not None:
             return value, raw_line.strip()
     return None

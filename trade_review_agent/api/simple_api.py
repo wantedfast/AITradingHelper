@@ -615,6 +615,8 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
         if not report_path.exists() or not report_path.is_file():
             self._json({"error": "report not found"}, status=404)
             return
+        if _is_presenter_report_file(report_path):
+            _normalize_presenter_score_file(report_path)
         self._serve_file(report_path)
 
     def _serve_report_status(self, run_id: str, run_dir: Path) -> None:
@@ -1125,6 +1127,62 @@ def _is_legacy_presenter(path: Path) -> bool:
     except Exception:
         return False
     return isinstance(payload, dict) and payload.get("presenter_contract") == "legacy_html_adapter_v1"
+
+
+def _is_presenter_report_file(path: Path) -> bool:
+    return path.name == RESEARCH_PRESENTER_NAME or path.name.endswith(".presenter.json")
+
+
+def _normalize_presenter_score_file(path: Path) -> None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return
+    if not isinstance(payload, dict):
+        return
+    items = (((payload.get("review") or {}).get("scores") or {}).get("items") or [])
+    if not isinstance(items, list):
+        return
+    use_hundred_scale = any(
+        (score := _raw_numeric_score(item.get("value"))) is not None and score > 10
+        for item in items
+        if isinstance(item, dict)
+    )
+    changed = False
+    for item in items:
+        if not isinstance(item, dict) or "value" not in item:
+            continue
+        normalized = _normalize_ten_point_score(item.get("value"), force_hundred_scale=use_hundred_scale)
+        if normalized is None or normalized == item.get("value"):
+            continue
+        item["value"] = normalized
+        changed = True
+    if changed:
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _raw_numeric_score(value) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    elif isinstance(value, str):
+        match = re.search(r"\d+(?:\.\d+)?", value)
+        if not match:
+            return None
+        return float(match.group(0))
+    return None
+
+
+def _normalize_ten_point_score(value, *, force_hundred_scale: bool = False) -> float | int | None:
+    score = _raw_numeric_score(value)
+    if score is None:
+        return None
+    if force_hundred_scale or score > 10:
+        score = score / 10
+    score = max(0.0, min(10.0, score))
+    rounded = round(score, 1)
+    return int(rounded) if rounded.is_integer() else rounded
 
 
 def _write_legacy_presenter_if_missing(run_id: str, run_dir: Path, output_path: Path) -> None:
