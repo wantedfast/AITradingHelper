@@ -9628,7 +9628,112 @@ button.radar-core,
     font-size: 15px;
   }
 
-  .review-full-report-frame {
+.review-full-report-frame {
     min-height: max(560px, calc(100vh - 362px));
+  }
+}
+
+.recent-report-panel {
+  display: grid;
+  gap: 18px;
+}
+
+.recent-report-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.recent-report-head h2 {
+  margin: 6px 0 0;
+  font-size: 22px;
+  line-height: 1.2;
+  color: #f8fafc;
+}
+
+.recent-report-head button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 14px;
+  border: 1px solid rgba(226, 232, 240, 0.18);
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.62);
+  color: #e5e7eb;
+  cursor: pointer;
+}
+
+.recent-report-list {
+  display: grid;
+  gap: 10px;
+  max-height: 260px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.recent-report-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  padding: 14px 16px;
+  border: 1px solid rgba(226, 232, 240, 0.14);
+  border-radius: 14px;
+  background: rgba(15, 23, 42, 0.46);
+  color: #f8fafc;
+  text-align: left;
+  cursor: pointer;
+}
+
+.recent-report-item:hover {
+  border-color: rgba(250, 204, 21, 0.46);
+  background: rgba(30, 41, 59, 0.64);
+}
+
+.recent-report-item span {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.recent-report-item b,
+.recent-report-item small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recent-report-item small {
+  color: #94a3b8;
+}
+
+.recent-report-item em {
+  padding: 5px 9px;
+  border-radius: 999px;
+  background: rgba(250, 204, 21, 0.13);
+  color: #fde68a;
+  font-style: normal;
+  font-size: 12px;
+}
+
+.recent-report-empty {
+  padding: 18px;
+  border: 1px dashed rgba(226, 232, 240, 0.18);
+  border-radius: 14px;
+  color: #94a3b8;
+}
+
+@media (max-width: 640px) {
+  .recent-report-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .recent-report-head button {
+    width: 100%;
+    justify-content: center;
   }
 }

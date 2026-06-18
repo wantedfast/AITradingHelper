@@ -105,6 +105,9 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             if path == "/api/admin/dashboard":
                 self._admin_dashboard()
                 return
+            if path == "/api/reports":
+                self._list_reports()
+                return
             if path.startswith("/api/reports/"):
                 self._serve_report(path)
                 return
@@ -200,6 +203,19 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
         )
         self._charged_user = updated_user
         self._create_reports_resilient()
+
+    def _list_reports(self) -> None:
+        self._require_user()
+        limit = 30
+        query = urlparse(self.path).query
+        for part in query.split("&"):
+            key, _, value = part.partition("=")
+            if key == "limit":
+                try:
+                    limit = max(1, min(100, int(value)))
+                except ValueError:
+                    limit = 30
+        self._json({"reports": _recent_report_summaries(limit=limit)})
 
     def _auth_register(self) -> None:
         payload = self._read_json_body()
@@ -721,6 +737,7 @@ def _content_type_with_charset(filename: str) -> str:
     return content_type
 
 
+
 def _manual_trade_from_fields(fields: dict[str, str]) -> dict | None:
     enabled = str(fields.get("manual_trade") or "").strip().lower()
     if enabled not in {"1", "true", "yes", "on"}:
@@ -927,14 +944,8 @@ def _recover_report_manifest(run_id: str, run_dir: Path | None) -> dict | None:
         return None
     _ensure_report_aliases(run_dir)
     manifest_path = run_dir / REPORT_MANIFEST_NAME
-    if manifest_path.exists():
-        try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except Exception:
-            manifest = _manifest_from_run_dir(run_id, run_dir)
-    else:
-        manifest = _manifest_from_run_dir(run_id, run_dir)
-        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    manifest = _manifest_from_run_dir(run_id, run_dir)
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     if not isinstance(manifest, dict) or not manifest.get("reports"):
         return None
     return manifest
@@ -1073,17 +1084,21 @@ def _redact_sensitive(text: str) -> str:
 
 def _resolve_report_file(run_id: str, run_dir: Path, filename: str) -> Path:
     report_path = run_dir / filename
+    if filename == RESEARCH_PRESENTER_NAME:
+        if report_path.exists() and _is_legacy_presenter(report_path):
+            report_path.unlink(missing_ok=True)
+        _copy_first_artifact_if_missing(run_dir, RESEARCH_PRESENTER_NAME, "*.presenter.json")
+        if not report_path.exists() and run_dir.exists() and run_dir.is_dir():
+            _write_legacy_presenter_if_missing(run_id, run_dir, report_path)
+        return report_path if report_path.exists() else (_first_report_artifact(run_dir, "*.presenter.json") or report_path)
     if report_path.exists() and report_path.is_file():
         return report_path
     if not run_dir.exists() or not run_dir.is_dir():
         return report_path
 
-    if filename == RESEARCH_PRESENTER_NAME:
-        _copy_first_artifact_if_missing(run_dir, RESEARCH_PRESENTER_NAME, "*.presenter.json")
-        return _first_report_artifact(run_dir, "*.presenter.json") or report_path
     if filename == RESEARCH_DEBUG_NAME:
         _copy_first_artifact_if_missing(run_dir, RESEARCH_DEBUG_NAME, "*.debug.json")
-        return _first_report_artifact(run_dir, "*.debug.json") or report_path
+        return report_path if report_path.exists() else (_first_report_artifact(run_dir, "*.debug.json") or report_path)
     if filename == REPORT_MANIFEST_NAME:
         _ensure_report_aliases(run_dir)
         manifest_path = run_dir / REPORT_MANIFEST_NAME
@@ -1107,6 +1122,129 @@ def _copy_first_artifact_if_missing(run_dir: Path, alias_name: str, pattern: str
         alias_path.write_bytes(source.read_bytes())
 
 
+def _is_legacy_presenter(path: Path) -> bool:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    return isinstance(payload, dict) and payload.get("presenter_contract") == "legacy_html_adapter_v1"
+
+
+def _write_legacy_presenter_if_missing(run_id: str, run_dir: Path, output_path: Path) -> None:
+    html_path = _first_report_artifact(run_dir, "*.html")
+    if not html_path or html_path.name == "index.html":
+        return
+    try:
+        html_text = html_path.read_text(encoding="utf-8")
+    except Exception:
+        return
+    presenter = _legacy_html_presenter(run_id, html_text)
+    output_path.write_text(json.dumps(presenter, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _legacy_html_presenter(run_id: str, html_text: str) -> dict:
+    title = _strip_html(_first_match(html_text, r"<h1[^>]*>(.*?)</h1>")) or _report_title_from_stem(run_id)
+    summary = _strip_html(_first_match(html_text, r'<p class="summary-text">(.*?)</p>')) or "原始报告已生成复盘结论，请结合交易逻辑、题材分析和同行对比查看。"
+    score = _safe_int(_strip_html(_first_match(html_text, r'<div class="score-main">(.*?)</div>')))
+    rating = _strip_html(_first_match(html_text, r'<div class="rating">(.*?)</div>'))
+    sections = _legacy_sections(html_text)
+    conclusion = _pick_section(sections, "AI 复盘结论") or summary
+    route = _pick_section(sections, "最佳交易路线对比")
+    exam = _pick_section(sections, "交易体检")
+    chain = _pick_section(sections, "产业链与个股定位")
+    emotion = _pick_section(sections, "市场情绪与行为显微镜")
+    advice = _pick_section(sections, "AI 教练总结与建议")
+    market = _pick_section(sections, "大盘、板块与个股共振")
+    logic_text = "\n\n".join(part for part in [conclusion, route, exam] if part).strip()
+    theme_text = "\n\n".join(part for part in [chain, emotion, market] if part).strip()
+    peer_items = _legacy_peer_items(html_text)
+    return {
+        "presenter_contract": "legacy_html_adapter_v1",
+        "review": {
+            "verdict": {"text": summary},
+            "scores": {"items": [{"key": "total", "label": "综合评分", "value": score}]},
+            "judgments": {"items": []},
+            "items": [
+                {"key": "legacyConclusion", "label": "AI 复盘结论", "text": conclusion},
+                {"key": "legacyRoute", "label": "最佳交易路线", "text": route or "原始报告未提供最佳路线对比。"},
+                {"key": "legacyExam", "label": "交易体检", "text": exam or "原始报告未提供交易体检。"},
+                {"key": "legacyRating", "label": "交易评级", "text": rating or "原始报告未提供交易评级。"},
+            ],
+            "nextActions": {
+                "text": advice or "原始报告未提供 AI 教练建议。",
+                "items": [{"text": advice}] if advice else [],
+            },
+        },
+        "bestChoice": {"available": bool(peer_items), "name": peer_items[0]["name"] if peer_items else None, "summary": None, "ranking": peer_items},
+        "companyComparison": {"shortTermCapitalRanking": peer_items, "industryValueRanking": [], "summary": ""},
+        "tradeLogic": {"summary": "交易逻辑", "text": logic_text or summary},
+        "themeAnalysis": {
+            "industryChain": {"nodes": _legacy_chain_nodes(chain)},
+            "profitFlow": {"text": theme_text or "原始报告未提供题材分析。"},
+        },
+    }
+
+
+def _legacy_sections(html_text: str) -> dict[str, str]:
+    sections: dict[str, str] = {}
+    for raw_title, raw_body in re.findall(r'<h2 class="section-title">.*?</span>(.*?)</h2>(.*?)(?=<h2 class="section-title">|</section>|<footer)', html_text, flags=re.S):
+        title = _strip_html(raw_title)
+        body = _strip_html(raw_body)
+        if title and body:
+            sections[title] = body
+    return sections
+
+
+def _legacy_peer_items(html_text: str) -> list[dict]:
+    if not any(keyword in html_text for keyword in ("同行对比", "相关公司比较", "公司比较", "同行标的")):
+        return []
+    rows = re.findall(r"<tr><td>(.*?)</td><td>(.*?)</td><td>(.*?)</td></tr>", html_text, flags=re.S)
+    items = []
+    for index, row in enumerate(rows[:6], start=1):
+        name = _strip_html(row[0])
+        reason = " / ".join(_strip_html(value) for value in row[1:] if _strip_html(value))
+        if name:
+            items.append({"rank": index, "name": name, "reason": reason})
+    if items:
+        return items
+    tags = [_strip_html(value) for value in re.findall(r'<div class="tag">(.*?)</div>|<span class="tag">(.*?)</span>', html_text, flags=re.S) for value in value if value]
+    return [{"rank": index + 1, "name": tag, "reason": "原始报告标签"} for index, tag in enumerate(tags[:6])]
+
+
+def _legacy_chain_nodes(text: str) -> list[dict]:
+    if not text:
+        return []
+    names = [_strip_html(value) for value in re.findall(r"<b>(.*?)</b>", text, flags=re.S)]
+    if not names:
+        names = [part.strip() for part in re.split(r"[→\n]+", text) if part.strip()]
+    return [{"name": name, "current": index == 1} for index, name in enumerate(names[:6])]
+
+
+def _pick_section(sections: dict[str, str], key: str) -> str:
+    for title, body in sections.items():
+        if key in title:
+            return body
+    return ""
+
+
+def _first_match(text: str, pattern: str) -> str:
+    match = re.search(pattern, text, flags=re.S)
+    return match.group(1) if match else ""
+
+
+def _strip_html(value: str) -> str:
+    text = re.sub(r"<br\s*/?>", "\n", value or "", flags=re.I)
+    text = re.sub(r"</(p|div|li|tr|h[1-6])>", "\n", text, flags=re.I)
+    text = re.sub(r"<[^>]+>", "", text)
+    text = text.replace("&nbsp;", " ").replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def _safe_int(value: str) -> int:
+    match = re.search(r"-?\d+", str(value or ""))
+    return int(match.group(0)) if match else 0
+
+
 def _first_report_artifact(run_dir: Path, pattern: str) -> Path | None:
     matches = sorted(path for path in run_dir.glob(pattern) if path.is_file())
     return matches[0] if matches else None
@@ -1120,8 +1258,12 @@ def _manifest_from_run_dir(run_id: str, run_dir: Path) -> dict:
         presenter_path = html_path.with_suffix(".presenter.json")
         metadata = _report_metadata_from_debug(debug_path)
         html_url = f"/api/reports/{run_id}/{html_path.name}"
-        debug_url = f"/api/reports/{run_id}/{debug_path.name}"
-        presenter_url = f"/api/reports/{run_id}/{presenter_path.name}"
+        debug_url = f"/api/reports/{run_id}/{debug_path.name}" if debug_path.exists() else ""
+        presenter_url = f"/api/reports/{run_id}/{presenter_path.name}" if presenter_path.exists() else ""
+        if not debug_url and (run_dir / RESEARCH_DEBUG_NAME).exists():
+            debug_url = f"/api/reports/{run_id}/{RESEARCH_DEBUG_NAME}"
+        if not presenter_url and (run_dir / RESEARCH_PRESENTER_NAME).exists():
+            presenter_url = f"/api/reports/{run_id}/{RESEARCH_PRESENTER_NAME}"
         reports.append(
             {
                 "title": _report_title_from_stem(html_path.stem),
@@ -1216,6 +1358,81 @@ def _manifest_payload(run_id: str, reports: list[dict]) -> dict:
         "research_debug_url": f"/api/reports/{run_id}/{RESEARCH_DEBUG_NAME}",
         "research_presenter_url": f"/api/reports/{run_id}/{RESEARCH_PRESENTER_NAME}",
     }
+
+
+def _recent_report_summaries(*, limit: int = 30) -> list[dict]:
+    if not REPORT_DIR.exists():
+        return []
+    items: list[dict] = []
+    for run_dir in REPORT_DIR.iterdir():
+        if not run_dir.is_dir():
+            continue
+        manifest = _recover_report_manifest(run_dir.name, run_dir)
+        if not manifest:
+            continue
+        first = (manifest.get("reports") or [{}])[0]
+        try:
+            updated_at = datetime.fromtimestamp(run_dir.stat().st_mtime, tz=CN_TZ).strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            updated_at = ""
+        items.append(
+            {
+                "run_id": run_dir.name,
+                "title": _recent_report_title(run_dir, first),
+                "rating": first.get("rating") or "",
+                "score": first.get("score") or 0,
+                "status": "done",
+                "created_at": updated_at,
+                "report_route": f"/review/report/{run_dir.name}",
+                "html_url": manifest.get("html_url") or first.get("html_url") or "",
+                "presenter_url": manifest.get("presenter_url") or first.get("presenter_url") or "",
+                "has_presenter": bool(manifest.get("presenter_url") or first.get("presenter_url")),
+                "research_model_tier": manifest.get("research_model_tier") or first.get("research_model_tier") or "standard",
+            }
+        )
+    items.sort(key=lambda item: item.get("created_at") or "", reverse=True)
+    return items[:limit]
+
+
+def _recent_report_title(run_dir: Path, first: dict) -> str:
+    trade = _recent_report_trade_info(run_dir)
+    if trade:
+        name = trade.get("name") or trade.get("code") or "未知股票"
+        side = _trade_side_label(trade.get("side"))
+        trade_at = " ".join(part for part in [trade.get("trade_date"), trade.get("trade_time")] if part).strip()
+        return " - ".join(part for part in [str(name), side, trade_at] if part)
+    return str(first.get("title") or _report_title_from_stem(run_dir.name))
+
+
+def _recent_report_trade_info(run_dir: Path) -> dict[str, str]:
+    manual_path = run_dir / "manual_trade_source.json"
+    if manual_path.exists():
+        try:
+            data = json.loads(manual_path.read_text(encoding="utf-8"))
+        except Exception:
+            data = {}
+        if isinstance(data, dict):
+            return {str(key): str(value) for key, value in data.items() if value is not None}
+
+    csv_path = run_dir / "ai_trades.csv"
+    if csv_path.exists():
+        try:
+            with csv_path.open("r", encoding="utf-8-sig", newline="") as handle:
+                row = next(csv.DictReader(handle), None)
+        except Exception:
+            row = None
+        if isinstance(row, dict):
+            return {str(key): str(value) for key, value in row.items() if value is not None}
+    return {}
+
+
+def _trade_side_label(value: object) -> str:
+    text = str(value or "").strip().lower()
+    if text in {"sell", "s"} or "卖" in text:
+        return "卖出"
+    if text in {"buy", "b"} or "买" in text:
+        return "买入"
+    return text
 
 
 def _event_payload(event, settings: VoiceSettings, errors: list[str]) -> dict:
