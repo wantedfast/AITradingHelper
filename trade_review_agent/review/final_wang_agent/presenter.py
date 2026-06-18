@@ -279,7 +279,7 @@ def build_structured_json_contract(data: dict[str, Any], answer: str, stock_name
     ]
     review_scores: list[dict[str, Any]] = []
     for key, label, value, path in score_specs:
-        score = numeric_score(value)
+        score = review_score(value)
         if score is None:
             missing_fields.append(path)
             continue
@@ -489,6 +489,15 @@ def numeric_score(value: Any) -> int | None:
         if match:
             return max(0, min(100, round(float(match.group(0)))))
     return None
+
+
+def review_score(value: Any) -> float | None:
+    score = numeric_score(value)
+    if score is None:
+        return None
+    normalized = score / 10 if score > 10 else float(score)
+    normalized = max(0.0, min(10.0, normalized))
+    return int(normalized) if normalized.is_integer() else round(normalized, 1)
 
 
 def join_labeled_parts(parts: list[tuple[str, Any]]) -> str:

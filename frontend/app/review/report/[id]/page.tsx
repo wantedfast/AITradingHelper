@@ -104,7 +104,20 @@ function copy(value: unknown, fallback = "原始报告未提供") {
 }
 
 function scoreCopy(value: unknown) {
-  return typeof value === "number" && Number.isFinite(value) ? `${value}` : "--";
+  const score = normalizedScore(value);
+  if (score === null) return "--";
+  return Number.isInteger(score) ? `${score}` : `${Number(score.toFixed(1))}`;
+}
+
+function normalizedScore(value: unknown) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  if (value > 10) return Math.max(0, Math.min(10, value / 10));
+  return Math.max(0, Math.min(10, value));
+}
+
+function scorePercent(value: unknown) {
+  const score = normalizedScore(value);
+  return score === null ? 0 : score * 10;
 }
 
 export default function ReviewReportPage({ params }: ReviewReportPageProps) {
@@ -229,7 +242,7 @@ export default function ReviewReportPage({ params }: ReviewReportPageProps) {
                             <span>{copy(item.label)}</span>
                             <strong>{scoreCopy(item.value)}<small>/10</small></strong>
                           </div>
-                          <i><b style={{ width: `${Math.max(0, Math.min(100, (Number(item.value) || 0) * 10))}%` }} /></i>
+                          <i><b style={{ width: `${scorePercent(item.value)}%` }} /></i>
                         </article>
                       ))
                     ) : null}

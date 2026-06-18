@@ -778,6 +778,9 @@ def build_judge_prompt(stock_name: str, stock_code: str, buy_date: str, buy_time
 
 JSON 结构必须严格使用以下 key：
 
+所有 score 和 totalScore 统一使用 0-10 分制，不要使用 0-100 分制。
+score 可以是小数，例如 6.5；10 表示满分，0 表示完全不合格。
+
 {{
   "finalJudgment": {{
     "summary": "总评，一句话说明这笔交易的性质",

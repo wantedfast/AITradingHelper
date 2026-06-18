@@ -106,10 +106,10 @@ class FinalWangPresenterTest(unittest.TestCase):
         self.assertEqual(
             [(item["key"], item["value"]) for item in payload["review"]["scores"]["items"]],
             [
-                ("tradeCorrectness", 80),
-                ("entryQuality", 60),
-                ("mainlineStrength", 60),
-                ("total", 70),
+                ("tradeCorrectness", 8),
+                ("entryQuality", 6),
+                ("mainlineStrength", 6),
+                ("total", 7),
             ],
         )
         judgment_text = "\n".join(item["text"] for item in payload["review"]["judgments"]["items"])
