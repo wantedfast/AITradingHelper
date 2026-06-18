@@ -102,7 +102,7 @@ function AuthContent() {
       } else if (mode === "sms-register") {
         result = await apiFetch<AuthResult>("/api/auth/register", {
           method: "POST",
-          body: JSON.stringify({ phone, code: smsCode, invite_code: inviteCode }),
+          body: JSON.stringify({ phone, code: smsCode, password, invite_code: inviteCode }),
         });
       } else if (mode === "password-register") {
         result = await apiFetch<AuthResult>("/api/auth/password-register", {
@@ -140,13 +140,13 @@ function AuthContent() {
             </p>
             <h1>把复盘能力，绑定到每一次真实使用。</h1>
             <p>
-              支持短信验证码登录，也支持账号或邮箱密码登录。密码注册需要验证邮箱，避免无效账号进入推广和试用体系。
+              支持短信验证码登录，也支持手机号、账号或邮箱密码登录。注册时设置密码，方便后续直接登录。
             </p>
           </div>
           <div className="account-rules">
             <article>
               <ShieldCheck />
-              <span>首次注册赠送 1 次免费使用</span>
+              <span>首次注册赠送 5 次免费使用</span>
             </article>
             <article>
               <UserPlus />
@@ -208,16 +208,17 @@ function AuthContent() {
                   sending={sendingSms}
                   countdown={smsCountdown}
                 />
+                {mode === "sms-register" && <PasswordField value={password} onChange={setPassword} placeholder="至少 8 位密码" />}
               </>
             )}
 
             {mode === "password-login" && (
               <>
                 <label>
-                  <span>账号或邮箱</span>
+                  <span>手机号、账号或邮箱</span>
                   <i>
                     <UserRound />
-                    <input value={account} onChange={(event) => setAccount(event.target.value)} placeholder="账号名或邮箱" />
+                    <input value={account} onChange={(event) => setAccount(event.target.value)} placeholder="手机号、账号名或邮箱" />
                   </i>
                 </label>
                 <PasswordField value={password} onChange={setPassword} placeholder="请输入密码" />
@@ -334,7 +335,7 @@ function PasswordField({ value, onChange, placeholder }: { value: string; onChan
 
 function titleForMode(mode: Mode) {
   if (mode === "sms-login") return "短信验证码登录";
-  if (mode === "password-login") return "账号或邮箱登录";
+  if (mode === "password-login") return "手机号、账号或邮箱登录";
   if (mode === "sms-register") return "手机号注册";
   if (mode === "password-register") return "账号密码注册";
   return "管理员登录";
@@ -343,15 +344,15 @@ function titleForMode(mode: Mode) {
 function actionForMode(mode: Mode) {
   if (mode === "sms-login") return "验证码登录";
   if (mode === "password-login") return "密码登录";
-  if (mode === "sms-register") return "手机号注册并领取首次免费机会";
-  if (mode === "password-register") return "账号注册并领取首次免费机会";
+  if (mode === "sms-register") return "手机号注册并领取 5 次免费机会";
+  if (mode === "password-register") return "账号注册并领取 5 次免费机会";
   return "登录管理台";
 }
 
 function helperForMode(mode: Mode) {
   if (mode === "sms-login") return "输入手机号并获取短信验证码，无需密码即可登录。";
-  if (mode === "password-login") return "可以使用账号名或注册邮箱登录。";
-  if (mode === "sms-register") return "手机号验证码注册适合快速开始，首次注册赠送 1 次免费使用机会。";
+  if (mode === "password-login") return "可以使用手机号、账号名或注册邮箱登录。";
+  if (mode === "sms-register") return "手机号验证码注册适合快速开始，设置密码后赠送 5 次免费使用机会。";
   if (mode === "password-register") return "填写账号名、注册邮箱和密码；邮箱验证码通过后即可创建账号。";
   return "管理员保留密码登录，避免短信或邮件服务异常时无法进入后台。";
 }

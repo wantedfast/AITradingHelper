@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -40,7 +40,7 @@ type ReportPayload = {
   research_model_tier?: string;
   actual_research_model_tier?: string;
   wang_model?: string;
-  reports?: Array<{ url?: string; debug_url?: string; presenter_url?: string; title?: string; score?: number; rating?: string; requested_research_model_tier?: string; research_model_tier?: string; actual_research_model_tier?: string }>;
+  reports?: Array<{ run_id?: string; report_route?: string; created_at?: string; url?: string; debug_url?: string; presenter_url?: string; title?: string; score?: number; rating?: string; requested_research_model_tier?: string; research_model_tier?: string; actual_research_model_tier?: string }>;
   error?: string;
   detail?: string;
   request_id?: string;
@@ -63,6 +63,19 @@ type ManualTradeForm = {
   tradeDate: string;
   tradeTime: string;
   side: "buy" | "sell";
+};
+
+type RecentReport = {
+  run_id: string;
+  title?: string;
+  rating?: string;
+  score?: number;
+  created_at?: string;
+  report_route?: string;
+  html_url?: string;
+  presenter_url?: string;
+  has_presenter?: boolean;
+  research_model_tier?: string;
 };
 
 type AgentSummaryData = {
@@ -224,6 +237,8 @@ export default function ReviewPage() {
   const [researchModelLabel, setResearchModelLabel] = useState(STANDARD_REPORT_LABEL);
   const [errorText, setErrorText] = useState("");
   const [toast, setToast] = useState("");
+  const [recentReports, setRecentReports] = useState<RecentReport[]>([]);
+  const [recentReportsLoading, setRecentReportsLoading] = useState(false);
 
   const reportReady = Boolean(reportUrl);
 
@@ -232,6 +247,34 @@ export default function ReviewPage() {
     if (toastTimer.current) window.clearTimeout(toastTimer.current);
     toastTimer.current = window.setTimeout(() => setToast(""), 2600);
   }
+
+  async function refreshRecentReports(silent = false) {
+    const token = getAuthToken();
+    if (!token) {
+      setRecentReports([]);
+      return;
+    }
+    setRecentReportsLoading(true);
+    try {
+      const response = await fetch(`${API_BASE}/api/reports?limit=12`, {
+        headers: { Authorization: `Bearer ${token}` },
+        cache: "no-store",
+      });
+      const payload = await parseJsonResponse(response);
+      if (!response.ok) throw new Error(formatReportError(payload, "读取报告列表失败"));
+      const reports = Array.isArray(payload.reports) ? payload.reports : [];
+      setRecentReports(reports.filter((item): item is RecentReport => Boolean((item as RecentReport).run_id)));
+    } catch (error) {
+      if (!silent) showToast(error instanceof Error ? error.message : "读取报告列表失败");
+    } finally {
+      setRecentReportsLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void refreshRecentReports(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function updateManualTrade<K extends keyof ManualTradeForm>(key: K, value: ManualTradeForm[K]) {
     setManualTrade((current) => ({ ...current, [key]: value }));
@@ -401,13 +444,11 @@ export default function ReviewPage() {
       const reportId = payload.run_id || extractReportId(firstReportUrl);
       if (!reportId) throw new Error(copy.noUrl);
 
-      const nextReportRoute = `/review/report/${encodeURIComponent(reportId)}`;
       const structuredUrl =
         firstReport?.presenter_url ||
         payload.presenter_url ||
-        firstReport?.debug_url ||
-        payload.debug_url ||
         "";
+      const nextReportRoute = `/review/report/${encodeURIComponent(reportId)}`;
       setReportUrl(`${API_BASE}${firstReportUrl}`);
       setReportRoute(nextReportRoute);
       setAgentSummaryUrl(structuredUrl ? `${API_BASE}${structuredUrl}` : "");
@@ -427,6 +468,7 @@ export default function ReviewPage() {
         }
       }
       showToast(copy.done);
+      void refreshRecentReports(true);
       router.push(nextReportRoute);
     } catch (error) {
       const message = error instanceof Error ? error.message : copy.fallbackError;
@@ -669,6 +711,41 @@ export default function ReviewPage() {
               })}
             </div>
           </aside>
+        </section>
+        <section className="research-panel recent-report-panel">
+          <div className="recent-report-head">
+            <div>
+              <span className="card-label">{"\u5386\u53f2\u62a5\u544a"}</span>
+              <h2>{"\u6700\u8fd1\u751f\u6210\u7684\u590d\u76d8\u62a5\u544a"}</h2>
+            </div>
+            <button type="button" onClick={() => void refreshRecentReports()} disabled={recentReportsLoading}>
+              {recentReportsLoading ? <Loader2 className="spin-icon" /> : <RefreshCw />}
+              {"\u5237\u65b0"}
+            </button>
+          </div>
+          {recentReports.length ? (
+            <div className="recent-report-list">
+              {recentReports.map((item) => (
+                <button
+                  className="recent-report-item"
+                  key={item.run_id}
+                  type="button"
+                  onClick={() => router.push(item.report_route || `/review/report/${encodeURIComponent(item.run_id)}`)}
+                >
+                  <span>
+                    <b>{item.title || "\u590d\u76d8\u62a5\u544a"}</b>
+                    <small>{item.created_at || item.run_id}</small>
+                  </span>
+                  <em>{item.research_model_tier === "better" ? "\u8be6\u7ec6" : "\u5feb\u901f"}</em>
+                  <ArrowRight />
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div className="recent-report-empty">
+              {recentReportsLoading ? "\u6b63\u5728\u8bfb\u53d6\u62a5\u544a\u5217\u8868..." : "\u6682\u65e0\u53ef\u67e5\u770b\u7684\u5386\u53f2\u62a5\u544a\u3002"}
+            </div>
+          )}
         </section>
         <div className="review-security-line">
           <LockKeyhole />

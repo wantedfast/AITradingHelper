@@ -37,6 +37,7 @@ export default function Page() {
   const [feedbackMessage, setFeedbackMessage] = useState("");
   const [showProductGuide, setShowProductGuide] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
+  const [inviteCopied, setInviteCopied] = useState(false);
 
   useEffect(() => {
     setHydrated(true);
@@ -53,7 +54,9 @@ export default function Page() {
     const url = inviteUrl(user);
     if (!url) return;
     await navigator.clipboard.writeText(url);
+    setInviteCopied(true);
     setFeedbackMessage("邀请链接已复制。新用户用该链接注册登录后，你会获得 5 次免费机会。");
+    window.setTimeout(() => setInviteCopied(false), 2200);
   }
 
   function scrollToFeedback() {
@@ -70,7 +73,10 @@ export default function Page() {
     clearAuth();
     setUser(null);
     setShowUserMenu(false);
+    setInviteCopied(false);
   }
+
+  const currentInviteUrl = hydrated && user ? inviteUrl(user) : "";
 
   async function submitFeedback(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -139,9 +145,15 @@ export default function Page() {
                       <span>邀请码</span>
                       <em>{user.invite_code}</em>
                     </div>
+                    {currentInviteUrl && (
+                      <div className="home-invite-link-box" aria-label="邀请链接">
+                        <span>邀请链接</span>
+                        <code title={currentInviteUrl}>{currentInviteUrl}</code>
+                      </div>
+                    )}
                     <button className="home-user-copy" type="button" onClick={copyInvite}>
                       <Copy className="h-4 w-4" />
-                      复制邀请链接
+                      {inviteCopied ? "已复制邀请链接" : "复制邀请链接"}
                     </button>
                     <button className="home-user-logout" type="button" onClick={logout}>
                       <LogOut className="h-4 w-4" />
@@ -177,7 +189,7 @@ export default function Page() {
               </Link>
               {hydrated && !user && (
                 <Link className="secondary home-auth-link" href="/auth?redirect=/review">
-                  手机号注册，首次免费
+                  手机号注册，送 5 次免费
                 </Link>
               )}
             </div>
