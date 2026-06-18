@@ -830,7 +830,7 @@ def extract_review_scores(sections: dict[str, str]) -> list[dict[str, Any]]:
     return result
 
 
-def find_score_line(text: str, label: str) -> tuple[int, str] | None:
+def find_score_line(text: str, label: str) -> tuple[float, str] | None:
     pattern = re.compile(
         rf"^[\s>*#_`\-]*{re.escape(label)}"
         rf"(?:\s*[\(（]\s*\d{{1,3}}\s*分\s*[\)）])?"
@@ -841,8 +841,8 @@ def find_score_line(text: str, label: str) -> tuple[int, str] | None:
         match = pattern.match(normalized)
         if not match:
             continue
-        value = int(match.group("score"))
-        if 0 <= value <= 100:
+        value = review_score(match.group("score"))
+        if value is not None:
             return value, raw_line.strip()
     return None
 

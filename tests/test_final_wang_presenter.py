@@ -293,10 +293,10 @@ class FinalWangPresenterTest(unittest.TestCase):
         self.assertEqual(
             [(item["key"], item["value"]) for item in payload["review"]["scores"]["items"]],
             [
-                ("tradeCorrectness", 82),
-                ("entryQuality", 68),
-                ("mainlineStrength", 72),
-                ("total", 76),
+                ("tradeCorrectness", 8.2),
+                ("entryQuality", 6.8),
+                ("mainlineStrength", 7.2),
+                ("total", 7.6),
             ],
         )
         self.assertEqual(
@@ -337,11 +337,11 @@ class FinalWangPresenterTest(unittest.TestCase):
         self.assertEqual(
             [(item["key"], item["label"], item["value"]) for item in payload["review"]["scores"]["items"]],
             [
-                ("directionJudgment", "方向判断", 29),
-                ("entryQuality", "买点质量", 15),
-                ("targetSelection", "标的选择", 18),
-                ("industryChainAdvantage", "产业链优势", 20),
-                ("total", "综合评分", 72),
+                ("directionJudgment", "方向判断", 2.9),
+                ("entryQuality", "买点质量", 1.5),
+                ("targetSelection", "标的选择", 1.8),
+                ("industryChainAdvantage", "产业链优势", 2),
+                ("total", "综合评分", 7.2),
             ],
         )
         for index in range(5):
