@@ -218,6 +218,7 @@ export default function ReviewReportPage({ params }: ReviewReportPageProps) {
                   <div className="total-score">
                     <span>综合评分</span>
                     <strong>{scoreCopy(reviewScores.find((item) => item.key === "total")?.value)}</strong>
+                    <small>满分 10 分</small>
                   </div>
 
                   <div className="score-list">
@@ -226,9 +227,9 @@ export default function ReviewReportPage({ params }: ReviewReportPageProps) {
                         <article key={item.key || item.label}>
                           <div>
                             <span>{copy(item.label)}</span>
-                            <strong>{scoreCopy(item.value)}</strong>
+                            <strong>{scoreCopy(item.value)}<small>/10</small></strong>
                           </div>
-                          <i><b style={{ width: `${Math.max(0, Math.min(100, Number(item.value) || 0))}%` }} /></i>
+                          <i><b style={{ width: `${Math.max(0, Math.min(100, (Number(item.value) || 0) * 10))}%` }} /></i>
                         </article>
                       ))
                     ) : null}
@@ -993,6 +994,13 @@ a {
   color: var(--blue);
   font-size: 28px;
   line-height: 1;
+}
+
+.score-list strong small {
+  margin-left: 2px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
 }
 
 .score-list i {

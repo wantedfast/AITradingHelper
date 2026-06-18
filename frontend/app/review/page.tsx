@@ -62,6 +62,7 @@ type ManualTradeForm = {
   stockName: string;
   tradeDate: string;
   tradeTime: string;
+  buyPrice: string;
   side: "buy" | "sell";
 };
 
@@ -224,6 +225,7 @@ export default function ReviewPage() {
     stockName: "",
     tradeDate: "",
     tradeTime: "",
+    buyPrice: "",
     side: "buy",
   });
   const [generating, setGenerating] = useState(false);
@@ -235,6 +237,7 @@ export default function ReviewPage() {
   const [reportCount, setReportCount] = useState(0);
   const [researchModelTier, setResearchModelTier] = useState<"standard" | "better">("standard");
   const [researchModelLabel, setResearchModelLabel] = useState(STANDARD_REPORT_LABEL);
+  const [generationStage, setGenerationStage] = useState("idle");
   const [errorText, setErrorText] = useState("");
   const [toast, setToast] = useState("");
   const [recentReports, setRecentReports] = useState<RecentReport[]>([]);
@@ -285,7 +288,8 @@ export default function ReviewPage() {
     return Boolean(
       manualTrade.stockName.trim() &&
         manualTrade.tradeDate.trim() &&
-        normalizedManualTradeTime(),
+        normalizedManualTradeTime() &&
+        normalizedManualBuyPrice(),
     );
   }
 
@@ -299,11 +303,21 @@ export default function ReviewPage() {
     return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}:${String(second).padStart(2, "0")}`;
   }
 
+  function normalizedManualBuyPrice() {
+    const normalized = manualTrade.buyPrice.trim().replace(",", "");
+    if (!normalized) return "";
+    const value = Number(normalized);
+    if (!Number.isFinite(value) || value <= 0) return "";
+    return String(value);
+  }
+
   function manualTradeError() {
     if (!manualTrade.stockName.trim()) return "请填写股票名字";
     if (!manualTrade.tradeDate.trim()) return "请选择交易日期";
     if (!manualTrade.tradeTime.trim()) return "请选择交易时间";
     if (!normalizedManualTradeTime()) return "交易时间格式异常，请重新选择";
+    if (!manualTrade.buyPrice.trim()) return "请填写买入价格";
+    if (!normalizedManualBuyPrice()) return "买入价格格式异常，请输入大于 0 的数字";
     return "";
   }
 
@@ -360,11 +374,31 @@ export default function ReviewPage() {
     return payload.status === "queued" || payload.status === "running";
   }
 
+  function progressForStage(stage: string, attempt = 0) {
+    if (stage === "manual_trade_file" || stage === "ocr_trade_file") {
+      return { label: "正在整理交易事实", detail: "系统正在生成本次复盘需要的交易记录。", percent: 18, step: 0 };
+    }
+    if (stage === "build_ai_review") {
+      if (attempt >= 12) {
+        return { label: "AI 正在分析交易逻辑", detail: "Judge Agent 正在判断买点、主线地位和同题材强弱。", percent: 68, step: 2 };
+      }
+      return { label: "AI 正在上网查阅资料", detail: "Research Agent 正在检索市场主线、个股题材和产业链证据。", percent: 42, step: 1 };
+    }
+    if (stage === "write_aliases" || stage === "write_manifest") {
+      return { label: "正在生成可查看报告", detail: "系统正在整理页面数据和报告文件。", percent: 88, step: 3 };
+    }
+    if (stage === "done") {
+      return { label: "报告已生成", detail: "正在进入报告详情页。", percent: 100, step: 3 };
+    }
+    return { label: "报告任务已提交", detail: "系统正在排队并准备调用 AI Agent。", percent: 8, step: 0 };
+  }
+
   async function pollReportStatus(statusUrl: string): Promise<ReportPayload> {
     const target = statusUrl.startsWith("http") ? statusUrl : `${API_BASE}${statusUrl}`;
     for (let attempt = 0; attempt < 240; attempt += 1) {
       const response = await fetch(target, { cache: "no-store" });
       const payload = await parseJsonResponse(response);
+      setGenerationStage(payload.stage === "build_ai_review" && attempt >= 12 ? "build_ai_review_late" : payload.stage || payload.status || "queued");
       if (!response.ok) throw new Error(formatReportError(payload, copy.errorTitle));
       if (payload.status === "done") return payload;
       if (payload.status === "error") throw new Error(formatReportError(payload, copy.errorTitle));
@@ -393,6 +427,7 @@ export default function ReviewPage() {
     setAgentSummaryUrl("");
     setAgentSummaryData(null);
     setReportCount(0);
+    setGenerationStage("queued");
     showToast(copy.calling);
 
     try {
@@ -402,6 +437,7 @@ export default function ReviewPage() {
       formData.append("manual_trade", "1");
       formData.append("manual_stock_name", manualTrade.stockName.trim());
       formData.append("manual_trade_at", `${manualTrade.tradeDate.trim()}T${tradeTime}`);
+      formData.append("manual_price", normalizedManualBuyPrice());
       formData.append("manual_side", manualTrade.side);
 
       const response = await fetch(`${API_BASE}/api/reports`, {
@@ -412,6 +448,7 @@ export default function ReviewPage() {
         },
       });
       let payload = await parseJsonResponse(response);
+      setGenerationStage(payload.stage || payload.status || "queued");
 
       if (!response.ok) {
         throw new Error(formatReportError(payload, copy.errorTitle));
@@ -469,6 +506,7 @@ export default function ReviewPage() {
       }
       showToast(copy.done);
       void refreshRecentReports(true);
+      setGenerationStage("done");
       router.push(nextReportRoute);
     } catch (error) {
       const message = error instanceof Error ? error.message : copy.fallbackError;
@@ -480,13 +518,14 @@ export default function ReviewPage() {
   }
 
   function resetUpload() {
-    setManualTrade({ stockName: "", tradeDate: "", tradeTime: "", side: "buy" });
+    setManualTrade({ stockName: "", tradeDate: "", tradeTime: "", buyPrice: "", side: "buy" });
     setReportUrl("");
     setReportRoute("");
     setAgentSummaryUrl("");
     setAgentSummaryData(null);
     setReportCount(0);
     setResearchModelLabel(selectedResearchModelLabel());
+    setGenerationStage("idle");
     setErrorText("");
     showToast(copy.reset);
   }
@@ -495,6 +534,10 @@ export default function ReviewPage() {
     if (reportRoute) router.push(reportRoute);
   }
 
+  const generationProgress = progressForStage(
+    generationStage === "build_ai_review_late" ? "build_ai_review" : generationStage,
+    generationStage === "build_ai_review_late" ? 12 : 0,
+  );
 
   return (
     <main className="review-console-page">
@@ -581,6 +624,19 @@ export default function ReviewPage() {
                       disabled={generating}
                     />
                   </label>
+                  <label>
+                    <span>买入价格</span>
+                    <input
+                      type="number"
+                      inputMode="decimal"
+                      min="0"
+                      step="0.01"
+                      value={manualTrade.buyPrice}
+                      onChange={(event) => updateManualTrade("buyPrice", event.target.value)}
+                      placeholder="例如：58.71"
+                      disabled={generating}
+                    />
+                  </label>
                 </div>
                 <div className="manual-side-toggle" aria-label="交易方向">
                   <button
@@ -639,6 +695,26 @@ export default function ReviewPage() {
                     {copy.reselect}
                   </button>
                 </div>
+                <p className="generation-time-note">为了更好的复盘质量，报告生成大概需要 2-3 分钟。</p>
+                {generating && (
+                  <div className="generation-progress" role="status" aria-live="polite">
+                    <div className="generation-progress-head">
+                      <b>{generationProgress.label}</b>
+                      <span>{generationProgress.percent}%</span>
+                    </div>
+                    <div className="generation-progress-track" aria-hidden="true">
+                      <i style={{ width: `${generationProgress.percent}%` }} />
+                    </div>
+                    <p>{generationProgress.detail}</p>
+                    <div className="generation-progress-steps" aria-hidden="true">
+                      {["整理", "查资料", "分析", "出报告"].map((item, index) => (
+                        <span className={index <= generationProgress.step ? "active" : ""} key={item}>
+                          {item}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </>
             )}
             {errorText && (

@@ -748,31 +748,30 @@ def _manual_trade_from_fields(fields: dict[str, str]) -> dict | None:
     trade_at = str(fields.get("manual_trade_at") or "").strip()
     side = _manual_side(fields.get("manual_side"))
     position = str(fields.get("manual_position") or "").strip()
+    price = _optional_float(fields.get("manual_price"))
 
     if not stock_name:
         raise ValueError("请填写股票名字")
     if not stock_code:
-        stock_code = resolve_stock_code(stock_name)
-    if not stock_code:
-        raise ValueError(f"无法识别股票名称：{stock_name}")
+        stock_code = resolve_stock_code(stock_name, allow_fetch=False)
     if not trade_at:
         raise ValueError("请选择交易时间")
 
+    if price is None:
+        raise ValueError("请填写买入价格")
+
     trade_date, trade_time = _manual_trade_datetime(trade_at)
-    quantity = _manual_position_quantity(position) if position else 1.0
-    stock_code = stock_code.zfill(6)[-6:]
+    stock_code = stock_code.zfill(6)[-6:] if stock_code else ""
     return {
         "trade_date": trade_date,
         "trade_time": trade_time,
         "code": stock_code,
         "name": stock_name,
         "side": side,
-        "quantity": quantity,
-        "price": 1.0,
-        "amount": quantity,
+        "price": price,
         "fee": 0.0,
         "market": "A-share",
-        "source_text": f"manual input; position={position or 'not provided'}",
+        "source_text": f"manual input; name={stock_name}; code={stock_code or 'not resolved'}; price={price}",
         "position": position,
     }
 
@@ -810,9 +809,7 @@ def _write_manual_trade_csv(manual_trade: dict, output_csv: Path) -> Path:
         "code",
         "name",
         "side",
-        "quantity",
         "price",
-        "amount",
         "fee",
         "market",
         "source_text",

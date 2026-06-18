@@ -26,7 +26,7 @@ KNOWN_CODES = {
 }
 
 
-def resolve_stock_code(name: str | None) -> str:
+def resolve_stock_code(name: str | None, *, allow_fetch: bool = True) -> str:
     text = _clean_name(name)
     if not text:
         return ""
@@ -39,6 +39,12 @@ def resolve_stock_code(name: str | None) -> str:
     mapping = _load_cached_mapping()
     if text in mapping:
         return mapping[text]
+
+    if not allow_fetch:
+        for stock_name, code in mapping.items():
+            if text in stock_name or stock_name in text:
+                return code
+        return ""
 
     mapping = _fetch_mapping()
     if text in mapping:

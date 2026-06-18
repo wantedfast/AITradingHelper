@@ -117,6 +117,7 @@ def build_search_prompt(stock_name: str, stock_code: str, buy_date: str, buy_tim
     # 输出“搜索资料包”，保留来源名称、日期、URL、原文摘要。
     buy_times_text = "\n".join(f"- {item}" for item in buy_times)
     buy_date_cn = cn_date(buy_date)
+    stock_code = stock_code or "未识别，以股票名称为准"
     return f"""你是A股资金逻辑研究员。
 
 任务：
@@ -746,6 +747,7 @@ def build_search_prompt(stock_name: str, stock_code: str, buy_date: str, buy_tim
 
 
 def build_judge_prompt(stock_name: str, stock_code: str, buy_date: str, buy_times: list[str], search_pack: str) -> str:
+    stock_code = stock_code or "股票代码未识别，以股票名称为准"
     return f"""你是A股短线交易复盘研究员，也是用户的交易教练。
 
 下面是一份资料包。
@@ -1097,8 +1099,6 @@ def trade_input_from_context(context: dict[str, Any]) -> dict[str, Any]:
         buy_date = buy_times[0].split()[0]
     if not buy_times and buy_date:
         buy_times = [buy_date]
-    if not stock_code:
-        raise RuntimeError("company.code is required for Final WANG Agent")
     if not stock_name:
         stock_name = stock_code
     if not buy_date:

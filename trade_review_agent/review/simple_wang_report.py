@@ -34,10 +34,8 @@ def build_minimal_wang_context(trades: str | Path | list[dict[str, Any]] | pd.Da
     primary = buys[0] if buys else rows[0]
     code = _clean_code(primary.get("code"))
     name = str(primary.get("name") or code).strip()
-    if not code:
-        raise ValueError("OCR result missing stock code")
     if not name:
-        name = code
+        raise ValueError("Trade facts missing stock name")
 
     normalized_trades = [_minimal_trade(row) for row in rows]
     buy_date = str(primary.get("trade_date") or normalized_trades[0].get("trade_date") or "").strip()
@@ -151,8 +149,6 @@ def _minimal_trade(row: dict[str, Any]) -> dict[str, Any]:
         "trade_date": str(row.get("trade_date") or "").strip(),
         "trade_time": str(row.get("trade_time") or "").strip(),
         "price": _number(row.get("price")),
-        "quantity": _number(row.get("quantity")),
-        "amount": _number(row.get("amount")),
         "fee": _number(row.get("fee")),
     }
 

@@ -5970,6 +5970,89 @@ button.radar-core,
   to { transform: rotate(360deg); }
 }
 
+.generation-time-note {
+  margin: -4px auto 0;
+  width: min(680px, 100%);
+  color: rgba(242, 238, 224, 0.66);
+  font-size: 13px;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.generation-progress {
+  width: min(680px, 100%);
+  margin: 0 auto;
+  border: 1px solid rgba(242, 207, 103, 0.24);
+  border-radius: 10px;
+  padding: 14px 16px;
+  background: linear-gradient(135deg, rgba(242, 207, 103, 0.1), rgba(111, 213, 223, 0.08));
+  display: grid;
+  gap: 10px;
+}
+
+.generation-progress-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.generation-progress-head b {
+  color: #fff3b8;
+  font-size: 15px;
+}
+
+.generation-progress-head span {
+  color: var(--rw-cyan);
+  font-weight: 900;
+  font-size: 13px;
+}
+
+.generation-progress-track {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(242, 238, 224, 0.12);
+}
+
+.generation-progress-track i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #fff1b8, #f2cf67 44%, var(--rw-cyan));
+  box-shadow: 0 0 16px rgba(242, 207, 103, 0.28);
+  transition: width 0.35s ease;
+}
+
+.generation-progress p {
+  margin: 0;
+  color: rgba(242, 238, 224, 0.72);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.generation-progress-steps {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.generation-progress-steps span {
+  min-width: 0;
+  border-radius: 999px;
+  padding: 6px 8px;
+  text-align: center;
+  color: rgba(242, 238, 224, 0.48);
+  background: rgba(255, 255, 255, 0.05);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.generation-progress-steps span.active {
+  color: #10130f;
+  background: #f2cf67;
+}
+
 .upload-error {
   border: 1px solid rgba(255, 141, 123, 0.38);
   border-radius: 10px;
