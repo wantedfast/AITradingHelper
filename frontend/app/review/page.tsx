@@ -24,6 +24,7 @@ import {
   ScanLine,
   ShieldCheck,
   Target,
+  TrendingUp,
   Upload,
 } from "lucide-react";
 import { getAuthToken, storeUser } from "@/lib/auth-client";
@@ -557,6 +558,10 @@ export default function ReviewPage() {
           <Link href="/watch">
             <BarChart3 />
             <span><b>{copy.watch}</b></span>
+          </Link>
+          <Link href="/market-day">
+            <TrendingUp />
+            <span><b>AI当日行情</b></span>
           </Link>
         </nav>
         <div className="review-rail-note">

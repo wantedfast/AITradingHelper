@@ -43,6 +43,7 @@ from trade_review_agent.ocr.ocr_trades import trade_file_to_trade_csv
 from trade_review_agent.common.openai_agent_api import OpenAIAgentError
 from trade_review_agent.market.stock_resolver import resolve_stock_code
 from trade_review_agent.review.final_wang_agent.agent import FinalWangAgentError
+from trade_review_agent.review.market_day_agent.agent import MarketDayAgentError, normalize_market_date, run_market_day_agent
 from trade_review_agent.review.simple_wang_report import run_simple_wang_review
 from trade_review_agent.watch.voice_settings import VoiceSettings, load_voice_settings, normalize_voice_settings, save_voice_settings, voice_settings_payload
 from trade_review_agent.watch.watch_agent import build_watch_plan, narrate_alert_event, preview_voice_line
@@ -52,6 +53,7 @@ from trade_review_agent.watch.watch_form_ocr import extract_watch_form_from_imag
 BASE_DIR = Path(__file__).resolve().parents[2]
 UPLOAD_DIR = BASE_DIR / "work" / "api_uploads"
 REPORT_DIR = BASE_DIR / "outputs" / "api_reports"
+MARKET_DAY_REPORT_DIR = BASE_DIR / "outputs" / "market_day_reports"
 CACHE_DB = BASE_DIR / "work" / "real_trade_review_cache.sqlite"
 ALERT_PLANS = BASE_DIR / "work" / "alert_plans.json"
 VOICE_SETTINGS_PATH = BASE_DIR / "work" / "watch_voice_settings.json"
@@ -66,6 +68,7 @@ REPORT_MANIFEST_NAME = "report_manifest.json"
 REPORT_STATUS_NAME = "report_status.json"
 RESEARCH_PRESENTER_NAME = "research_presenter_data.json"
 RESEARCH_DEBUG_NAME = "research_debug_data.json"
+MARKET_DAY_REPORT_NAME = "market_day_report.json"
 
 
 def normalize_research_model_tier(value: object = None) -> str:
@@ -107,6 +110,12 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/reports":
                 self._list_reports()
+                return
+            if path == "/api/market-day/reports":
+                self._list_market_day_reports()
+                return
+            if path.startswith("/api/market-day/reports/"):
+                self._serve_market_day_report(path)
                 return
             if path.startswith("/api/reports/"):
                 self._serve_report(path)
@@ -167,6 +176,9 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             if path == "/api/reports":
                 self._create_reports()
                 return
+            if path == "/api/market-day/reports":
+                self._create_market_day_report()
+                return
             if path == "/api/watch/plans":
                 self._create_watch_plan()
                 return
@@ -216,6 +228,46 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                 except ValueError:
                     limit = 30
         self._json({"reports": _recent_report_summaries(limit=limit)})
+
+    def _create_market_day_report(self) -> None:
+        user = self._require_user()
+        payload = self._read_json_body()
+        market_date = normalize_market_date(str(payload.get("market_date") or "").strip() or None)
+        run_id = f"{market_date.replace('-', '')}_{datetime.now(CN_TZ).strftime('%H%M%S')}_{uuid4().hex[:6]}"
+        run_dir = MARKET_DAY_REPORT_DIR / run_id
+        updated_user = consume_feature_credit(
+            AUTH_DB,
+            user_id=int(user["id"]),
+            feature="market_day_report",
+            ip=self._client_ip(),
+            related_id=run_id,
+        )
+        self._charged_user = updated_user
+        request_id = getattr(self, "_request_id", "") or uuid4().hex
+        _write_market_day_status(run_id, run_dir, status="queued", stage="queued", request_id=request_id)
+        _start_market_day_generation_task(
+            run_id=run_id,
+            run_dir=run_dir,
+            market_date=market_date,
+            request_id=request_id,
+        )
+        response = _market_day_status_payload(run_id, status="queued", stage="queued", request_id=request_id)
+        response["market_date"] = market_date
+        response["user"] = updated_user
+        self._json(response, status=202)
+
+    def _list_market_day_reports(self) -> None:
+        self._require_user()
+        limit = 30
+        query = urlparse(self.path).query
+        for part in query.split("&"):
+            key, _, value = part.partition("=")
+            if key == "limit":
+                try:
+                    limit = max(1, min(100, int(value)))
+                except ValueError:
+                    limit = 30
+        self._json({"reports": _recent_market_day_report_summaries(limit=limit)})
 
     def _auth_register(self) -> None:
         payload = self._read_json_body()
@@ -638,6 +690,41 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             return
         self._json(payload)
 
+    def _serve_market_day_report(self, path: str) -> None:
+        parts = path.split("/")
+        if len(parts) != 6:
+            self._json({"error": "not found"}, status=404)
+            return
+        run_id = parts[4]
+        filename = Path(unquote(parts[5])).name
+        run_dir = MARKET_DAY_REPORT_DIR / run_id
+        if filename == "status":
+            self._serve_market_day_status(run_id, run_dir)
+            return
+        report_path = run_dir / filename
+        if filename != MARKET_DAY_REPORT_NAME or not report_path.exists() or not report_path.is_file():
+            self._json({"error": "market day report not found"}, status=404)
+            return
+        self._serve_file(report_path)
+
+    def _serve_market_day_status(self, run_id: str, run_dir: Path) -> None:
+        report_path = run_dir / MARKET_DAY_REPORT_NAME
+        if report_path.exists():
+            payload = _market_day_status_payload(run_id, status="done", stage="done")
+            payload["report"] = _read_json_file(report_path)
+            self._json(payload)
+            return
+        status_path = run_dir / REPORT_STATUS_NAME
+        if not status_path.exists():
+            self._json(_market_day_status_payload(run_id, status="queued", stage="queued"))
+            return
+        try:
+            payload = json.loads(status_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            self._json(_api_error_payload(exc, request_id=getattr(self, "_request_id", ""), run_id=run_id, stage="read_market_day_status"), status=500)
+            return
+        self._json(payload)
+
     def _serve_watch_audio(self, path: str) -> None:
         parts = path.split("/")
         if len(parts) != 5:
@@ -916,6 +1003,88 @@ def _run_report_generation_task(
         )
 
 
+def _start_market_day_generation_task(
+    *,
+    run_id: str,
+    run_dir: Path,
+    market_date: str,
+    request_id: str,
+) -> None:
+    thread = threading.Thread(
+        target=_run_market_day_generation_task,
+        kwargs={
+            "run_id": run_id,
+            "run_dir": run_dir,
+            "market_date": market_date,
+            "request_id": request_id,
+        },
+        daemon=True,
+        name=f"market-day-{run_id[:8]}",
+    )
+    thread.start()
+
+
+def _run_market_day_generation_task(
+    *,
+    run_id: str,
+    run_dir: Path,
+    market_date: str,
+    request_id: str,
+) -> None:
+    stage = "queued"
+    try:
+        stage = "market_day_agent"
+        _write_market_day_status(run_id, run_dir, status="running", stage=stage, request_id=request_id)
+        report = run_market_day_agent(market_date)
+        report["run_id"] = run_id
+        report["status_url"] = f"/api/market-day/reports/{run_id}/status"
+        report["report_url"] = f"/api/market-day/reports/{run_id}/{MARKET_DAY_REPORT_NAME}"
+
+        stage = "write_market_day_report"
+        _write_market_day_status(run_id, run_dir, status="running", stage=stage, request_id=request_id)
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / MARKET_DAY_REPORT_NAME).write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        done = _market_day_status_payload(run_id, status="done", stage="done", request_id=request_id)
+        done["market_date"] = market_date
+        done["report"] = report
+        _write_market_day_status_payload(run_dir, done)
+    except Exception as exc:
+        payload = _market_day_status_payload(run_id, status="error", stage=stage, request_id=request_id)
+        payload.update(_api_error_payload(exc, request_id=request_id, run_id=run_id, stage=stage))
+        payload["status"] = "error"
+        _write_market_day_status_payload(run_dir, payload)
+        _write_api_error(
+            request_id=request_id,
+            method="BACKGROUND",
+            path=f"/api/market-day/reports/{run_id}",
+            run_id=run_id,
+            stage=stage,
+            exc=exc,
+            recovered=False,
+        )
+
+
+def _market_day_status_payload(run_id: str, *, status: str, stage: str, request_id: str = "") -> dict:
+    return {
+        "run_id": run_id,
+        "status": status,
+        "stage": stage,
+        "status_url": f"/api/market-day/reports/{run_id}/status",
+        "report_url": f"/api/market-day/reports/{run_id}/{MARKET_DAY_REPORT_NAME}",
+        "request_id": request_id,
+    }
+
+
+def _write_market_day_status(run_id: str, run_dir: Path, *, status: str, stage: str, request_id: str = "") -> None:
+    _write_market_day_status_payload(run_dir, _market_day_status_payload(run_id, status=status, stage=stage, request_id=request_id))
+
+
+def _write_market_day_status_payload(run_dir: Path, payload: dict) -> None:
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / REPORT_STATUS_NAME).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def _report_status_payload(run_id: str, *, status: str, stage: str, request_id: str = "") -> dict:
     return {
         "run_id": run_id,
@@ -975,6 +1144,16 @@ def _api_error_payload(exc: Exception, *, request_id: str, run_id: str = "", sta
             "stage": stage,
         }
     if isinstance(exc, FinalWangAgentError):
+        return {
+            "error": exc.user_message,
+            "detail": _redact_sensitive(exc.detail),
+            "code": exc.code,
+            "retryable": exc.retryable,
+            "request_id": request_id,
+            "run_id": run_id,
+            "stage": stage,
+        }
+    if isinstance(exc, MarketDayAgentError):
         return {
             "error": exc.user_message,
             "detail": _redact_sensitive(exc.detail),
@@ -1447,6 +1626,49 @@ def _recent_report_summaries(*, limit: int = 30) -> list[dict]:
         )
     items.sort(key=lambda item: item.get("created_at") or "", reverse=True)
     return items[:limit]
+
+
+def _recent_market_day_report_summaries(*, limit: int = 30) -> list[dict]:
+    if not MARKET_DAY_REPORT_DIR.exists():
+        return []
+    items: list[dict] = []
+    for run_dir in MARKET_DAY_REPORT_DIR.iterdir():
+        if not run_dir.is_dir():
+            continue
+        report_path = run_dir / MARKET_DAY_REPORT_NAME
+        if not report_path.exists():
+            continue
+        report = _read_json_file(report_path)
+        market_date = str(report.get("market_date") or (report.get("report") or {}).get("marketDate") or "")
+        report_body = report.get("report") if isinstance(report.get("report"), dict) else {}
+        mainline = report_body.get("mainline") if isinstance(report_body.get("mainline"), dict) else {}
+        try:
+            updated_at = datetime.fromtimestamp(run_dir.stat().st_mtime, tz=CN_TZ).strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            updated_at = ""
+        items.append(
+            {
+                "run_id": run_dir.name,
+                "title": f"{market_date or run_dir.name} AI当日行情",
+                "status": "done",
+                "created_at": updated_at,
+                "market_date": market_date,
+                "mainline": str(mainline.get("name") or ""),
+                "one_line_conclusion": str(report_body.get("oneLineConclusion") or ""),
+                "report_route": f"/market-day/report/{run_dir.name}",
+                "report_url": f"/api/market-day/reports/{run_dir.name}/{MARKET_DAY_REPORT_NAME}",
+            }
+        )
+    items.sort(key=lambda item: item.get("created_at") or "", reverse=True)
+    return items[:limit]
+
+
+def _read_json_file(path: Path) -> dict:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 def _recent_report_title(run_dir: Path, first: dict) -> str:

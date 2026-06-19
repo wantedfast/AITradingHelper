@@ -4,6 +4,8 @@ import base64
 import json
 import mimetypes
 import os
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +16,8 @@ from openai import OpenAI
 DEFAULT_AGENT_MODEL = "gpt-4.1-mini"
 DEFAULT_TTS_MODEL = "gpt-4o-mini-tts"
 DEFAULT_TTS_VOICE = "alloy"
+DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-pro"
 
 _CLIENT: OpenAI | None = None
 
@@ -105,6 +109,64 @@ def run_json_agent(
     except Exception as exc:
         raise _coerce_openai_agent_error(exc) from exc
     return parsed, response.id
+
+
+def run_deepseek_json_agent(
+    *,
+    system_prompt: str,
+    user_payload: dict[str, Any] | str,
+    model: str | None = None,
+    max_output_tokens: int = 1400,
+) -> tuple[dict[str, Any], str]:
+    api_key = os.getenv("DEEPSEEK_API_KEY", "").strip().lstrip("\ufeff")
+    if not api_key:
+        raise OpenAIAgentError(
+            "DeepSeek API key is not configured",
+            status_code=503,
+            retryable=False,
+            code="deepseek_not_configured",
+            user_message="AI 盯盘服务尚未配置 DeepSeek API Key，请检查本地环境变量",
+        )
+
+    user_text = user_payload if isinstance(user_payload, str) else json.dumps(user_payload, ensure_ascii=False, indent=2)
+    base_url = os.getenv("DEEPSEEK_BASE_URL", DEFAULT_DEEPSEEK_BASE_URL).strip().rstrip("/")
+    body = {
+        "model": model or os.getenv("WATCH_DEEPSEEK_MODEL") or os.getenv("WANG_JUDGE_MODEL") or os.getenv("DEEPSEEK_MODEL") or DEFAULT_DEEPSEEK_MODEL,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_text},
+        ],
+        "temperature": 0.2,
+        "max_tokens": max_output_tokens,
+        "response_format": {"type": "json_object"},
+    }
+    request = urllib.request.Request(
+        f"{base_url}/chat/completions",
+        data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=_openai_timeout_seconds()) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raise _coerce_openai_agent_error(exc) from exc
+    except Exception as exc:
+        raise _coerce_openai_agent_error(exc) from exc
+
+    content = ""
+    try:
+        content = str(payload["choices"][0]["message"]["content"])
+    except Exception as exc:
+        raise OpenAIAgentError(
+            "DeepSeek returned invalid chat completion payload",
+            status_code=502,
+            retryable=True,
+            code="deepseek_invalid_response",
+            user_message="AI 盯盘服务返回格式异常，请稍后重试",
+        ) from exc
+    response_id = str(payload.get("id") or "")
+    return _parse_json_output(content), response_id
 
 
 def run_trade_text_agent(text: str, source: str | None = None) -> list[dict[str, Any]]:

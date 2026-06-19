@@ -22,6 +22,7 @@ import {
   Settings2,
   ShieldCheck,
   Sparkles,
+  TrendingUp,
   Volume2,
   X,
 } from "lucide-react";
@@ -671,7 +672,7 @@ export default function WatchClient({ mode }: { mode: Mode }) {
   }, [events, viewMode, voiceSettings.fallback_browser_voice_hint]);
 
   return (
-    <main className="review-workbench-page watch-terminal-page">
+    <main className={`review-workbench-page watch-terminal-page ${viewMode === "result" ? "watch-review-surface" : ""}`}>
       <aside className="review-workbench-rail">
         <Link className="review-workbench-brand" href="/">
           <span className="brand-mark">盈</span>
@@ -691,6 +692,12 @@ export default function WatchClient({ mode }: { mode: Mode }) {
             <BarChart3 />
             <span>
               <b>AI 盯盘</b>
+            </span>
+          </Link>
+          <Link href="/market-day">
+            <TrendingUp />
+            <span>
+              <b>AI当日行情</b>
             </span>
           </Link>
         </nav>

@@ -3,7 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { FormEvent, useEffect, useState } from "react";
-import { BellRing, ChevronDown, Copy, FileSearch, Gift, Info, LogOut, MessageSquare, ShieldCheck, Sparkles, UserRound, X } from "lucide-react";
+import { BellRing, ChevronDown, Copy, FileSearch, Gift, Info, LogOut, MessageSquare, ShieldCheck, Sparkles, TrendingUp, UserRound, X } from "lucide-react";
 import { GoldMagicCube } from "@/components/gold-magic-cube";
 import { HomeMusic } from "@/components/home-music";
 import { apiFetch, clearAuth, getStoredUser, inviteUrl, refreshCurrentUser, type UserProfile } from "@/lib/auth-client";
@@ -26,6 +26,15 @@ const features = [
     description:
       "把复盘结论变成盘中预案，价格、涨跌幅、量能与指数环境触发后提醒交易者执行，避免临盘凭感觉改剧本。",
     points: ["预案触发", "声音提醒", "风险条件", "执行记录"],
+  },
+  {
+    href: "/market-day",
+    title: "AI当日行情",
+    label: "Market Day",
+    icon: TrendingUp,
+    description:
+      "默认复盘今天 A股全市场，先由 Doubao 搜索行情主线、涨停潮和连板梯队，再由 Judge 判断主线内最强势个股。",
+    points: ["当日主线", "强势个股", "龙头中军判断", "证据链复盘"],
   },
 ];
 
@@ -116,6 +125,7 @@ export default function Page() {
             </button>
             <Link href="/review">AI 复盘</Link>
             <Link href="/watch">AI 盯盘</Link>
+            <Link href="/market-day">AI当日行情</Link>
             {hydrated && user?.role === "admin" && <Link href="/admin">管理台</Link>}
             {hydrated && user ? (
               <div className="home-user-menu">
@@ -228,34 +238,36 @@ export default function Page() {
             />
             <h2 className="feature-section-title">看懂市场涨跌</h2>
             <div className="feature-shell__glow" />
-            <div className="feature-grid">
-              {features.map((feature) => {
-                const Icon = feature.icon;
-                return (
-                  <Link className="feature-card feature-card--glass" href={feature.href} key={feature.title}>
-                    <div className="feature-card__glow" />
-                    <div className="feature-card__shine" />
-                    <div className="feature-top">
-                      <div className="feature-icon">
-                        <Icon className="h-6 w-6" />
+            <div className="feature-carousel">
+              <div className="feature-grid">
+                {features.map((feature) => {
+                  const Icon = feature.icon;
+                  return (
+                    <Link className="feature-card feature-card--glass" href={feature.href} key={feature.title}>
+                      <div className="feature-card__glow" />
+                      <div className="feature-card__shine" />
+                      <div className="feature-top">
+                        <div className="feature-icon">
+                          <Icon className="h-6 w-6" />
+                        </div>
+                        <div>
+                          <span>{feature.label}</span>
+                          <h3>{feature.title}</h3>
+                        </div>
                       </div>
-                      <div>
-                        <span>{feature.label}</span>
-                        <h3>{feature.title}</h3>
-                      </div>
-                    </div>
-                    <p>{feature.description}</p>
-                    <ul>
-                      {feature.points.map((point) => (
-                        <li key={point}>
-                          <ShieldCheck className="h-4 w-4" />
-                          {point}
-                        </li>
-                      ))}
-                    </ul>
-                  </Link>
-                );
-              })}
+                      <p>{feature.description}</p>
+                      <ul>
+                        {feature.points.map((point) => (
+                          <li key={point}>
+                            <ShieldCheck className="h-4 w-4" />
+                            {point}
+                          </li>
+                        ))}
+                      </ul>
+                    </Link>
+                  );
+                })}
+              </div>
             </div>
           </div>
         </section>

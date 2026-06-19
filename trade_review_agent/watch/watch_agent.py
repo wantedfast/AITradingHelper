@@ -14,7 +14,7 @@ from trade_review_agent.watch.alert_tts import synthesize_edge_tts
 from trade_review_agent.common.cache_policy import report_cache_disabled
 from trade_review_agent.market.data_provider import MarketDataProvider
 from trade_review_agent.market.industry_profiles import get_profile
-from trade_review_agent.common.openai_agent_api import run_json_agent, synthesize_openai_speech
+from trade_review_agent.common.openai_agent_api import run_deepseek_json_agent, synthesize_openai_speech
 from trade_review_agent.market.stock_resolver import resolve_stock_code
 from trade_review_agent.watch.voice_settings import VoiceSettings, default_voice_settings
 
@@ -96,7 +96,7 @@ def build_watch_plan(
         },
         "task": "生成次日盯盘预案，返回结构化价格条件、动作、交易假设和一句适合语音提醒的话。",
     }
-    parsed, response_id = run_json_agent(
+    parsed, response_id = run_deepseek_json_agent(
         system_prompt=(
             "You are an A-share next-day watch plan agent. "
             "Return JSON only. "
@@ -156,7 +156,7 @@ def narrate_alert_event(
         "task": "基于既有预案，把这次盘中触发事件改写成更自然的提醒文案和语音播报文案。",
     }
     previous_response_id = event.plan.agent_response_id or None
-    parsed, response_id = run_json_agent(
+    parsed, response_id = run_deepseek_json_agent(
         system_prompt=(
             "You are an intraday alert narration agent. "
             "Return JSON only. "
