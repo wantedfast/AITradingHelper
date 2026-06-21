@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { ArrowLeft, Loader2, RefreshCcw, ShieldCheck, TrendingUp } from "lucide-react";
+import { ArrowLeft, BarChart3, FileUp, Loader2, RefreshCcw, ShieldCheck, TrendingUp, Trophy } from "lucide-react";
 import { getAuthToken } from "@/lib/auth-client";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || (process.env.NODE_ENV === "development" ? "http://127.0.0.1:8600" : "");
@@ -133,9 +133,21 @@ export default function MarketDayReportPage() {
           </span>
         </Link>
         <nav className="review-workbench-nav" aria-label="核心功能">
+          <Link href="/review">
+            <FileUp />
+            <span><b>AI复盘</b></span>
+          </Link>
+          <Link href="/watch">
+            <BarChart3 />
+            <span><b>AI盯盘</b></span>
+          </Link>
           <Link className="active" href="/market-day">
             <TrendingUp />
             <span><b>AI当日行情</b></span>
+          </Link>
+          <Link href="/auction-strength">
+            <Trophy />
+            <span><b>竞价强者</b></span>
           </Link>
         </nav>
       </aside>
