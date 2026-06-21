@@ -4,14 +4,11 @@ import { useEffect, useMemo, useRef, useState, type ChangeEvent, type Dispatch, 
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
-  BarChart3,
   BellRing,
   CalendarDays,
   ChevronLeft,
   Clock3,
-  FileUp,
   ImageUp,
-  Info,
   List,
   Loader2,
   PauseCircle,
@@ -22,11 +19,10 @@ import {
   Settings2,
   ShieldCheck,
   Sparkles,
-  TrendingUp,
-  Trophy,
   Volume2,
   X,
 } from "lucide-react";
+import { FeatureSidebar } from "@/components/feature-sidebar";
 import { getAuthToken, storeUser, type UserProfile } from "@/lib/auth-client";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || (process.env.NODE_ENV === "development" ? "http://127.0.0.1:8600" : "");
@@ -674,45 +670,11 @@ export default function WatchClient({ mode }: { mode: Mode }) {
 
   return (
     <main className={`review-workbench-page watch-terminal-page ${viewMode === "result" ? "watch-review-surface" : ""}`}>
-      <aside className="review-workbench-rail">
-        <Link className="review-workbench-brand" href="/">
-          <span className="brand-mark">盈</span>
-          <span>
-            <b>盈航</b>
-            <small>WATCH TERMINAL</small>
-          </span>
-        </Link>
-        <nav className="review-workbench-nav" aria-label="核心功能">
-          <Link href="/review">
-            <FileUp />
-            <span>
-              <b>AI 复盘</b>
-            </span>
-          </Link>
-          <Link className="active" href={requestedPlanId ? `/watch?planId=${encodeURIComponent(requestedPlanId)}` : "/watch"}>
-            <BarChart3 />
-            <span>
-              <b>AI 盯盘</b>
-            </span>
-          </Link>
-          <Link href="/market-day">
-            <TrendingUp />
-            <span>
-              <b>AI当日行情</b>
-            </span>
-          </Link>
-          <Link href="/auction-strength">
-            <Trophy />
-            <span>
-              <b>竞价强者</b>
-            </span>
-          </Link>
-        </nav>
-        <div className="review-rail-note">
-          <Info />
-          <span>把复盘结论沉淀为盘中预案，用纪律替代临盘情绪。</span>
-        </div>
-      </aside>
+      <FeatureSidebar
+        active="watch"
+        note="把复盘结论沉淀为盘中预案，用纪律替代临盘情绪。"
+        watchHref={requestedPlanId ? `/watch?planId=${encodeURIComponent(requestedPlanId)}` : "/watch"}
+      />
 
       <section className="review-workbench-main">
         <header className="review-workbench-topbar">

@@ -5628,6 +5628,18 @@ button.radar-core,
   gap: 12px;
 }
 
+.feature-sidebar-brand {
+  gap: 10px;
+}
+
+.feature-sidebar-brand img {
+  width: 72px;
+  height: 72px;
+  flex: 0 0 auto;
+  object-fit: contain;
+  filter: drop-shadow(0 0 18px rgba(242, 207, 103, 0.16));
+}
+
 :is(.review-workbench-brand, .review-console-brand) .brand-mark {
   width: 42px;
   height: 42px;
@@ -11003,6 +11015,40 @@ button.radar-core,
   font-size: 20px;
 }
 
+.auction-module-title {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+
+.auction-title-icon {
+  display: grid;
+  place-items: center;
+  width: 62px;
+  height: 62px;
+  flex: 0 0 auto;
+  border: 1px solid rgba(245, 199, 107, 0.32);
+  border-radius: 12px;
+  color: #f5c76b;
+  background: rgba(245, 199, 107, 0.1);
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.22);
+}
+
+.auction-module-title b {
+  margin: 0;
+  color: #fbfbef;
+  font-size: 26px;
+  line-height: 1.18;
+}
+
+.auction-module-title small {
+  margin-left: 4px;
+  color: rgba(243, 246, 238, 0.62);
+  font-size: 15px;
+  font-weight: 700;
+}
+
 .auction-date-picker {
   display: inline-flex;
   align-items: center;
@@ -11028,15 +11074,16 @@ button.radar-core,
   outline: none;
 }
 
+.auction-home-link,
 .auction-refresh-button {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  gap: 8px;
-  min-height: 42px;
+  justify-content: flex-start;
+  gap: 10px;
+  min-height: 54px;
   border: 1px solid rgba(245, 199, 107, 0.24);
   border-radius: 8px;
-  padding: 0 13px;
+  padding: 10px 13px;
   color: #fde68a;
   background: rgba(245, 199, 107, 0.08);
   font: inherit;
@@ -11044,6 +11091,32 @@ button.radar-core,
   cursor: pointer;
 }
 
+.auction-home-link {
+  color: #fbfbef;
+  text-decoration: none;
+}
+
+.auction-home-link span,
+.auction-refresh-button span {
+  display: grid;
+  gap: 2px;
+}
+
+.auction-home-link b,
+.auction-refresh-button b {
+  color: #fbfbef;
+  font-size: 15px;
+  line-height: 1.1;
+}
+
+.auction-home-link small,
+.auction-refresh-button small {
+  color: rgba(243, 246, 238, 0.62);
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.auction-home-link:hover,
 .auction-refresh-button:hover {
   border-color: rgba(245, 199, 107, 0.4);
   background: rgba(245, 199, 107, 0.13);
@@ -11377,6 +11450,7 @@ button.radar-core,
   }
 
   .auction-date-picker,
+  .auction-home-link,
   .auction-refresh-button {
     width: 100%;
     justify-content: flex-start;

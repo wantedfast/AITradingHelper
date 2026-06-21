@@ -1,9 +1,9 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ArrowRight, BarChart3, CalendarDays, FileUp, Info, Loader2, RefreshCcw, TrendingUp, Trophy } from "lucide-react";
+import { ArrowRight, CalendarDays, Loader2, RefreshCcw, TrendingUp } from "lucide-react";
+import { FeatureSidebar } from "@/components/feature-sidebar";
 import { getAuthToken, storeUser } from "@/lib/auth-client";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || (process.env.NODE_ENV === "development" ? "http://127.0.0.1:8600" : "");
@@ -189,37 +189,7 @@ export default function MarketDayPage() {
 
   return (
     <main className="review-workbench-page market-day-page">
-      <aside className="review-workbench-rail">
-        <Link className="review-workbench-brand" href="/">
-          <span className="brand-mark">盈</span>
-          <span>
-            <b>盈航</b>
-            <small>MARKET DAY</small>
-          </span>
-        </Link>
-        <nav className="review-workbench-nav" aria-label="核心功能">
-          <Link href="/review">
-            <FileUp />
-            <span><b>AI复盘</b></span>
-          </Link>
-          <Link href="/watch">
-            <BarChart3 />
-            <span><b>AI盯盘</b></span>
-          </Link>
-          <Link className="active" href="/market-day">
-            <TrendingUp />
-            <span><b>AI当日行情</b></span>
-          </Link>
-          <Link href="/auction-strength">
-            <Trophy />
-            <span><b>竞价强者</b></span>
-          </Link>
-        </nav>
-        <div className="review-rail-note">
-          <Info />
-          <span>默认复盘今天 A股全市场，先找主线，再判断主线内最强个股。</span>
-        </div>
-      </aside>
+      <FeatureSidebar active="market-day" note="默认复盘今天 A股全市场，先找主线，再判断主线内最强个股。" />
 
       <section className="review-workbench-main">
         <header className="review-workbench-topbar">
