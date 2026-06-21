@@ -10989,6 +10989,14 @@ button.radar-core,
   margin-bottom: 22px;
 }
 
+.auction-topbar-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
 .auction-topbar b {
   display: block;
   margin-top: 4px;
@@ -11018,6 +11026,32 @@ button.radar-core,
   font: inherit;
   font-weight: 800;
   outline: none;
+}
+
+.auction-refresh-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 42px;
+  border: 1px solid rgba(245, 199, 107, 0.24);
+  border-radius: 8px;
+  padding: 0 13px;
+  color: #fde68a;
+  background: rgba(245, 199, 107, 0.08);
+  font: inherit;
+  font-weight: 850;
+  cursor: pointer;
+}
+
+.auction-refresh-button:hover {
+  border-color: rgba(245, 199, 107, 0.4);
+  background: rgba(245, 199, 107, 0.13);
+}
+
+.auction-refresh-button:disabled {
+  cursor: wait;
+  opacity: 0.72;
 }
 
 .auction-hero,
@@ -11329,18 +11363,21 @@ button.radar-core,
 
   .auction-topbar,
   .auction-nav,
+  .auction-topbar-actions,
   .auction-status-strip,
   .auction-stock-card header {
     grid-template-columns: 1fr;
   }
 
   .auction-topbar,
+  .auction-topbar-actions,
   .auction-stock-card header {
     align-items: flex-start;
     flex-direction: column;
   }
 
-  .auction-date-picker {
+  .auction-date-picker,
+  .auction-refresh-button {
     width: 100%;
     justify-content: flex-start;
   }

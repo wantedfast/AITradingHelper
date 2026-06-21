@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
-import { ArrowLeft, BarChart3, CalendarDays, Flame, Loader2, RefreshCcw, ShieldAlert, Trophy } from "lucide-react";
+import { BarChart3, CalendarDays, FileUp, Flame, Info, Loader2, RefreshCcw, ShieldAlert, TrendingUp, Trophy } from "lucide-react";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || (process.env.NODE_ENV === "development" ? "http://127.0.0.1:8600" : "");
 
@@ -147,33 +147,37 @@ export default function AuctionStrengthPage() {
   }, [isToday, loadReports]);
 
   return (
-    <main className="auction-page">
-      <aside className="auction-rail">
-        <Link className="auction-brand" href="/">
-          <span className="brand-mark">
-            <Trophy className="h-5 w-5" />
-          </span>
+    <main className="review-workbench-page auction-page">
+      <aside className="review-workbench-rail">
+        <Link className="review-workbench-brand" href="/">
+          <span className="brand-mark">盈</span>
           <span>
-            <b>竞价强者</b>
-            <small>09:25 强弱映射</small>
+            <b>盈航</b>
+            <small>MARKET DAY</small>
           </span>
         </Link>
-        <nav className="auction-nav" aria-label="auction strength navigation">
-          <Link href="/">
-            <ArrowLeft className="h-5 w-5" />
-            <span>
-              <b>返回首页</b>
-              <small>回到盈航主界面</small>
-            </span>
+        <nav className="review-workbench-nav" aria-label="核心功能">
+          <Link href="/review">
+            <FileUp />
+            <span><b>AI复盘</b></span>
           </Link>
-          <button type="button" onClick={() => loadReports()} disabled={loading}>
-            {loading ? <Loader2 className="spin-icon" /> : <RefreshCcw className="h-5 w-5" />}
-            <span>
-              <b>刷新数据</b>
-              <small>{isToday ? "当日自动刷新中" : "读取所选日期"}</small>
-            </span>
-          </button>
+          <Link href="/watch">
+            <BarChart3 />
+            <span><b>AI盯盘</b></span>
+          </Link>
+          <Link href="/market-day">
+            <TrendingUp />
+            <span><b>AI当日行情</b></span>
+          </Link>
+          <Link className="active" href="/auction-strength">
+            <Trophy />
+            <span><b>竞价强者</b></span>
+          </Link>
         </nav>
+        <div className="review-rail-note">
+          <Info />
+          <span>接收 09:25 集合竞价后的强弱 JSON，映射 Top5 强势标的、回避标的和 9:30 执行重点。</span>
+        </div>
       </aside>
 
       <section className="auction-main">
@@ -182,10 +186,16 @@ export default function AuctionStrengthPage() {
             <span>AUCTION STRENGTH</span>
             <b>竞价强者数据看板</b>
           </div>
-          <label className="auction-date-picker">
-            <CalendarDays className="h-4 w-4" />
-            <input type="date" value={selectedDate} onChange={(event) => setSelectedDate(event.target.value)} />
-          </label>
+          <div className="auction-topbar-actions">
+            <label className="auction-date-picker">
+              <CalendarDays className="h-4 w-4" />
+              <input type="date" value={selectedDate} onChange={(event) => setSelectedDate(event.target.value)} />
+            </label>
+            <button className="auction-refresh-button" type="button" onClick={() => loadReports()} disabled={loading}>
+              {loading ? <Loader2 className="spin-icon" /> : <RefreshCcw className="h-4 w-4" />}
+              <span>{isToday ? "当日刷新" : "刷新所选日期"}</span>
+            </button>
+          </div>
         </header>
 
         <section className="auction-hero">
