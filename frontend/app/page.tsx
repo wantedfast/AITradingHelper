@@ -3,7 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { FormEvent, useEffect, useState } from "react";
-import { BellRing, ChevronDown, Copy, FileSearch, Gift, Info, LogOut, MessageSquare, ShieldCheck, Sparkles, TrendingUp, UserRound, X } from "lucide-react";
+import { BellRing, ChevronDown, Copy, FileSearch, Gift, Info, LogOut, MessageSquare, ShieldCheck, Sparkles, TrendingUp, Trophy, UserRound, X } from "lucide-react";
 import { GoldMagicCube } from "@/components/gold-magic-cube";
 import { HomeMusic } from "@/components/home-music";
 import { apiFetch, clearAuth, getStoredUser, inviteUrl, refreshCurrentUser, type UserProfile } from "@/lib/auth-client";
@@ -35,6 +35,15 @@ const features = [
     description:
       "默认复盘今天 A股全市场，先由 Doubao 搜索行情主线、涨停潮和连板梯队，再由 Judge 判断主线内最强势个股。",
     points: ["当日主线", "强势个股", "龙头中军判断", "证据链复盘"],
+  },
+  {
+    href: "/auction-strength",
+    title: "竞价强者",
+    label: "Auction Strength",
+    icon: Trophy,
+    description:
+      "接收 09:25 集合竞价后的强弱 JSON，展示 Top5 强势标的、回避标的、最强题材和 9:30 执行重点。",
+    points: ["强者排序", "负反馈回避", "题材结论", "原始 JSON"],
   },
 ];
 
@@ -126,6 +135,7 @@ export default function Page() {
             <Link href="/review">AI 复盘</Link>
             <Link href="/watch">AI 盯盘</Link>
             <Link href="/market-day">AI当日行情</Link>
+            <Link href="/auction-strength">竞价强者</Link>
             {hydrated && user?.role === "admin" && <Link href="/admin">管理台</Link>}
             {hydrated && user ? (
               <div className="home-user-menu">

@@ -23,6 +23,7 @@ import {
   ShieldCheck,
   Sparkles,
   TrendingUp,
+  Trophy,
   Volume2,
   X,
 } from "lucide-react";
@@ -698,6 +699,12 @@ export default function WatchClient({ mode }: { mode: Mode }) {
             <TrendingUp />
             <span>
               <b>AI当日行情</b>
+            </span>
+          </Link>
+          <Link href="/auction-strength">
+            <Trophy />
+            <span>
+              <b>竞价强者</b>
             </span>
           </Link>
         </nav>
