@@ -1275,7 +1275,9 @@ h1 {
   position: relative;
   z-index: 1;
   width: 100%;
-  overflow: visible;
+  overflow: hidden;
+  padding: 0 0 10px;
+  mask-image: linear-gradient(90deg, transparent 0, black 6%, black 94%, transparent 100%);
 }
 
 .feature-grid {
@@ -8758,18 +8760,20 @@ button.radar-core,
 }
 
 .feature-grid {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  width: min(100%, 1840px);
-  max-width: 1840px;
+  display: flex;
+  grid-template-columns: none;
+  width: max-content;
+  max-width: none;
   align-items: stretch;
-  gap: 16px;
-  animation: none;
+  gap: 20px;
+  animation: featureMarquee 26s linear infinite;
+  will-change: transform;
 }
 
 .feature-card {
+  flex: 0 0 clamp(310px, 23vw, 430px);
   min-height: 230px;
   padding: 18px;
-  animation: none;
   will-change: transform;
 }
 
@@ -8847,6 +8851,15 @@ button.radar-core,
   }
   66% {
     transform: translate3d(0, 8px, 0);
+  }
+}
+
+@keyframes featureMarquee {
+  from {
+    transform: translate3d(0, 0, 0);
+  }
+  to {
+    transform: translate3d(calc(-50% - 10px), 0, 0);
   }
 }
 

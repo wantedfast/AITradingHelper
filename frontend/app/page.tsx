@@ -95,6 +95,7 @@ export default function Page() {
   }
 
   const currentInviteUrl = hydrated && user ? inviteUrl(user) : "";
+  const featureSlides = [...features, ...features];
 
   async function submitFeedback(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -250,10 +251,17 @@ export default function Page() {
             <div className="feature-shell__glow" />
             <div className="feature-carousel">
               <div className="feature-grid">
-                {features.map((feature) => {
+                {featureSlides.map((feature, index) => {
                   const Icon = feature.icon;
+                  const isDuplicate = index >= features.length;
                   return (
-                    <Link className="feature-card feature-card--glass" href={feature.href} key={feature.title}>
+                    <Link
+                      aria-hidden={isDuplicate}
+                      className="feature-card feature-card--glass"
+                      href={feature.href}
+                      key={`${feature.title}-${index}`}
+                      tabIndex={isDuplicate ? -1 : undefined}
+                    >
                       <div className="feature-card__glow" />
                       <div className="feature-card__shine" />
                       <div className="feature-top">
