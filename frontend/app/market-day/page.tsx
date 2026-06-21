@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ArrowRight, BarChart3, CalendarDays, FileUp, Info, Loader2, RefreshCcw, TrendingUp } from "lucide-react";
+import { ArrowRight, BarChart3, CalendarDays, FileUp, Info, Loader2, RefreshCcw, TrendingUp, Trophy } from "lucide-react";
 import { getAuthToken, storeUser } from "@/lib/auth-client";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || (process.env.NODE_ENV === "development" ? "http://127.0.0.1:8600" : "");
@@ -209,6 +209,10 @@ export default function MarketDayPage() {
           <Link className="active" href="/market-day">
             <TrendingUp />
             <span><b>AI当日行情</b></span>
+          </Link>
+          <Link href="/auction-strength">
+            <Trophy />
+            <span><b>竞价强者</b></span>
           </Link>
         </nav>
         <div className="review-rail-note">

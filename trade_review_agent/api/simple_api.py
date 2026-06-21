@@ -59,6 +59,8 @@ ALERT_PLANS = BASE_DIR / "work" / "alert_plans.json"
 VOICE_SETTINGS_PATH = BASE_DIR / "work" / "watch_voice_settings.json"
 WATCH_AUDIO_DIR = BASE_DIR / "work" / "tts"
 WATCH_SEEN_EVENTS = BASE_DIR / "work" / "watch_seen_events.json"
+WEBHOOK_EVENTS_PATH = BASE_DIR / "work" / "webhook_events.jsonl"
+AUCTION_STRENGTH_PATH = BASE_DIR / "work" / "auction_strength_reports.jsonl"
 API_ERROR_LOG = BASE_DIR / "work" / "api_errors.log"
 AUTH_DB = BASE_DIR / "work" / "auth.sqlite"
 CN_TZ = ZoneInfo("Asia/Shanghai")
@@ -113,6 +115,12 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/market-day/reports":
                 self._list_market_day_reports()
+                return
+            if path == "/api/webhooks":
+                self._list_webhooks()
+                return
+            if path == "/api/auction-strength":
+                self._list_auction_strength_reports()
                 return
             if path.startswith("/api/market-day/reports/"):
                 self._serve_market_day_report(path)
@@ -178,6 +186,12 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/market-day/reports":
                 self._create_market_day_report()
+                return
+            if path == "/api/webhooks":
+                self._receive_webhook()
+                return
+            if path == "/api/auction-strength":
+                self._receive_auction_strength_report()
                 return
             if path == "/api/watch/plans":
                 self._create_watch_plan()
@@ -268,6 +282,72 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                 except ValueError:
                     limit = 30
         self._json({"reports": _recent_market_day_report_summaries(limit=limit)})
+
+    def _list_webhooks(self) -> None:
+        limit = 30
+        query = urlparse(self.path).query
+        for part in query.split("&"):
+            key, _, value = part.partition("=")
+            if key == "limit":
+                try:
+                    limit = max(1, min(200, int(value)))
+                except ValueError:
+                    limit = 30
+        events = _recent_webhook_events(WEBHOOK_EVENTS_PATH, limit=limit)
+        self._json({"events": events, "count": len(events), "total": _webhook_event_count(WEBHOOK_EVENTS_PATH)})
+
+    def _receive_webhook(self) -> None:
+        _assert_webhook_secret(
+            expected=os.getenv("WEBHOOK_SECRET", ""),
+            header_value=self.headers.get("x-webhook-secret", ""),
+            query=urlparse(self.path).query,
+        )
+        event = _webhook_event_from_request(
+            payload=self._read_webhook_payload(),
+            headers={key.lower(): value for key, value in self.headers.items()},
+            source_ip=self._client_ip(),
+            request_id=getattr(self, "_request_id", ""),
+        )
+        _append_webhook_event(WEBHOOK_EVENTS_PATH, event)
+        self._json({"ok": True, "event": _webhook_public_event(event)}, status=202)
+
+    def _list_auction_strength_reports(self) -> None:
+        limit = 20
+        trade_date = ""
+        query = urlparse(self.path).query
+        for part in query.split("&"):
+            key, _, value = part.partition("=")
+            if key == "limit":
+                try:
+                    limit = max(1, min(100, int(value)))
+                except ValueError:
+                    limit = 20
+            if key == "date":
+                raw_trade_date = unquote(value).strip()
+                if raw_trade_date:
+                    try:
+                        trade_date = normalize_market_date(raw_trade_date)
+                    except ValueError:
+                        self._json({"error": "invalid date, expected YYYY-MM-DD"}, status=400)
+                        return
+        reports = _recent_auction_strength_reports(AUCTION_STRENGTH_PATH, limit=limit, trade_date=trade_date)
+        total = _auction_strength_report_count(AUCTION_STRENGTH_PATH, trade_date=trade_date)
+        self._json({"latest": reports[0] if reports else None, "reports": reports, "count": len(reports), "total": total})
+
+    def _receive_auction_strength_report(self) -> None:
+        _assert_webhook_secret(
+            expected=os.getenv("AUCTION_STRENGTH_SECRET", os.getenv("WEBHOOK_SECRET", "")),
+            header_value=self.headers.get("x-auction-strength-secret", "") or self.headers.get("x-webhook-secret", ""),
+            query=urlparse(self.path).query,
+        )
+        payload = self._read_json_body()
+        report = _auction_strength_report_from_payload(
+            payload=payload,
+            source_ip=self._client_ip(),
+            request_id=getattr(self, "_request_id", ""),
+        )
+        _append_webhook_event(AUCTION_STRENGTH_PATH, report)
+        self._json({"ok": True, "report": _auction_strength_public_report(report)}, status=202)
 
     def _auth_register(self) -> None:
         payload = self._read_json_body()
@@ -621,6 +701,22 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             raise ValueError("JSON body must be an object")
         return payload
 
+    def _read_webhook_payload(self) -> object:
+        content_length = int(self.headers.get("content-length", "0") or 0)
+        if content_length <= 0:
+            return {}
+        raw = self.rfile.read(content_length)
+        if not raw.strip():
+            return {}
+        content_type = self.headers.get("content-type", "")
+        text = raw.decode("utf-8", errors="replace")
+        if "application/json" in content_type or text.strip().startswith(("{", "[")):
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError as exc:
+                raise ValueError("invalid webhook JSON body") from exc
+        return {"raw_text": text}
+
     def _read_multipart_file(self, content_type: str) -> tuple[str, bytes | None]:
         filename, data, _ = self._read_multipart_form(content_type)
         return filename, data
@@ -765,7 +861,7 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
     def _cors_headers(self) -> None:
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Webhook-Secret, X-Auction-Strength-Secret")
 
     def _begin_request(self) -> None:
         self._request_id = uuid4().hex
@@ -1661,6 +1757,338 @@ def _recent_market_day_report_summaries(*, limit: int = 30) -> list[dict]:
         )
     items.sort(key=lambda item: item.get("created_at") or "", reverse=True)
     return items[:limit]
+
+
+def _auction_strength_report_from_payload(*, payload: dict, source_ip: str, request_id: str) -> dict:
+    if not isinstance(payload, dict):
+        raise ValueError("auction strength payload must be a JSON object")
+    trade_date = str(payload.get("trade_date") or "").strip()
+    analysis_time = str(payload.get("analysis_time") or "").strip()
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    conclusion = payload.get("global_conclusion") if isinstance(payload.get("global_conclusion"), dict) else {}
+    strong_stocks = _auction_stock_items(payload.get("top5_strong_stocks"), mode="strong")
+    avoid_stocks = _auction_stock_items(payload.get("top5_avoid_stocks"), mode="avoid")
+    return {
+        "id": uuid4().hex,
+        "request_id": request_id,
+        "received_at": datetime.now(CN_TZ).strftime("%Y-%m-%d %H:%M:%S"),
+        "source_ip": source_ip,
+        "trade_date": trade_date,
+        "analysis_time": analysis_time,
+        "summary": {
+            "one_sentence": _short_text(summary.get("one_sentence") if isinstance(summary, dict) else "", 500),
+            "selection_logic": _short_text(summary.get("selection_logic") if isinstance(summary, dict) else "", 800),
+            "data_limit": _short_text(summary.get("data_limit") if isinstance(summary, dict) else "", 800),
+        },
+        "top5_strong_stocks": strong_stocks,
+        "top5_avoid_stocks": avoid_stocks,
+        "global_conclusion": {
+            "strongest_stock_at_925": _short_text(conclusion.get("strongest_stock_at_925") if isinstance(conclusion, dict) else "", 80),
+            "strongest_theme_cluster": _short_text(conclusion.get("strongest_theme_cluster") if isinstance(conclusion, dict) else "", 120),
+            "most_over_expected_stock": _short_text(conclusion.get("most_over_expected_stock") if isinstance(conclusion, dict) else "", 80),
+            "best_capacity_confirmation": _short_text(conclusion.get("best_capacity_confirmation") if isinstance(conclusion, dict) else "", 80),
+            "biggest_negative_feedback": _short_text(conclusion.get("biggest_negative_feedback") if isinstance(conclusion, dict) else "", 80),
+            "one_sentence_for_930": _short_text(conclusion.get("one_sentence_for_930") if isinstance(conclusion, dict) else "", 500),
+        },
+        "raw_payload": payload,
+    }
+
+
+def _auction_stock_items(value: object, *, mode: str) -> list[dict]:
+    if not isinstance(value, list):
+        return []
+    items: list[dict] = []
+    for index, raw_item in enumerate(value[:20], start=1):
+        if not isinstance(raw_item, dict):
+            continue
+        follow_key = "observe_after_930" if mode == "strong" else "risk_after_930"
+        items.append(
+            {
+                "rank": _safe_rank(raw_item.get("rank"), fallback=index),
+                "code": _short_text(raw_item.get("code"), 16),
+                "name": _short_text(raw_item.get("name"), 80),
+                "theme": _short_text(raw_item.get("theme"), 120),
+                "today_open_change": _short_text(raw_item.get("today_open_change"), 40),
+                "label": _short_text(raw_item.get("label"), 80),
+                "theme_level": _short_text(raw_item.get("theme_level"), 120),
+                "reason": _short_text(raw_item.get("reason"), 800),
+                follow_key: _short_text(raw_item.get(follow_key), 800),
+            }
+        )
+    items.sort(key=lambda item: item["rank"])
+    return items
+
+
+def _safe_rank(value: object, *, fallback: int) -> int:
+    try:
+        rank = int(value)
+    except Exception:
+        return fallback
+    return rank if rank > 0 else fallback
+
+
+def _recent_auction_strength_reports(path: Path, *, limit: int = 20, trade_date: str = "") -> list[dict]:
+    if not path.exists():
+        return []
+    reports: list[dict] = []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return []
+    for line in reversed(lines):
+        if not line.strip():
+            continue
+        try:
+            report = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(report, dict):
+            public_report = _auction_strength_public_report(report)
+            if trade_date and public_report.get("trade_date") != trade_date:
+                continue
+            reports.append(public_report)
+        if len(reports) >= limit:
+            break
+    return reports
+
+
+def _auction_strength_report_count(path: Path, *, trade_date: str = "") -> int:
+    if not path.exists():
+        return 0
+    total = 0
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return 0
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            report = json.loads(line)
+        except Exception:
+            continue
+        if not isinstance(report, dict):
+            continue
+        if trade_date and str(report.get("trade_date") or "").strip() != trade_date:
+            continue
+        total += 1
+    return total
+
+
+def _auction_strength_public_report(report: dict) -> dict:
+    summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+    conclusion = report.get("global_conclusion") if isinstance(report.get("global_conclusion"), dict) else {}
+    return {
+        "id": str(report.get("id") or ""),
+        "request_id": str(report.get("request_id") or ""),
+        "received_at": str(report.get("received_at") or ""),
+        "source_ip": str(report.get("source_ip") or ""),
+        "trade_date": str(report.get("trade_date") or ""),
+        "analysis_time": str(report.get("analysis_time") or ""),
+        "summary": {
+            "one_sentence": str(summary.get("one_sentence") or ""),
+            "selection_logic": str(summary.get("selection_logic") or ""),
+            "data_limit": str(summary.get("data_limit") or ""),
+        },
+        "top5_strong_stocks": _public_auction_stock_items(report.get("top5_strong_stocks"), follow_key="observe_after_930"),
+        "top5_avoid_stocks": _public_auction_stock_items(report.get("top5_avoid_stocks"), follow_key="risk_after_930"),
+        "global_conclusion": {
+            "strongest_stock_at_925": str(conclusion.get("strongest_stock_at_925") or ""),
+            "strongest_theme_cluster": str(conclusion.get("strongest_theme_cluster") or ""),
+            "most_over_expected_stock": str(conclusion.get("most_over_expected_stock") or ""),
+            "best_capacity_confirmation": str(conclusion.get("best_capacity_confirmation") or ""),
+            "biggest_negative_feedback": str(conclusion.get("biggest_negative_feedback") or ""),
+            "one_sentence_for_930": str(conclusion.get("one_sentence_for_930") or ""),
+        },
+        "raw_payload": report.get("raw_payload") if "raw_payload" in report else {},
+    }
+
+
+def _public_auction_stock_items(value: object, *, follow_key: str) -> list[dict]:
+    if not isinstance(value, list):
+        return []
+    items = []
+    for raw_item in value:
+        if not isinstance(raw_item, dict):
+            continue
+        items.append(
+            {
+                "rank": _safe_rank(raw_item.get("rank"), fallback=len(items) + 1),
+                "code": str(raw_item.get("code") or ""),
+                "name": str(raw_item.get("name") or ""),
+                "theme": str(raw_item.get("theme") or ""),
+                "today_open_change": str(raw_item.get("today_open_change") or ""),
+                "label": str(raw_item.get("label") or ""),
+                "theme_level": str(raw_item.get("theme_level") or ""),
+                "reason": str(raw_item.get("reason") or ""),
+                follow_key: str(raw_item.get(follow_key) or ""),
+            }
+        )
+    items.sort(key=lambda item: item["rank"])
+    return items
+
+
+def _assert_webhook_secret(*, expected: str, header_value: str, query: str) -> None:
+    expected = expected.strip()
+    if not expected:
+        return
+    query_secret = ""
+    for part in query.split("&"):
+        key, _, value = part.partition("=")
+        if key in {"secret", "token"}:
+            query_secret = unquote(value)
+            break
+    if header_value.strip() != expected and query_secret.strip() != expected:
+        raise AuthError("webhook secret mismatch", status=401)
+
+
+def _webhook_event_from_request(*, payload: object, headers: dict[str, str], source_ip: str, request_id: str) -> dict:
+    received_at = datetime.now(CN_TZ).strftime("%Y-%m-%d %H:%M:%S")
+    normalized = _normalize_webhook_payload(payload, headers)
+    return {
+        "id": uuid4().hex,
+        "request_id": request_id,
+        "received_at": received_at,
+        "source_ip": source_ip,
+        "source": normalized["source"],
+        "event_type": normalized["event_type"],
+        "title": normalized["title"],
+        "summary": normalized["summary"],
+        "payload": payload,
+        "headers": _safe_webhook_headers(headers),
+    }
+
+
+def _normalize_webhook_payload(payload: object, headers: dict[str, str]) -> dict[str, str]:
+    data = payload if isinstance(payload, dict) else {}
+    source = _first_text(
+        data.get("source"),
+        data.get("platform"),
+        data.get("provider"),
+        data.get("app"),
+        headers.get("x-webhook-source"),
+        headers.get("user-agent"),
+        "unknown",
+    )
+    event_type = _first_text(
+        data.get("event"),
+        data.get("event_type"),
+        data.get("type"),
+        data.get("action"),
+        headers.get("x-event-type"),
+        "message",
+    )
+    title = _first_text(
+        data.get("title"),
+        data.get("name"),
+        data.get("subject"),
+        data.get("message"),
+        data.get("text"),
+        f"{source} / {event_type}",
+    )
+    summary = _first_text(
+        data.get("summary"),
+        data.get("description"),
+        data.get("content"),
+        data.get("message"),
+        data.get("text"),
+        _short_json(payload, 220),
+    )
+    return {
+        "source": _short_text(source, 80),
+        "event_type": _short_text(event_type, 80),
+        "title": _short_text(title, 140),
+        "summary": _short_text(summary, 260),
+    }
+
+
+def _append_webhook_event(path: Path, event: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
+
+
+def _recent_webhook_events(path: Path, *, limit: int = 30) -> list[dict]:
+    if not path.exists():
+        return []
+    events: list[dict] = []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return []
+    for line in reversed(lines):
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(event, dict):
+            events.append(_webhook_public_event(event))
+        if len(events) >= limit:
+            break
+    return events
+
+
+def _webhook_event_count(path: Path) -> int:
+    if not path.exists():
+        return 0
+    try:
+        return sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
+    except Exception:
+        return 0
+
+
+def _webhook_public_event(event: dict) -> dict:
+    return {
+        "id": str(event.get("id") or ""),
+        "request_id": str(event.get("request_id") or ""),
+        "received_at": str(event.get("received_at") or ""),
+        "source_ip": str(event.get("source_ip") or ""),
+        "source": str(event.get("source") or "unknown"),
+        "event_type": str(event.get("event_type") or "message"),
+        "title": str(event.get("title") or "Webhook event"),
+        "summary": str(event.get("summary") or ""),
+        "payload": event.get("payload") if "payload" in event else {},
+        "headers": event.get("headers") if isinstance(event.get("headers"), dict) else {},
+    }
+
+
+def _safe_webhook_headers(headers: dict[str, str]) -> dict[str, str]:
+    blocked = {"authorization", "cookie", "x-webhook-secret"}
+    return {
+        key: value
+        for key, value in headers.items()
+        if key.lower() not in blocked and not key.lower().startswith("x-forwarded")
+    }
+
+
+def _first_text(*values: object) -> str:
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, (dict, list)):
+            text = _short_json(value, 160)
+        else:
+            text = str(value).strip()
+        if text:
+            return text
+    return ""
+
+
+def _short_json(value: object, limit: int) -> str:
+    try:
+        text = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    except Exception:
+        text = str(value)
+    return _short_text(text, limit)
+
+
+def _short_text(value: str, limit: int) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)].rstrip() + "..."
 
 
 def _read_json_file(path: Path) -> dict:
