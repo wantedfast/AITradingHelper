@@ -61,6 +61,7 @@ WATCH_AUDIO_DIR = BASE_DIR / "work" / "tts"
 WATCH_SEEN_EVENTS = BASE_DIR / "work" / "watch_seen_events.json"
 WEBHOOK_EVENTS_PATH = BASE_DIR / "work" / "webhook_events.jsonl"
 AUCTION_STRENGTH_PATH = BASE_DIR / "work" / "auction_strength_reports.jsonl"
+AUCTION_STRENGTH_V2_PATH = BASE_DIR / "work" / "auction_strength_v2_reports.jsonl"
 API_ERROR_LOG = BASE_DIR / "work" / "api_errors.log"
 AUTH_DB = BASE_DIR / "work" / "auth.sqlite"
 CN_TZ = ZoneInfo("Asia/Shanghai")
@@ -121,6 +122,9 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/auction-strength":
                 self._list_auction_strength_reports()
+                return
+            if path == "/api/auction-strength-v2":
+                self._list_auction_strength_v2_reports()
                 return
             if path.startswith("/api/market-day/reports/"):
                 self._serve_market_day_report(path)
@@ -192,6 +196,9 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/auction-strength":
                 self._receive_auction_strength_report()
+                return
+            if path == "/api/auction-strength-v2":
+                self._receive_auction_strength_v2_report()
                 return
             if path == "/api/watch/plans":
                 self._create_watch_plan()
@@ -312,6 +319,12 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
         self._json({"ok": True, "event": _webhook_public_event(event)}, status=202)
 
     def _list_auction_strength_reports(self) -> None:
+        self._list_auction_strength_reports_from_path(AUCTION_STRENGTH_PATH, include_v2=False)
+
+    def _list_auction_strength_v2_reports(self) -> None:
+        self._list_auction_strength_reports_from_path(AUCTION_STRENGTH_V2_PATH, include_v2=True)
+
+    def _list_auction_strength_reports_from_path(self, report_path: Path, *, include_v2: bool) -> None:
         limit = 20
         trade_date = ""
         query = urlparse(self.path).query
@@ -330,11 +343,17 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                     except ValueError:
                         self._json({"error": "invalid date, expected YYYY-MM-DD"}, status=400)
                         return
-        reports = _recent_auction_strength_reports(AUCTION_STRENGTH_PATH, limit=limit, trade_date=trade_date)
-        total = _auction_strength_report_count(AUCTION_STRENGTH_PATH, trade_date=trade_date)
+        reports = _recent_auction_strength_reports(report_path, limit=limit, trade_date=trade_date, include_v2=include_v2)
+        total = _auction_strength_report_count(report_path, trade_date=trade_date)
         self._json({"latest": reports[0] if reports else None, "reports": reports, "count": len(reports), "total": total})
 
     def _receive_auction_strength_report(self) -> None:
+        self._receive_auction_strength_report_to_path(AUCTION_STRENGTH_PATH, include_v2=False)
+
+    def _receive_auction_strength_v2_report(self) -> None:
+        self._receive_auction_strength_report_to_path(AUCTION_STRENGTH_V2_PATH, include_v2=True)
+
+    def _receive_auction_strength_report_to_path(self, report_path: Path, *, include_v2: bool) -> None:
         _assert_webhook_secret(
             expected=os.getenv("AUCTION_STRENGTH_SECRET", os.getenv("WEBHOOK_SECRET", "")),
             header_value=self.headers.get("x-auction-strength-secret", "") or self.headers.get("x-webhook-secret", ""),
@@ -345,9 +364,10 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             payload=payload,
             source_ip=self._client_ip(),
             request_id=getattr(self, "_request_id", ""),
+            include_v2=include_v2,
         )
-        _append_webhook_event(AUCTION_STRENGTH_PATH, report)
-        self._json({"ok": True, "report": _auction_strength_public_report(report)}, status=202)
+        _append_webhook_event(report_path, report)
+        self._json({"ok": True, "report": _auction_strength_public_report(report, include_v2=include_v2)}, status=202)
 
     def _auth_register(self) -> None:
         payload = self._read_json_body()
@@ -1759,7 +1779,7 @@ def _recent_market_day_report_summaries(*, limit: int = 30) -> list[dict]:
     return items[:limit]
 
 
-def _auction_strength_report_from_payload(*, payload: dict, source_ip: str, request_id: str) -> dict:
+def _auction_strength_report_from_payload(*, payload: dict, source_ip: str, request_id: str, include_v2: bool = True) -> dict:
     if not isinstance(payload, dict):
         raise ValueError("auction strength payload must be a JSON object")
     trade_date = str(payload.get("trade_date") or "").strip()
@@ -1768,7 +1788,7 @@ def _auction_strength_report_from_payload(*, payload: dict, source_ip: str, requ
     conclusion = payload.get("global_conclusion") if isinstance(payload.get("global_conclusion"), dict) else {}
     strong_stocks = _auction_stock_items(payload.get("top5_strong_stocks"), mode="strong")
     avoid_stocks = _auction_stock_items(payload.get("top5_avoid_stocks"), mode="avoid")
-    return {
+    report = {
         "id": uuid4().hex,
         "request_id": request_id,
         "received_at": datetime.now(CN_TZ).strftime("%Y-%m-%d %H:%M:%S"),
@@ -1790,8 +1810,25 @@ def _auction_strength_report_from_payload(*, payload: dict, source_ip: str, requ
             "biggest_negative_feedback": _short_text(conclusion.get("biggest_negative_feedback") if isinstance(conclusion, dict) else "", 80),
             "one_sentence_for_930": _short_text(conclusion.get("one_sentence_for_930") if isinstance(conclusion, dict) else "", 500),
         },
-        "raw_payload": payload,
     }
+    if include_v2:
+        report["global_conclusion"]["limit_open_emotion_anchors"] = _safe_auction_list(
+            conclusion.get("limit_open_emotion_anchors") if isinstance(conclusion, dict) else [],
+            limit=30,
+        )
+        report.update(
+            {
+                "theme_gate_result": _safe_auction_json(payload.get("theme_gate_result"), limit=100),
+                "emotion_anchors": _safe_auction_list(payload.get("emotion_anchors"), limit=30),
+                "timings": _auction_timings(payload),
+                "quote_provider": _short_text(payload.get("quote_provider"), 80),
+                "source_csv": _short_text(payload.get("source_csv"), 300),
+                "data_limit": _safe_text_list(payload.get("data_limit"), limit=30, item_limit=300),
+                "warnings": _safe_text_list(payload.get("warnings"), limit=20, item_limit=300),
+                "raw_payload": payload,
+            }
+        )
+    return report
 
 
 def _auction_stock_items(value: object, *, mode: str) -> list[dict]:
@@ -1827,7 +1864,68 @@ def _safe_rank(value: object, *, fallback: int) -> int:
     return rank if rank > 0 else fallback
 
 
-def _recent_auction_strength_reports(path: Path, *, limit: int = 20, trade_date: str = "") -> list[dict]:
+def _safe_text_list(value: object, *, limit: int, item_limit: int) -> list[str]:
+    if isinstance(value, list):
+        raw_items = value
+    elif value is None or value == "":
+        raw_items = []
+    else:
+        raw_items = [value]
+    items: list[str] = []
+    for item in raw_items[:limit]:
+        text = _short_text(item, item_limit)
+        if text:
+            items.append(text)
+    return items
+
+
+def _safe_auction_list(value: object, *, limit: int) -> list[object]:
+    if not isinstance(value, list):
+        return []
+    return [_safe_auction_json(item, limit=limit) for item in value[:limit]]
+
+
+def _safe_auction_json(value: object, *, limit: int = 50) -> object:
+    if isinstance(value, dict):
+        return {str(key): _safe_auction_json(item, limit=limit) for key, item in list(value.items())[:limit]}
+    if isinstance(value, list):
+        return [_safe_auction_json(item, limit=limit) for item in value[:limit]]
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    return _short_text(value, 500)
+
+
+def _auction_number(value: object) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return round(float(value), 3)
+    except Exception:
+        return None
+
+
+def _auction_timings(payload: dict) -> dict:
+    source = payload.get("timings") if isinstance(payload.get("timings"), dict) else {}
+    keys = [
+        "prearm_elapsed_seconds",
+        "quote_fetch_elapsed_seconds",
+        "theme_summary_elapsed_seconds",
+        "theme_judge_elapsed_seconds",
+        "stock_pool_elapsed_seconds",
+        "stock_judge_elapsed_seconds",
+        "push_elapsed_seconds",
+        "total_elapsed_seconds",
+        "post_auction_elapsed_seconds",
+    ]
+    timings = {}
+    for key in keys:
+        number = _auction_number(source.get(key) if isinstance(source, dict) and key in source else payload.get(key))
+        if number is not None:
+            timings[key] = number
+    return timings
+
+
+def _recent_auction_strength_reports(path: Path, *, limit: int = 20, trade_date: str = "", include_v2: bool = True) -> list[dict]:
     if not path.exists():
         return []
     reports: list[dict] = []
@@ -1843,7 +1941,7 @@ def _recent_auction_strength_reports(path: Path, *, limit: int = 20, trade_date:
         except Exception:
             continue
         if isinstance(report, dict):
-            public_report = _auction_strength_public_report(report)
+            public_report = _auction_strength_public_report(report, include_v2=include_v2)
             if trade_date and public_report.get("trade_date") != trade_date:
                 continue
             reports.append(public_report)
@@ -1875,10 +1973,10 @@ def _auction_strength_report_count(path: Path, *, trade_date: str = "") -> int:
     return total
 
 
-def _auction_strength_public_report(report: dict) -> dict:
+def _auction_strength_public_report(report: dict, *, include_v2: bool = True) -> dict:
     summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
     conclusion = report.get("global_conclusion") if isinstance(report.get("global_conclusion"), dict) else {}
-    return {
+    public_report = {
         "id": str(report.get("id") or ""),
         "request_id": str(report.get("request_id") or ""),
         "received_at": str(report.get("received_at") or ""),
@@ -1900,8 +1998,25 @@ def _auction_strength_public_report(report: dict) -> dict:
             "biggest_negative_feedback": str(conclusion.get("biggest_negative_feedback") or ""),
             "one_sentence_for_930": str(conclusion.get("one_sentence_for_930") or ""),
         },
-        "raw_payload": report.get("raw_payload") if "raw_payload" in report else {},
     }
+    if not include_v2:
+        return public_report
+    public_report["global_conclusion"]["limit_open_emotion_anchors"] = (
+        conclusion.get("limit_open_emotion_anchors") if isinstance(conclusion.get("limit_open_emotion_anchors"), list) else []
+    )
+    public_report.update(
+        {
+            "theme_gate_result": report.get("theme_gate_result") if isinstance(report.get("theme_gate_result"), dict) else {},
+            "emotion_anchors": report.get("emotion_anchors") if isinstance(report.get("emotion_anchors"), list) else [],
+            "timings": report.get("timings") if isinstance(report.get("timings"), dict) else {},
+            "quote_provider": str(report.get("quote_provider") or ""),
+            "source_csv": str(report.get("source_csv") or ""),
+            "data_limit": report.get("data_limit") if isinstance(report.get("data_limit"), list) else [],
+            "warnings": report.get("warnings") if isinstance(report.get("warnings"), list) else [],
+            "raw_payload": report.get("raw_payload") if "raw_payload" in report else {},
+        }
+    )
+    return public_report
 
 
 def _public_auction_stock_items(value: object, *, follow_key: str) -> list[dict]:

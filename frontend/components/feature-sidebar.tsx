@@ -2,7 +2,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { BarChart3, FileUp, Info, TrendingUp, Trophy } from "lucide-react";
 
-type FeatureKey = "review" | "watch" | "market-day" | "auction-strength";
+type FeatureKey = "review" | "watch" | "market-day" | "auction-strength" | "auction-strength-v2";
 
 type FeatureSidebarProps = {
   active: FeatureKey;
@@ -15,6 +15,7 @@ const NAV_ITEMS = [
   { key: "watch", href: "/watch", label: "AI盯盘", icon: BarChart3 },
   { key: "market-day", href: "/market-day", label: "AI当日行情", icon: TrendingUp },
   { key: "auction-strength", href: "/auction-strength", label: "竞价强者", icon: Trophy },
+  { key: "auction-strength-v2", href: "/auction-strength-v2", label: "竞价强者V2", icon: Trophy },
 ] satisfies Array<{ key: FeatureKey; href: string; label: string; icon: typeof FileUp }>;
 
 export function FeatureSidebar({ active, note, watchHref }: FeatureSidebarProps) {

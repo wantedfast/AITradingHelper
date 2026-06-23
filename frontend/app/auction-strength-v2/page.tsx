@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
-import { ArrowLeft, BarChart3, CalendarDays, Flame, Loader2, RefreshCcw, ShieldAlert, Trophy } from "lucide-react";
+import { ArrowLeft, BarChart3, CalendarDays, Flame, GitBranch, Loader2, RefreshCcw, ShieldAlert, Sparkles, Trophy } from "lucide-react";
 import { FeatureSidebar } from "@/components/feature-sidebar";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || (process.env.NODE_ENV === "development" ? "http://127.0.0.1:8600" : "");
@@ -20,6 +20,7 @@ type AuctionConclusion = {
   most_over_expected_stock: string;
   best_capacity_confirmation: string;
   biggest_negative_feedback: string;
+  limit_open_emotion_anchors?: AnchorItem[];
   one_sentence_for_930: string;
 };
 
@@ -47,6 +48,51 @@ type AvoidStock = {
   risk_after_930: string;
 };
 
+type ThemeGateTheme = {
+  theme?: string;
+  priority?: number | string;
+  confidence?: string;
+  theme_level?: string;
+  theme_status?: string;
+  leader_candidates?: AnchorItem[];
+  emotion_anchors?: AnchorItem[];
+};
+
+type ThemeGateExcluded = {
+  theme?: string;
+  reason?: string;
+};
+
+type ThemeGateResult = {
+  strongest_theme?: string;
+  excluded_theme_count?: number;
+  admitted_themes?: ThemeGateTheme[];
+  excluded_themes?: ThemeGateExcluded[];
+};
+
+type AnchorItem = {
+  code?: string;
+  name?: string;
+  theme?: string;
+  role?: string;
+  label?: string;
+  today_open_change?: number | string;
+  reason?: string;
+  participation_note?: string;
+};
+
+type AuctionTimings = {
+  prearm_elapsed_seconds?: number;
+  quote_fetch_elapsed_seconds?: number;
+  theme_summary_elapsed_seconds?: number;
+  theme_judge_elapsed_seconds?: number;
+  stock_pool_elapsed_seconds?: number;
+  stock_judge_elapsed_seconds?: number;
+  push_elapsed_seconds?: number;
+  total_elapsed_seconds?: number;
+  post_auction_elapsed_seconds?: number;
+};
+
 type AuctionReport = {
   id: string;
   request_id: string;
@@ -58,6 +104,13 @@ type AuctionReport = {
   top5_strong_stocks: StrongStock[];
   top5_avoid_stocks: AvoidStock[];
   global_conclusion: AuctionConclusion;
+  theme_gate_result?: ThemeGateResult;
+  emotion_anchors?: unknown[];
+  timings?: AuctionTimings;
+  quote_provider?: string;
+  source_csv?: string;
+  data_limit?: string[];
+  warnings?: string[];
 };
 
 type AuctionPayload = {
@@ -94,7 +147,32 @@ function globalConclusionText(report: AuctionReport | null) {
   return `${lead}${conclusion.one_sentence_for_930 || ""}`.trim();
 }
 
-export default function AuctionStrengthPage() {
+function compactUnknown(value: unknown) {
+  if (value == null) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const name = record.name || record.stock || record.code || record.theme || record.reason || record.label;
+    if (name) return String(name);
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function stockTitle(item: AnchorItem) {
+  return [item.code, item.name].filter(Boolean).join(" ") || item.theme || item.label || "--";
+}
+
+function changeText(value?: number | string) {
+  if (value === undefined || value === null || value === "") return "--";
+  return `${value}%`;
+}
+
+export default function AuctionStrengthV2Page() {
   const [latest, setLatest] = useState<AuctionReport | null>(null);
   const [reports, setReports] = useState<AuctionReport[]>([]);
   const [selectedId, setSelectedId] = useState("");
@@ -109,13 +187,25 @@ export default function AuctionStrengthPage() {
 
   const conclusionText = useMemo(() => globalConclusionText(selectedReport), [selectedReport]);
   const isToday = selectedDate === todayIsoDate();
+  const themeGate = selectedReport?.theme_gate_result;
+  const admittedThemes = themeGate?.admitted_themes || [];
+  const excludedThemes = themeGate?.excluded_themes || [];
+  const limitOpenAnchors = selectedReport?.global_conclusion.limit_open_emotion_anchors || [];
+  const themeEmotionAnchors = admittedThemes.flatMap((theme) =>
+    (theme.emotion_anchors || []).map((anchor) => ({ ...anchor, theme: anchor.theme || theme.theme })),
+  );
+  const emotionAnchors = (selectedReport?.emotion_anchors || []) as AnchorItem[];
+  const displayAnchors = [...limitOpenAnchors, ...themeEmotionAnchors, ...emotionAnchors].filter((anchor, index, rows) => {
+    const key = `${anchor.code || ""}-${anchor.name || ""}-${anchor.theme || ""}-${anchor.reason || ""}`;
+    return rows.findIndex((row) => `${row.code || ""}-${row.name || ""}-${row.theme || ""}-${row.reason || ""}` === key) === index;
+  });
 
   const loadReports = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
     try {
       const params = new URLSearchParams({ limit: "20" });
       if (selectedDate) params.set("date", selectedDate);
-      const response = await fetch(`${API_BASE}/api/auction-strength?${params.toString()}`, { cache: "no-store" });
+      const response = await fetch(`${API_BASE}/api/auction-strength-v2?${params.toString()}`, { cache: "no-store" });
       const text = await response.text();
       const payload = text ? (JSON.parse(text) as AuctionPayload & { error?: string }) : {};
       if (!response.ok) throw new Error(payload.error || `读取失败：HTTP ${response.status}`);
@@ -128,10 +218,10 @@ export default function AuctionStrengthPage() {
         return nextLatest?.id || nextReports[0]?.id || "";
       });
       if (!silent) {
-        setMessage(nextLatest ? "已刷新竞价强者数据。" : "当前日期暂无竞价强者数据。");
+        setMessage(nextLatest ? "已刷新竞价强者V2数据。" : "当前日期暂无竞价强者V2数据。");
       }
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "读取竞价强者数据失败");
+      setMessage(error instanceof Error ? error.message : "读取竞价强者V2数据失败");
     } finally {
       setLoading(false);
     }
@@ -149,15 +239,15 @@ export default function AuctionStrengthPage() {
 
   return (
     <main className="review-workbench-page auction-page">
-      <FeatureSidebar active="auction-strength" note="接收 09:25 集合竞价后的强弱 JSON，映射 Top5 强势标的、回避标的和 9:30 执行重点。" />
+      <FeatureSidebar active="auction-strength-v2" note="接收 V2 09:25 webhook，展示题材门禁、情绪锚点、主板池过滤后的 Top5 和 9:30 执行重点。" />
 
       <section className="auction-main">
         <header className="auction-topbar">
           <div className="auction-module-title">
             <span className="auction-title-icon"><Trophy className="h-5 w-5" /></span>
             <div>
-              <b>竞价强者</b>
-              <small>09:25 强弱映射</small>
+              <b>竞价强者V2</b>
+              <small>Theme Gate + 主板池</small>
             </div>
           </div>
           <div className="auction-topbar-actions">
@@ -188,7 +278,7 @@ export default function AuctionStrengthPage() {
               <Flame className="h-4 w-4" />
               {selectedReport?.trade_date || selectedDate || "等待数据"} · {selectedReport?.analysis_time || "09:25 集合竞价后"}
             </p>
-            <h1>{selectedReport?.summary.one_sentence || "当前日期暂无竞价强者数据。"}</h1>
+            <h1>{selectedReport?.summary.one_sentence || "当前日期暂无竞价强者V2数据。"}</h1>
             <p>{selectedReport?.global_conclusion.one_sentence_for_930 || "当日数据进入后，页面会自动刷新并展示 9:30 前执行重点。"}</p>
           </div>
           <div className="auction-status-strip">
@@ -245,7 +335,31 @@ export default function AuctionStrengthPage() {
           </section>
         </section>
 
-        <section className="auction-panel auction-avoid-panel auction-v1-avoid-panel">
+        <section className="auction-panel auction-anchor-panel">
+          <PanelHead icon={<Sparkles className="h-5 w-5" />} title="情绪锚点" text="涨停开、一字、接近涨停或强度锚，只给用户参考，不等于 Top5 可观察标的。" />
+          {displayAnchors.length ? (
+            <div className="auction-anchor-grid">
+              {displayAnchors.slice(0, 18).map((anchor, index) => (
+                <article className="auction-anchor-card" key={`${stockTitle(anchor)}-${index}`}>
+                  <header>
+                    <b>{stockTitle(anchor)}</b>
+                    <strong data-tone={changeTone(String(anchor.today_open_change ?? ""))}>{changeText(anchor.today_open_change)}</strong>
+                  </header>
+                  <div className="auction-chip-row">
+                    {anchor.theme ? <span>{anchor.theme}</span> : null}
+                    {anchor.role ? <span>{anchor.role}</span> : null}
+                    {anchor.label ? <span>{anchor.label}</span> : null}
+                  </div>
+                  <p>{anchor.reason || compactUnknown(anchor) || "--"}</p>
+                  {anchor.participation_note ? <em>{anchor.participation_note}</em> : null}
+                </article>
+              ))}
+            </div>
+          ) : <EmptyState text="所选记录没有情绪锚点字段。" />}
+        </section>
+
+        <section className="auction-grid">
+          <section className="auction-panel auction-avoid-panel">
             <PanelHead icon={<ShieldAlert className="h-5 w-5" />} title="Top5 回避标的" text="竞价负反馈、掉队前排和高开低质方向。" />
             <div className="auction-stock-list">
               {selectedReport?.top5_avoid_stocks.length ? selectedReport.top5_avoid_stocks.map((stock) => (
@@ -267,6 +381,38 @@ export default function AuctionStrengthPage() {
                 </article>
               )) : <EmptyState text="所选日期还没有回避标的数据。" />}
             </div>
+          </section>
+
+          <section className="auction-panel auction-v2-panel">
+            <PanelHead icon={<GitBranch className="h-5 w-5" />} title="题材门禁" text="Theme Gate 决定哪些题材放行，哪些题材排除。" />
+            <div className="auction-v2-summary">
+              <MetricTile label="最强题材" value={themeGate?.strongest_theme || "--"} />
+              <MetricTile label="放行题材" value={`${admittedThemes.length || 0}`} />
+              <MetricTile label="排除数量" value={`${themeGate?.excluded_theme_count ?? excludedThemes.length ?? 0}`} />
+            </div>
+            <div className="auction-theme-list">
+              {admittedThemes.length ? admittedThemes.map((theme, index) => (
+                <article key={`${theme.theme || "theme"}-${index}`}>
+                  <b>{theme.priority ? `${theme.priority}. ` : ""}{theme.theme || "--"}</b>
+                  <span>{[theme.theme_level, theme.theme_status, theme.confidence].filter(Boolean).join(" · ") || "--"}</span>
+                  {theme.leader_candidates?.length ? (
+                    <div className="auction-mini-stock-list">
+                      {theme.leader_candidates.slice(0, 5).map((item, itemIndex) => (
+                        <span key={`${theme.theme}-${stockTitle(item)}-${itemIndex}`}>{stockTitle(item)} · {item.role || "候选"} · {changeText(item.today_open_change)}</span>
+                      ))}
+                    </div>
+                  ) : null}
+                </article>
+              )) : <EmptyState text="所选记录没有 V2 题材门禁字段。" />}
+            </div>
+            {excludedThemes.length ? (
+              <div className="auction-note-list">
+                {excludedThemes.map((theme, index) => (
+                  <span key={`${theme.theme || "excluded"}-${index}`}>{theme.theme || "--"}：{theme.reason || "--"}</span>
+                ))}
+              </div>
+            ) : null}
+          </section>
         </section>
 
         <section className="auction-grid auction-grid--history">

@@ -42,8 +42,17 @@ const features = [
     label: "Auction Strength",
     icon: Trophy,
     description:
-      "接收 09:25 集合竞价后的强弱 JSON，展示 Top5 强势标的、回避标的、最强题材和 9:30 执行重点。",
-    points: ["强者排序", "负反馈回避", "题材结论", "原始 JSON"],
+      "接收默认 09:25 集合竞价强弱 JSON，展示强势 Top5、回避 Top5 和 9:30 执行重点。",
+    points: ["强者排序", "负反馈回避", "全局结论", "历史记录"],
+  },
+  {
+    href: "/auction-strength-v2",
+    title: "竞价强者V2",
+    label: "Auction Strength V2",
+    icon: Trophy,
+    description:
+      "接收 V2 题材门禁 webhook，展示 Theme Gate、情绪锚点和主板池过滤后的强弱排序。",
+    points: ["题材门禁", "情绪锚点", "主板池过滤", "V2 Top5"],
   },
 ];
 
@@ -137,6 +146,7 @@ export default function Page() {
             <Link href="/watch">AI 盯盘</Link>
             <Link href="/market-day">AI当日行情</Link>
             <Link href="/auction-strength">竞价强者</Link>
+            <Link href="/auction-strength-v2">竞价强者V2</Link>
             {hydrated && user?.role === "admin" && <Link href="/admin">管理台</Link>}
             {hydrated && user ? (
               <div className="home-user-menu">
