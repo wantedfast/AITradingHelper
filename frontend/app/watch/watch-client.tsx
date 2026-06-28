@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type ChangeEvent, type Dispatch, type RefObject, type SetStateAction } from "react";
+import { useEffect, useMemo, useRef, useState, type Dispatch, type RefObject, type SetStateAction } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
@@ -10,7 +10,6 @@ import {
   ChevronLeft,
   Clock3,
   FileUp,
-  ImageUp,
   Info,
   List,
   Loader2,
@@ -122,25 +121,11 @@ type VoiceSettingsPayload = {
   };
 };
 
-type WatchEntryMode = "manual" | "ocr";
-
 type WatchFormErrors = {
   stockName?: string;
   buyDate?: string;
   position?: string;
   buyPrice?: string;
-  ocrFile?: string;
-};
-
-type WatchOcrPayload = {
-  fields: {
-    stock_name: string;
-    buy_date: string;
-    position: string;
-    buy_price: string;
-    note: string;
-  };
-  error?: string;
 };
 
 async function apiFetchJson<T>(path: string, init?: RequestInit, fallbackError = "请求失败"): Promise<T> {
@@ -276,11 +261,6 @@ function normalizeDisplayDate(value: string) {
   return iso ? isoToDisplayDate(iso) : value;
 }
 
-function normalizePositionOption(value: string) {
-  const text = value.trim();
-  return POSITION_OPTIONS.includes(text) ? text : "";
-}
-
 function isTradingSessionNow() {
   const now = new Date();
   const hourMinute = now.getHours() * 100 + now.getMinutes();
@@ -356,15 +336,11 @@ export default function WatchClient({ mode }: { mode: Mode }) {
   const requestedPlanId = searchParams.get("planId") || "";
   const viewMode: Mode = mode === "result" || requestedPlanId ? "result" : "entry";
 
-  const [entryMode, setEntryMode] = useState<WatchEntryMode>("manual");
   const [stockName, setStockName] = useState("");
   const [buyDate, setBuyDate] = useState("");
   const [position, setPosition] = useState("");
   const [buyPrice, setBuyPrice] = useState("");
   const [fieldErrors, setFieldErrors] = useState<WatchFormErrors>({});
-  const [ocrFile, setOcrFile] = useState<File | null>(null);
-  const [ocrStatus, setOcrStatus] = useState("");
-  const [ocrParsing, setOcrParsing] = useState(false);
   const [plans, setPlans] = useState<WatchPlan[]>([]);
   const [quotes, setQuotes] = useState<Quote[]>([]);
   const [events, setEvents] = useState<WatchEvent[]>([]);
@@ -387,7 +363,6 @@ export default function WatchClient({ mode }: { mode: Mode }) {
   const [toast, setToast] = useState("");
 
   const calendarInputRef = useRef<HTMLInputElement>(null);
-  const ocrInputRef = useRef<HTMLInputElement>(null);
   const playedKeys = useRef<Set<string>>(new Set());
   const toastTimer = useRef<number>();
 
@@ -437,7 +412,6 @@ export default function WatchClient({ mode }: { mode: Mode }) {
     if (!nextPosition) nextErrors.position = "请选择当前仓位。";
     if (!nextBuyPrice) nextErrors.buyPrice = "请填写买入价。";
     else if (Number.isNaN(Number(nextBuyPrice)) || Number(nextBuyPrice) <= 0) nextErrors.buyPrice = "请输入大于 0 的买入价。";
-    if (entryMode === "ocr" && !ocrFile) nextErrors.ocrFile = "请先上传持仓截图，再回填表单。";
     setFieldErrors(nextErrors);
     return { valid: Object.keys(nextErrors).length === 0, nextStock, nextBuyDate, nextPosition, nextBuyPrice };
   }
@@ -510,33 +484,6 @@ export default function WatchClient({ mode }: { mode: Mode }) {
       showToast(error instanceof Error ? error.message : "预案生成失败");
     } finally {
       setLoadingPlans(false);
-    }
-  }
-
-  async function handleOcrFileChange(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    setOcrFile(file);
-    clearFieldError("ocrFile");
-    setOcrStatus(`已选择 ${file.name}，正在识别。`);
-    setOcrParsing(true);
-    try {
-      const formData = new FormData();
-      formData.append("file", file);
-      const payload = await apiFetchJson<WatchOcrPayload>("/api/watch/ocr", { method: "POST", body: formData }, "OCR 识别失败");
-      setStockName(payload.fields.stock_name || "");
-      setBuyDate(payload.fields.buy_date || "");
-      setPosition(normalizePositionOption(payload.fields.position));
-      setBuyPrice(payload.fields.buy_price || "");
-      setOcrStatus(payload.fields.note || "识别结果已回填，请核对后生成预案。");
-      setFieldErrors({});
-      showToast("OCR 识别完成，结果已回填。");
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "OCR 识别失败，请重试。";
-      setOcrStatus(message);
-      setFieldErrors((current) => ({ ...current, ocrFile: message }));
-    } finally {
-      setOcrParsing(false);
     }
   }
 
@@ -753,8 +700,6 @@ export default function WatchClient({ mode }: { mode: Mode }) {
 
         {viewMode === "entry" ? (
           <WatchEntryView
-            entryMode={entryMode}
-            setEntryMode={setEntryMode}
             stockName={stockName}
             setStockName={setStockName}
             buyDate={buyDate}
@@ -766,13 +711,8 @@ export default function WatchClient({ mode }: { mode: Mode }) {
             fieldErrors={fieldErrors}
             clearFieldError={clearFieldError}
             loadingPlans={loadingPlans}
-            ocrFile={ocrFile}
-            ocrStatus={ocrStatus}
-            ocrParsing={ocrParsing}
-            ocrInputRef={ocrInputRef}
             calendarInputRef={calendarInputRef}
             openCalendarPicker={openCalendarPicker}
-            handleOcrFileChange={handleOcrFileChange}
             handleGeneratePlan={handleGeneratePlan}
             plans={plans}
             goToPlan={goToPlan}
@@ -846,8 +786,6 @@ export default function WatchClient({ mode }: { mode: Mode }) {
 }
 
 function WatchEntryView(props: {
-  entryMode: WatchEntryMode;
-  setEntryMode: (mode: WatchEntryMode) => void;
   stockName: string;
   setStockName: (value: string) => void;
   buyDate: string;
@@ -859,13 +797,8 @@ function WatchEntryView(props: {
   fieldErrors: WatchFormErrors;
   clearFieldError: (field: keyof WatchFormErrors) => void;
   loadingPlans: boolean;
-  ocrFile: File | null;
-  ocrStatus: string;
-  ocrParsing: boolean;
-  ocrInputRef: RefObject<HTMLInputElement>;
   calendarInputRef: RefObject<HTMLInputElement>;
   openCalendarPicker: () => void;
-  handleOcrFileChange: (event: ChangeEvent<HTMLInputElement>) => void;
   handleGeneratePlan: () => void;
   plans: WatchPlan[];
   goToPlan: (planId: string) => void;
@@ -887,7 +820,7 @@ function WatchEntryView(props: {
               {props.loadingPlans ? <Loader2 className="spin-icon" /> : <Sparkles />}
               {props.loadingPlans ? "正在生成预案" : "生成明日预案"}
             </button>
-            <span>支持手动录入或 OCR 回填持仓截图。</span>
+            <span>录入持仓信息后生成次日盯盘预案。</span>
           </div>
         </div>
         <section className="research-panel watch-entry-form-card">
@@ -895,31 +828,9 @@ function WatchEntryView(props: {
             <span>1</span>
             <div>
               <h2>填写你的持仓</h2>
-              <p>先录入股票名称、买入时间、仓位和买入价。你也可以先用 OCR 从截图里回填，再逐项确认。</p>
+              <p>录入股票名称、买入时间、仓位和买入价，系统会生成次日观察位和执行预案。</p>
             </div>
           </div>
-
-          <div className="watch-entry-mode-switch" role="tablist" aria-label="填写方式">
-            <button className={`watch-entry-mode-button ${props.entryMode === "manual" ? "active" : ""}`} type="button" onClick={() => props.setEntryMode("manual")}>
-              手动填写
-            </button>
-            <button className={`watch-entry-mode-button ${props.entryMode === "ocr" ? "active" : ""}`} type="button" onClick={() => props.setEntryMode("ocr")}>
-              OCR 填表
-            </button>
-          </div>
-
-          {props.entryMode === "ocr" ? (
-            <div className="watch-ocr-box">
-              <input ref={props.ocrInputRef} type="file" hidden accept="image/png,image/jpeg,image/jpg,image/webp" onChange={props.handleOcrFileChange} />
-              <button className="watch-ocr-upload" type="button" onClick={() => props.ocrInputRef.current?.click()} disabled={props.ocrParsing}>
-                <ImageUp className="h-6 w-6" />
-                <b>{props.ocrParsing ? "正在识别截图" : props.ocrFile ? "重新上传持仓截图" : "上传持仓截图"}</b>
-                <span>支持 jpg / png / webp。系统会调用 OCR 抽取股票、买入时间、仓位和买入价，并自动回填到下方。</span>
-              </button>
-              {props.ocrStatus ? <p className="watch-ocr-status">{props.ocrStatus}</p> : null}
-              {props.fieldErrors.ocrFile ? <p className="watch-entry-error">{props.fieldErrors.ocrFile}</p> : null}
-            </div>
-          ) : null}
 
           <div className="watch-search-input">
             <Search className="h-5 w-5" />
