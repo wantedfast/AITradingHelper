@@ -1,9 +1,9 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ArrowRight, CalendarDays, Loader2, RefreshCcw, TrendingUp } from "lucide-react";
-import { FeatureSidebar } from "@/components/feature-sidebar";
+import { ArrowRight, BarChart3, CalendarDays, FileUp, Info, Loader2, RefreshCcw, TrendingUp, Trophy } from "lucide-react";
 import { getAuthToken, storeUser } from "@/lib/auth-client";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || (process.env.NODE_ENV === "development" ? "http://127.0.0.1:8600" : "");
@@ -15,6 +15,8 @@ type MarketDayPayload = {
   status_url?: string;
   report_url?: string;
   market_date?: string;
+  billing_status?: "pending_generation" | "ready_to_charge" | "charged";
+  estimated_seconds?: number;
   error?: string;
   detail?: string;
   report?: MarketDayReportEnvelope;
@@ -189,7 +191,37 @@ export default function MarketDayPage() {
 
   return (
     <main className="review-workbench-page market-day-page">
-      <FeatureSidebar active="market-day" note="默认复盘今天 A股全市场，先找主线，再判断主线内最强个股。" />
+      <aside className="review-workbench-rail">
+        <Link className="review-workbench-brand" href="/">
+          <span className="brand-mark">盈</span>
+          <span>
+            <b>盈航</b>
+            <small>MARKET DAY</small>
+          </span>
+        </Link>
+        <nav className="review-workbench-nav" aria-label="核心功能">
+          <Link href="/review">
+            <FileUp />
+            <span><b>AI复盘</b></span>
+          </Link>
+          <Link href="/watch">
+            <BarChart3 />
+            <span><b>AI盯盘</b></span>
+          </Link>
+          <Link className="active" href="/market-day">
+            <TrendingUp />
+            <span><b>AI当日行情</b></span>
+          </Link>
+          <Link href="/auction-strength">
+            <Trophy />
+            <span><b>竞价强者</b></span>
+          </Link>
+        </nav>
+        <div className="review-rail-note">
+          <Info />
+          <span>默认复盘今天 A股全市场，先找主线，再判断主线内最强个股。</span>
+        </div>
+      </aside>
 
       <section className="review-workbench-main">
         <header className="review-workbench-topbar">
@@ -231,6 +263,10 @@ export default function MarketDayPage() {
               {generating ? <Loader2 className="spin-icon" /> : <TrendingUp />}
               {generating ? "正在生成行情复盘" : marketDate === today ? "生成今天行情复盘" : "生成所选日期行情复盘"}
             </button>
+            <div className="market-day-time-note">
+              <Info />
+              <span>预计 1-3 分钟。离开页面后可从历史报告继续查看；只有报告成功展示到前端后，才会扣除 1 次使用机会。</span>
+            </div>
             {generating ? (
               <div className="generation-progress" role="status" aria-live="polite">
                 <div className="generation-progress-head">

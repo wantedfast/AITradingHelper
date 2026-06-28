@@ -1,12 +1,31 @@
 import tempfile
 import unittest
+import sqlite3
+from contextlib import closing
 from pathlib import Path
+from unittest.mock import patch
 
-from trade_review_agent.auth_system import AuthError
+from trade_review_agent.auth_system import AuthError, create_order, init_auth_db
 from trade_review_agent.api import simple_api
 
 
 class WebhookApiTest(unittest.TestCase):
+    def _create_payment_user(self, db_path: Path) -> int:
+        init_auth_db(db_path)
+        with closing(sqlite3.connect(db_path)) as conn:
+            with conn:
+                cursor = conn.execute(
+                    """
+                    INSERT INTO users (
+                        phone, username, email, email_verified, password_hash,
+                        password_salt, role, status, invite_code, created_at
+                    )
+                    VALUES (?, ?, ?, 1, 'hash', 'salt', 'user', 'active', ?, ?)
+                    """,
+                    ("test@example.com", "payuser", "test@example.com", "PAYUSER1", "2026-06-27T10:00:00+08:00"),
+                )
+                return int(cursor.lastrowid)
+
     def test_webhook_payload_is_normalized_for_frontend(self):
         event = simple_api._webhook_event_from_request(
             payload={
@@ -168,6 +187,76 @@ class WebhookApiTest(unittest.TestCase):
         self.assertEqual([report["request_id"] for report in reports], ["req-3", "req-2"])
         self.assertEqual(filtered_total, 2)
         self.assertEqual(overall_total, 3)
+
+    def test_jinshuju_webhook_marks_order_paid_once(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "auth.sqlite"
+            user_id = self._create_payment_user(db_path)
+            order = create_order(db_path, user_id=user_id, package_id="pack_10")
+            old_db = simple_api.AUTH_DB
+            simple_api.AUTH_DB = db_path
+            payload = {
+                "form": "form-token-1",
+                "entry": {
+                    "serial_number": "JSJ-1001",
+                    "field_1": order["order_no"],
+                    "field_2": "test@example.com",
+                    "field_3": "pack_10",
+                    "total_price": "9.90",
+                },
+            }
+            try:
+                with patch.dict(
+                    "os.environ",
+                    {
+                        "JINSHUJU_FORM_TOKEN": "form-token-1",
+                        "JINSHUJU_ORDER_FIELD": "field_1",
+                        "JINSHUJU_EMAIL_FIELD": "field_2",
+                        "JINSHUJU_PACKAGE_FIELD": "field_3",
+                    },
+                    clear=False,
+                ):
+                    first = simple_api._process_jinshuju_payment_webhook(payload)
+                    second = simple_api._process_jinshuju_payment_webhook(payload)
+            finally:
+                simple_api.AUTH_DB = old_db
+
+            with closing(sqlite3.connect(db_path)) as conn:
+                paid_order = conn.execute("SELECT * FROM orders WHERE id = ?", (order["id"],)).fetchone()
+                balance = conn.execute("SELECT COALESCE(SUM(delta), 0) FROM credit_ledger WHERE user_id = ?", (user_id,)).fetchone()[0]
+
+        self.assertEqual(first["order"]["status"], "paid")
+        self.assertEqual(second["order"]["status"], "paid")
+        self.assertEqual(paid_order[6], "paid")
+        self.assertEqual(balance, 10)
+
+    def test_jinshuju_webhook_rejects_mismatched_amount(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "auth.sqlite"
+            user_id = self._create_payment_user(db_path)
+            order = create_order(db_path, user_id=user_id, package_id="pack_10")
+            old_db = simple_api.AUTH_DB
+            simple_api.AUTH_DB = db_path
+            payload = {
+                "form": "form-token-1",
+                "entry": {
+                    "serial_number": "JSJ-1002",
+                    "field_1": order["order_no"],
+                    "field_2": "test@example.com",
+                    "total_price": "8.80",
+                },
+            }
+            try:
+                with patch.dict("os.environ", {"JINSHUJU_FORM_TOKEN": "form-token-1"}, clear=False):
+                    with self.assertRaises(AuthError):
+                        simple_api._process_jinshuju_payment_webhook(payload)
+            finally:
+                simple_api.AUTH_DB = old_db
+
+            with closing(sqlite3.connect(db_path)) as conn:
+                balance = conn.execute("SELECT COALESCE(SUM(delta), 0) FROM credit_ledger WHERE user_id = ?", (user_id,)).fetchone()[0]
+
+        self.assertEqual(balance, 0)
 
 
 if __name__ == "__main__":

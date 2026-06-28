@@ -17,7 +17,7 @@ DEFAULT_AGENT_MODEL = "gpt-4.1-mini"
 DEFAULT_TTS_MODEL = "gpt-4o-mini-tts"
 DEFAULT_TTS_VOICE = "alloy"
 DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com"
-DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-pro"
+DEFAULT_DEEPSEEK_MODEL = "deepseek-chat"
 
 _CLIENT: OpenAI | None = None
 
@@ -131,7 +131,7 @@ def run_deepseek_json_agent(
     user_text = user_payload if isinstance(user_payload, str) else json.dumps(user_payload, ensure_ascii=False, indent=2)
     base_url = os.getenv("DEEPSEEK_BASE_URL", DEFAULT_DEEPSEEK_BASE_URL).strip().rstrip("/")
     body = {
-        "model": model or os.getenv("WATCH_DEEPSEEK_MODEL") or os.getenv("WANG_JUDGE_MODEL") or os.getenv("DEEPSEEK_MODEL") or DEFAULT_DEEPSEEK_MODEL,
+        "model": model or os.getenv("WATCH_DEEPSEEK_MODEL") or os.getenv("DEEPSEEK_MODEL") or DEFAULT_DEEPSEEK_MODEL,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_text},

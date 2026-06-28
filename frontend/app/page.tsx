@@ -3,7 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { FormEvent, useEffect, useState } from "react";
-import { BellRing, ChevronDown, Copy, FileSearch, Gift, Info, LogOut, MessageSquare, ShieldCheck, Sparkles, TrendingUp, Trophy, UserRound, X } from "lucide-react";
+import { BellRing, ChevronDown, Copy, CreditCard, FileSearch, Gift, Info, LogOut, MessageSquare, ShieldCheck, Sparkles, TrendingUp, Trophy, UserRound, X } from "lucide-react";
 import { GoldMagicCube } from "@/components/gold-magic-cube";
 import { HomeMusic } from "@/components/home-music";
 import { apiFetch, clearAuth, getStoredUser, inviteUrl, refreshCurrentUser, type UserProfile } from "@/lib/auth-client";
@@ -42,17 +42,8 @@ const features = [
     label: "Auction Strength",
     icon: Trophy,
     description:
-      "接收默认 09:25 集合竞价强弱 JSON，展示强势 Top5、回避 Top5 和 9:30 执行重点。",
-    points: ["强者排序", "负反馈回避", "全局结论", "历史记录"],
-  },
-  {
-    href: "/auction-strength-v2",
-    title: "竞价强者V2",
-    label: "Auction Strength V2",
-    icon: Trophy,
-    description:
-      "接收 V2 题材门禁 webhook，展示 Theme Gate、情绪锚点和主板池过滤后的强弱排序。",
-    points: ["题材门禁", "情绪锚点", "主板池过滤", "V2 Top5"],
+      "接收 09:25 集合竞价后的强弱 JSON，展示 Top5 强势标的、回避标的、最强题材和 9:30 执行重点。",
+    points: ["强者排序", "负反馈回避", "题材结论", "原始 JSON"],
   },
 ];
 
@@ -82,7 +73,7 @@ export default function Page() {
     if (!url) return;
     await navigator.clipboard.writeText(url);
     setInviteCopied(true);
-    setFeedbackMessage("邀请链接已复制。新用户用该链接注册登录后，你会获得 5 次免费机会。");
+    setFeedbackMessage("邀请链接已复制。新用户用该链接注册后，邀请方增加 5 次；被邀请方在注册赠送 5 次基础上，再额外增加 2 次。");
     window.setTimeout(() => setInviteCopied(false), 2200);
   }
 
@@ -104,7 +95,6 @@ export default function Page() {
   }
 
   const currentInviteUrl = hydrated && user ? inviteUrl(user) : "";
-  const featureSlides = [...features, ...features];
 
   async function submitFeedback(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -146,7 +136,6 @@ export default function Page() {
             <Link href="/watch">AI 盯盘</Link>
             <Link href="/market-day">AI当日行情</Link>
             <Link href="/auction-strength">竞价强者</Link>
-            <Link href="/auction-strength-v2">竞价强者V2</Link>
             {hydrated && user?.role === "admin" && <Link href="/admin">管理台</Link>}
             {hydrated && user ? (
               <div className="home-user-menu">
@@ -162,7 +151,7 @@ export default function Page() {
                         <UserRound className="h-4 w-4" />
                         当前账号
                       </span>
-                      <b>{user.username || user.phone}</b>
+                      <b>{user.username || user.email || user.phone}</b>
                     </div>
                     <div className="home-user-row">
                       <span>邮箱</span>
@@ -186,6 +175,10 @@ export default function Page() {
                       <Copy className="h-4 w-4" />
                       {inviteCopied ? "已复制邀请链接" : "复制邀请链接"}
                     </button>
+                    <Link className="home-user-copy" href="/billing" onClick={() => setShowUserMenu(false)}>
+                      <CreditCard className="h-4 w-4" />
+                      购买次数
+                    </Link>
                     <button className="home-user-logout" type="button" onClick={logout}>
                       <LogOut className="h-4 w-4" />
                       退出登录
@@ -220,7 +213,7 @@ export default function Page() {
               </Link>
               {hydrated && !user && (
                 <Link className="secondary home-auth-link" href="/auth?redirect=/review">
-                  手机号注册，送 5 次免费
+                  邮箱注册，送 5 次免费
                 </Link>
               )}
             </div>
@@ -261,17 +254,10 @@ export default function Page() {
             <div className="feature-shell__glow" />
             <div className="feature-carousel">
               <div className="feature-grid">
-                {featureSlides.map((feature, index) => {
+                {features.map((feature) => {
                   const Icon = feature.icon;
-                  const isDuplicate = index >= features.length;
                   return (
-                    <Link
-                      aria-hidden={isDuplicate}
-                      className="feature-card feature-card--glass"
-                      href={feature.href}
-                      key={`${feature.title}-${index}`}
-                      tabIndex={isDuplicate ? -1 : undefined}
-                    >
+                    <Link className="feature-card feature-card--glass" href={feature.href} key={feature.title}>
                       <div className="feature-card__glow" />
                       <div className="feature-card__shine" />
                       <div className="feature-top">

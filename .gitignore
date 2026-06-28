@@ -1,10 +1,12 @@
 __pycache__/
 *.pyc
 .venv/
+.pip-cache/
 .env
 work/
 outputs/
 frontend/node_modules/
+frontend/.npm-cache/
 frontend/.next/
 frontend/out/
 frontend/*.log

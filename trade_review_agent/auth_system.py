@@ -9,6 +9,7 @@ import sqlite3
 import smtplib
 from contextlib import contextmanager
 from datetime import datetime, timedelta
+from decimal import Decimal
 from email.message import EmailMessage
 from pathlib import Path
 from typing import Any, Iterator
@@ -22,11 +23,17 @@ USERNAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{3,31}$")
 SESSION_DAYS = 30
 INITIAL_FREE_CREDITS = 5
 REFERRAL_REWARD_CREDITS = 5
+INVITEE_BONUS_CREDITS = 2
 FEEDBACK_REWARD_CREDITS = 10
 SMS_CODE_TTL_MINUTES = 5
 SMS_RESEND_SECONDS = 60
 EMAIL_CODE_TTL_MINUTES = 10
 EMAIL_RESEND_SECONDS = 60
+CREDIT_PACKAGES = {
+    "pack_10": {"plan_name": "10 次使用包", "credits": 10, "amount_cents": 990},
+    "pack_50": {"plan_name": "50 次使用包", "credits": 50, "amount_cents": 3990},
+    "pack_120": {"plan_name": "120 次使用包", "credits": 120, "amount_cents": 7990},
+}
 
 
 class AuthError(Exception):
@@ -157,6 +164,7 @@ def init_auth_db(db_path: Path) -> None:
             """
         )
         _ensure_user_columns(conn)
+        _ensure_order_columns(conn)
         conn.executescript(
             """
             CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username) WHERE username IS NOT NULL AND username != '';
@@ -172,6 +180,18 @@ def _ensure_user_columns(conn: sqlite3.Connection) -> None:
         "username": "ALTER TABLE users ADD COLUMN username TEXT",
         "email": "ALTER TABLE users ADD COLUMN email TEXT",
         "email_verified": "ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0",
+    }
+    for column, statement in migrations.items():
+        if column not in columns:
+            conn.execute(statement)
+
+
+def _ensure_order_columns(conn: sqlite3.Connection) -> None:
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(orders)").fetchall()}
+    migrations = {
+        "payment_provider": "ALTER TABLE orders ADD COLUMN payment_provider TEXT",
+        "provider_trade_no": "ALTER TABLE orders ADD COLUMN provider_trade_no TEXT",
+        "paid_amount_cents": "ALTER TABLE orders ADD COLUMN paid_amount_cents INTEGER",
     }
     for column, statement in migrations.items():
         if column not in columns:
@@ -259,8 +279,6 @@ def send_email_code(db_path: Path, *, email: str, purpose: str = "register", ip:
             "resend_after": EMAIL_RESEND_SECONDS,
             "provider": provider_result["provider"],
         }
-        if provider_result.get("debug_code"):
-            payload["debug_code"] = provider_result["debug_code"]
         return payload
 
 
@@ -296,6 +314,7 @@ def register_user(db_path: Path, *, phone: str, code: str, password: str, invite
                 (referrer["id"], user_id, REFERRAL_REWARD_CREDITS, now),
             )
             _add_credits(conn, int(referrer["id"]), REFERRAL_REWARD_CREDITS, "referral_reward", str(user_id))
+            _add_credits(conn, user_id, INVITEE_BONUS_CREDITS, "invitee_bonus", str(referrer["id"]))
 
         user = _fetch_user_by_id(conn, user_id)
         token = _create_session(conn, user_id)
@@ -350,6 +369,7 @@ def register_password_user(
                 (referrer["id"], user_id, REFERRAL_REWARD_CREDITS, now),
             )
             _add_credits(conn, int(referrer["id"]), REFERRAL_REWARD_CREDITS, "referral_reward", str(user_id))
+            _add_credits(conn, user_id, INVITEE_BONUS_CREDITS, "invitee_bonus", str(referrer["id"]))
 
         user = _fetch_user_by_id(conn, user_id)
         token = _create_session(conn, user_id)
@@ -458,6 +478,40 @@ def consume_feature_credit(db_path: Path, *, user_id: int, feature: str, ip: str
         return _user_payload(conn, user)
 
 
+def ensure_feature_credit_available(db_path: Path, *, user_id: int, feature: str, ip: str = "", related_id: str = "") -> dict[str, Any]:
+    with _connect(db_path) as conn:
+        user = _fetch_user_by_id(conn, user_id)
+        if related_id and _feature_charge_exists(conn, user_id, feature, related_id):
+            return _user_payload(conn, user)
+        if user["role"] == "admin":
+            return _user_payload(conn, user)
+
+        balance = _credit_balance(conn, user_id)
+        if balance <= 0:
+            _record_usage(conn, user_id, feature, 0, "blocked_no_credits", ip, related_id)
+            raise AuthError("免费次数已用完，请邀请新用户注册登录获取次数，或购买次数后继续使用", 402)
+        return _user_payload(conn, user)
+
+
+def consume_feature_credit_once(db_path: Path, *, user_id: int, feature: str, ip: str = "", related_id: str = "") -> dict[str, Any]:
+    with _connect(db_path) as conn:
+        user = _fetch_user_by_id(conn, user_id)
+        if related_id and _feature_charge_exists(conn, user_id, feature, related_id):
+            return _user_payload(conn, user)
+
+        if user["role"] == "admin":
+            _record_usage(conn, user_id, feature, 0, "admin_free", ip, related_id)
+            return _user_payload(conn, user)
+
+        balance = _credit_balance(conn, user_id)
+        if balance <= 0:
+            _record_usage(conn, user_id, feature, 0, "blocked_no_credits", ip, related_id)
+            raise AuthError("免费次数已用完，请邀请新用户注册登录获取次数，或购买次数后继续使用", 402)
+        _add_credits(conn, user_id, -1, f"use_{feature}", related_id or None)
+        _record_usage(conn, user_id, feature, 1, "charged", ip, related_id)
+        return _user_payload(conn, user)
+
+
 def submit_feedback(
     db_path: Path,
     *,
@@ -483,7 +537,19 @@ def submit_feedback(
         return {"id": int(cursor.lastrowid), "status": "pending"}
 
 
-def create_order(db_path: Path, *, user_id: int, plan_name: str, credits: int, amount_cents: int) -> dict[str, Any]:
+def credit_packages() -> list[dict[str, Any]]:
+    return [{"id": key, **value} for key, value in CREDIT_PACKAGES.items()]
+
+
+def create_order(db_path: Path, *, user_id: int, plan_name: str = "", credits: int = 0, amount_cents: int = 0, package_id: str = "") -> dict[str, Any]:
+    package_id = (package_id or "").strip()
+    if package_id:
+        package = CREDIT_PACKAGES.get(package_id)
+        if not package:
+            raise AuthError("未知的次数包", 400)
+        plan_name = str(package["plan_name"])
+        credits = int(package["credits"])
+        amount_cents = int(package["amount_cents"])
     if credits <= 0 or amount_cents < 0:
         raise AuthError("订单参数不正确", 400)
     order_no = f"YT{datetime.now(CN_TZ).strftime('%Y%m%d%H%M%S')}{secrets.token_hex(3).upper()}"
@@ -497,6 +563,25 @@ def create_order(db_path: Path, *, user_id: int, plan_name: str, credits: int, a
             (user_id, order_no, plan_name.strip()[:60] or "次数包", credits, amount_cents, now),
         )
         return _order_payload(conn.execute("SELECT * FROM orders WHERE id = ?", (cursor.lastrowid,)).fetchone())
+
+
+def get_order(db_path: Path, *, order_id: int, user_id: int | None = None, admin: bool = False) -> dict[str, Any]:
+    with _connect(db_path) as conn:
+        if admin:
+            row = conn.execute("SELECT * FROM orders WHERE id = ?", (order_id,)).fetchone()
+        else:
+            row = conn.execute("SELECT * FROM orders WHERE id = ? AND user_id = ?", (order_id, user_id)).fetchone()
+        if not row:
+            raise AuthError("订单不存在", 404)
+        return _order_payload(row)
+
+
+def get_order_by_order_no(db_path: Path, *, order_no: str) -> dict[str, Any]:
+    with _connect(db_path) as conn:
+        row = conn.execute("SELECT * FROM orders WHERE order_no = ?", (order_no,)).fetchone()
+        if not row:
+            raise AuthError("订单不存在", 404)
+        return _order_payload(row)
 
 
 def admin_dashboard(db_path: Path, days: int = 14) -> dict[str, Any]:
@@ -549,7 +634,7 @@ def admin_dashboard(db_path: Path, days: int = 14) -> dict[str, Any]:
         ).fetchall()
         top_users = conn.execute(
             """
-            SELECT u.id, u.phone, u.role, u.created_at, COALESCE(SUM(e.credits_spent), 0) AS used_count,
+            SELECT u.id, u.phone, u.username, u.email, u.role, u.created_at, COALESCE(SUM(e.credits_spent), 0) AS used_count,
                    (SELECT COALESCE(SUM(delta), 0) FROM credit_ledger c WHERE c.user_id = u.id) AS credits
             FROM users u
             LEFT JOIN usage_events e ON e.user_id = u.id
@@ -573,13 +658,15 @@ def review_feedback(db_path: Path, *, feedback_id: int, status: str, admin_note:
     if status not in {"pending", "accepted", "rejected"}:
         raise AuthError("反馈状态不正确", 400)
     now = _now()
+    reward_user_id = 0
+    reward = 0
     with _connect(db_path) as conn:
         feedback = conn.execute("SELECT * FROM feedback WHERE id = ?", (feedback_id,)).fetchone()
         if not feedback:
             raise AuthError("反馈不存在", 404)
-        reward = 0
         if status == "accepted" and feedback["reward_credits"] <= 0:
             reward = FEEDBACK_REWARD_CREDITS
+            reward_user_id = int(feedback["user_id"])
             _add_credits(conn, int(feedback["user_id"]), reward, "feedback_accepted", str(feedback_id))
         conn.execute(
             """
@@ -590,11 +677,22 @@ def review_feedback(db_path: Path, *, feedback_id: int, status: str, admin_note:
             (status, reward, admin_note.strip()[:300], now, feedback_id),
         )
         updated = conn.execute("SELECT * FROM feedback WHERE id = ?", (feedback_id,)).fetchone()
-        return _feedback_payload(updated)
+        result = _feedback_payload(updated)
+    if reward > 0 and reward_user_id:
+        result["email_notification"] = notify_credit_added(
+            db_path,
+            user_id=reward_user_id,
+            credits=reward,
+            reason="你的反馈已被采纳，平台奖励免费使用次数。",
+        )
+    return result
 
 
 def mark_order_paid(db_path: Path, *, order_id: int) -> dict[str, Any]:
     now = _now()
+    notify_user_id = 0
+    notify_credits = 0
+    notify_reason = ""
     with _connect(db_path) as conn:
         order = conn.execute("SELECT * FROM orders WHERE id = ?", (order_id,)).fetchone()
         if not order:
@@ -602,8 +700,122 @@ def mark_order_paid(db_path: Path, *, order_id: int) -> dict[str, Any]:
         if order["status"] != "paid":
             conn.execute("UPDATE orders SET status = 'paid', paid_at = ? WHERE id = ?", (now, order_id))
             _add_credits(conn, int(order["user_id"]), int(order["credits"]), "order_paid", str(order_id))
+            notify_user_id = int(order["user_id"])
+            notify_credits = int(order["credits"])
+            notify_reason = f"你购买的「{order['plan_name']}」次数包已确认支付。"
         updated = conn.execute("SELECT * FROM orders WHERE id = ?", (order_id,)).fetchone()
-        return _order_payload(updated)
+        result = _order_payload(updated)
+    if notify_credits > 0 and notify_user_id:
+        result["email_notification"] = notify_credit_added(
+            db_path,
+            user_id=notify_user_id,
+            credits=notify_credits,
+            reason=notify_reason,
+        )
+    return result
+
+
+def mark_order_paid_by_order_no(
+    db_path: Path,
+    *,
+    order_no: str,
+    total_amount: str,
+    provider_trade_no: str = "",
+    payment_provider: str = "alipay",
+    payer_email: str = "",
+) -> dict[str, Any]:
+    order_no = (order_no or "").strip()
+    paid_amount_cents = _amount_yuan_to_cents(total_amount)
+    payment_provider = (payment_provider or "unknown").strip()[:40]
+    provider_trade_no = (provider_trade_no or "").strip()[:120]
+    payer_email = (payer_email or "").strip().lower()
+    provider_label = _payment_provider_label(payment_provider)
+    notify_user_id = 0
+    notify_credits = 0
+    notify_reason = ""
+    with _connect(db_path) as conn:
+        if provider_trade_no:
+            existing = conn.execute(
+                """
+                SELECT *
+                FROM orders
+                WHERE payment_provider = ? AND provider_trade_no = ?
+                LIMIT 1
+                """,
+                (payment_provider, provider_trade_no),
+            ).fetchone()
+            if existing:
+                if existing["order_no"] != order_no:
+                    raise AuthError("该支付回调已绑定其他订单，请人工核对", 409)
+                return _order_payload(existing)
+
+        order = conn.execute("SELECT * FROM orders WHERE order_no = ?", (order_no,)).fetchone()
+        if not order:
+            raise AuthError("订单不存在", 404)
+        user = _fetch_user_by_id(conn, int(order["user_id"]))
+        user_email = str(user["email"] if "email" in user.keys() else "").strip().lower()
+        if payer_email and user_email and payer_email != user_email:
+            raise AuthError("支付表单邮箱与订单用户邮箱不一致", 400)
+        if int(order["amount_cents"]) != paid_amount_cents:
+            raise AuthError(f"{provider_label}通知金额与订单金额不一致", 400)
+        if order["status"] != "paid":
+            now = _now()
+            conn.execute(
+                """
+                UPDATE orders
+                SET status = 'paid',
+                    paid_at = ?,
+                    payment_provider = ?,
+                    provider_trade_no = ?,
+                    paid_amount_cents = ?
+                WHERE id = ?
+                """,
+                (now, payment_provider, provider_trade_no, paid_amount_cents, order["id"]),
+            )
+            _add_credits(conn, int(order["user_id"]), int(order["credits"]), "order_paid", str(order["id"]))
+            notify_user_id = int(order["user_id"])
+            notify_credits = int(order["credits"])
+            notify_reason = f"你购买的「{order['plan_name']}」次数包已通过{provider_label}支付成功。"
+        updated = conn.execute("SELECT * FROM orders WHERE id = ?", (order["id"],)).fetchone()
+        result = _order_payload(updated)
+    if notify_credits > 0 and notify_user_id:
+        result["email_notification"] = notify_credit_added(
+            db_path,
+            user_id=notify_user_id,
+            credits=notify_credits,
+            reason=notify_reason,
+        )
+    return result
+
+
+def _payment_provider_label(provider: str) -> str:
+    labels = {
+        "alipay": "支付宝",
+        "jinshuju": "金数据",
+        "wechat": "微信",
+    }
+    return labels.get((provider or "").strip().lower(), "支付平台")
+
+
+def grant_user_credits(db_path: Path, *, user_id: int, credits: int, reason: str, admin_id: int | None = None) -> dict[str, Any]:
+    credits = int(credits or 0)
+    reason = (reason or "").strip()
+    if credits <= 0:
+        raise AuthError("增加次数必须大于 0", 400)
+    if credits > 10000:
+        raise AuthError("单次增加次数过大，请分批处理", 400)
+    if len(reason) < 2:
+        raise AuthError("请填写增加次数的原因", 400)
+
+    with _connect(db_path) as conn:
+        user = _fetch_user_by_id(conn, user_id)
+        related_id = f"admin:{admin_id or ''};reason:{reason[:100]}"
+        _add_credits(conn, user_id, credits, "admin_grant", related_id)
+        refreshed = _fetch_user_by_id(conn, int(user["id"]))
+        result = {"user": _user_payload(conn, refreshed), "credits_added": credits, "reason": reason}
+
+    result["email_notification"] = notify_credit_added(db_path, user_id=user_id, credits=credits, reason=reason)
+    return result
 
 
 def normalize_phone(phone: str) -> str:
@@ -768,10 +980,10 @@ def _send_sms_code(phone: str, code: str, log_path: Path | None) -> dict[str, st
 
 
 def _send_email_code(email: str, code: str, log_path: Path | None) -> dict[str, str]:
-    provider = os.getenv("EMAIL_PROVIDER", "log").strip().lower() or "log"
+    provider = os.getenv("EMAIL_PROVIDER", "smtp").strip().lower() or "smtp"
     if provider in {"log", "debug", "local"}:
         _write_email_debug_log(email, code, log_path)
-        return {"provider": "log", "debug_code": code}
+        raise AuthError("邮箱验证码本地测试模式已关闭，请配置 EMAIL_PROVIDER=smtp 和 SMTP 邮件服务后发送。", 500)
     if provider == "smtp":
         _send_smtp_email(email, code)
         return {"provider": "smtp"}
@@ -779,24 +991,9 @@ def _send_email_code(email: str, code: str, log_path: Path | None) -> dict[str, 
 
 
 def _send_smtp_email(email: str, code: str) -> None:
-    host = os.getenv("SMTP_HOST", "").strip()
-    port = int(os.getenv("SMTP_PORT", "465").strip() or "465")
-    username = os.getenv("SMTP_USER", "").strip()
-    password = os.getenv("SMTP_PASSWORD", "").strip()
-    sender = os.getenv("SMTP_FROM", username).strip()
-    sender_name = os.getenv("SMTP_FROM_NAME", "盈航").strip()
-    if not host or not username or not password or not sender:
-        raise AuthError("SMTP 邮件服务未配置完整，请检查 SMTP_HOST/SMTP_USER/SMTP_PASSWORD/SMTP_FROM", 500)
-
-    message = EmailMessage()
-    message["Subject"] = "盈航登录注册验证码"
-    message["From"] = f"{sender_name} <{sender}>"
-    message["To"] = email
-    message.set_content(
-        f"你的盈航验证码是：{code}\n\n验证码 {EMAIL_CODE_TTL_MINUTES} 分钟内有效。若不是你本人操作，请忽略这封邮件。\n"
-    )
-    message.add_alternative(
-        f"""
+    subject = "盈航登录注册验证码"
+    text = f"你的盈航验证码是：{code}\n\n验证码 {EMAIL_CODE_TTL_MINUTES} 分钟内有效。若不是你本人操作，请忽略这封邮件。\n"
+    html = f"""
         <html>
           <body style="font-family:Arial,'Microsoft YaHei',sans-serif;background:#050505;color:#f4f0e8;padding:24px;">
             <div style="max-width:520px;margin:auto;border:1px solid #c9a64655;border-radius:16px;padding:24px;background:#111;">
@@ -807,9 +1004,64 @@ def _send_smtp_email(email: str, code: str) -> None:
             </div>
           </body>
         </html>
-        """,
-        subtype="html",
-    )
+        """
+    _send_smtp_message(email, subject=subject, text=text, html=html)
+
+
+def notify_credit_added(db_path: Path, *, user_id: int, credits: int, reason: str) -> dict[str, Any]:
+    try:
+        with _connect(db_path) as conn:
+            user = _fetch_user_by_id(conn, user_id)
+            email = str(user["email"] if "email" in user.keys() else "").strip()
+            username = str(user["username"] if "username" in user.keys() else "").strip() or "用户"
+            balance = _credit_balance(conn, user_id)
+        if not email:
+            return {"sent": False, "skipped": True, "error": "用户未绑定邮箱"}
+        reason = (reason or "平台为你增加了使用次数").strip()
+        text = (
+            f"{username}，你好：\n\n"
+            f"你的盈航账号已增加 {credits} 次使用机会。\n"
+            f"增加原因：{reason}\n"
+            f"当前剩余次数：{balance} 次。\n\n"
+            "如有疑问，请联系平台管理员。\n"
+        )
+        html = f"""
+        <html>
+          <body style="font-family:Arial,'Microsoft YaHei',sans-serif;background:#050505;color:#f4f0e8;padding:24px;">
+            <div style="max-width:560px;margin:auto;border:1px solid #c9a64655;border-radius:16px;padding:24px;background:#111;">
+              <h2 style="margin:0 0 16px;color:#f5d77a;">盈航使用次数已增加</h2>
+              <p>{username}，你好：</p>
+              <p>你的盈航账号已增加 <strong style="color:#f5d77a;font-size:20px;">{credits}</strong> 次使用机会。</p>
+              <p><strong>增加原因：</strong>{_html_escape(reason)}</p>
+              <p><strong>当前剩余次数：</strong>{balance} 次。</p>
+              <p style="color:#aaa;font-size:13px;">如有疑问，请联系平台管理员。</p>
+            </div>
+          </body>
+        </html>
+        """
+        _send_smtp_message(email, subject="盈航使用次数已增加", text=text, html=html)
+        return {"sent": True, "email": _mask_email(email)}
+    except Exception as exc:
+        return {"sent": False, "error": str(exc)}
+
+
+def _send_smtp_message(email: str, *, subject: str, text: str, html: str | None = None) -> None:
+    host = os.getenv("SMTP_HOST", "").strip()
+    port = int(os.getenv("SMTP_PORT", "465").strip() or "465")
+    username = os.getenv("SMTP_USER", "").strip()
+    password = os.getenv("SMTP_PASSWORD", "").strip()
+    sender = os.getenv("SMTP_FROM", username).strip()
+    sender_name = os.getenv("SMTP_FROM_NAME", "盈航").strip()
+    if not host or not username or not password or not sender:
+        raise AuthError("SMTP 邮件服务未配置完整，请检查 SMTP_HOST/SMTP_USER/SMTP_PASSWORD/SMTP_FROM", 500)
+
+    message = EmailMessage()
+    message["Subject"] = subject
+    message["From"] = f"{sender_name} <{sender}>"
+    message["To"] = email
+    message.set_content(text)
+    if html:
+        message.add_alternative(html, subtype="html")
 
     use_ssl = os.getenv("SMTP_USE_SSL", "1").strip().lower() not in {"0", "false", "no"}
     if use_ssl:
@@ -821,6 +1073,23 @@ def _send_smtp_email(email: str, code: str) -> None:
             server.starttls()
             server.login(username, password)
             server.send_message(message)
+
+
+def _html_escape(value: str) -> str:
+    return (
+        str(value)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
+
+
+def _mask_email(email: str) -> str:
+    local, _, domain = email.partition("@")
+    if not domain:
+        return email[:2] + "***"
+    return f"{local[:2]}***@{domain}"
 
 
 def _write_sms_debug_log(phone: str, code: str, log_path: Path | None) -> None:
@@ -919,6 +1188,22 @@ def _record_usage(
     )
 
 
+def _feature_charge_exists(conn: sqlite3.Connection, user_id: int, feature: str, related_id: str) -> bool:
+    row = conn.execute(
+        """
+        SELECT id
+        FROM usage_events
+        WHERE user_id = ?
+          AND feature = ?
+          AND related_id = ?
+          AND status IN ('charged', 'admin_free')
+        LIMIT 1
+        """,
+        (user_id, feature, related_id),
+    ).fetchone()
+    return row is not None
+
+
 def _user_payload(conn: sqlite3.Connection, row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
     user_id = int(row["id"])
     referral_count = conn.execute(
@@ -965,8 +1250,21 @@ def _order_payload(row: sqlite3.Row) -> dict[str, Any]:
         "status": row["status"],
         "paid_at": row["paid_at"],
         "created_at": row["created_at"],
+        "payment_provider": row["payment_provider"] if "payment_provider" in row.keys() else "",
+        "provider_trade_no": row["provider_trade_no"] if "provider_trade_no" in row.keys() else "",
+        "paid_amount_cents": row["paid_amount_cents"] if "paid_amount_cents" in row.keys() else None,
     }
 
 
 def _now() -> str:
     return datetime.now(CN_TZ).isoformat()
+
+
+def _amount_yuan_to_cents(value: str) -> int:
+    try:
+        amount = Decimal(str(value or "0").strip())
+    except Exception as exc:
+        raise AuthError("支付金额格式不正确", 400) from exc
+    if amount < 0:
+        raise AuthError("支付金额不正确", 400)
+    return int((amount * Decimal("100")).quantize(Decimal("1")))

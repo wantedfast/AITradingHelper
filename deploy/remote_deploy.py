@@ -4,7 +4,6 @@ import os
 import shlex
 import sys
 import time
-from pathlib import Path
 
 import paramiko
 
@@ -13,10 +12,9 @@ HOST = os.environ.get("DEPLOY_HOST", "123.56.166.126")
 PORT = int(os.environ.get("DEPLOY_PORT", "22"))
 USER = os.environ.get("DEPLOY_USER", "root")
 PASSWORD = os.environ["DEPLOY_PASSWORD"]
-LOCAL_PACKAGE = Path(os.environ["DEPLOY_PACKAGE"]).resolve()
-LOCAL_ENV = Path(os.environ["DEPLOY_ENV"]).resolve()
 REMOTE_DIR = os.environ.get("DEPLOY_REMOTE_DIR", "/opt/trade-review-agent")
-REMOTE_PACKAGE = "/tmp/trade-review-agent-deploy.tar.gz"
+REPO_URL = os.environ.get("DEPLOY_REPO_URL", "https://github.com/wantedfast/AITradingHelper.git")
+BRANCH = os.environ.get("DEPLOY_BRANCH", "main")
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -50,31 +48,43 @@ def run(ssh: paramiko.SSHClient, command: str, timeout: int | None = None) -> No
 
 
 def main() -> None:
-    if not LOCAL_PACKAGE.exists():
-        raise FileNotFoundError(LOCAL_PACKAGE)
-    if not LOCAL_ENV.exists():
-        raise FileNotFoundError(LOCAL_ENV)
-
     ssh = paramiko.SSHClient()
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     ssh.connect(HOST, port=PORT, username=USER, password=PASSWORD, timeout=20)
-    sftp = ssh.open_sftp()
 
-    run(ssh, f"mkdir -p {shlex.quote(REMOTE_DIR)}")
-    print(f"upload {LOCAL_PACKAGE} -> {REMOTE_PACKAGE}")
-    sftp.put(str(LOCAL_PACKAGE), REMOTE_PACKAGE)
-    print(f"upload {LOCAL_ENV.name} -> {REMOTE_DIR}/.env")
-    sftp.put(str(LOCAL_ENV), f"{REMOTE_DIR}/.env")
-    sftp.close()
-
+    repo_url = shlex.quote(REPO_URL)
+    branch = shlex.quote(BRANCH)
+    remote_dir = shlex.quote(REMOTE_DIR)
     deploy = f"""
 set -e
 export DEBIAN_FRONTEND=noninteractive
-mkdir -p {shlex.quote(REMOTE_DIR)}
-tar -xzf {shlex.quote(REMOTE_PACKAGE)} -C {shlex.quote(REMOTE_DIR)}
-cd {shlex.quote(REMOTE_DIR)}
+mkdir -p {remote_dir}
+cd {remote_dir}
+
+if ! command -v git >/dev/null 2>&1; then
+  apt-get update
+  apt-get install -y git
+fi
+
+if [ ! -d .git ]; then
+  find . -mindepth 1 -maxdepth 1 ! -name '.env' ! -name 'work' ! -name 'outputs' -exec rm -rf {{}} +
+  git init
+  git remote add origin {repo_url}
+fi
+
+git remote set-url origin {repo_url}
+git fetch origin {branch}
+git checkout -B {branch} origin/{branch}
+git reset --hard origin/{branch}
+git clean -fd -e .env -e work/ -e outputs/
+
 mkdir -p work outputs
+if [ ! -f .env ]; then
+  echo 'ERROR: .env is missing on server; refusing to start deployment.' >&2
+  exit 2
+fi
 chmod 600 .env
+
 if ! command -v docker >/dev/null 2>&1; then
   apt-get update
   apt-get install -y docker.io docker-compose
@@ -89,10 +99,11 @@ else
   apt-get install -y docker-compose
   COMPOSE='docker-compose'
 fi
+
 docker rm -f trade-review-frontend trade-review-api trade-review-agent trade-review-streamlit 2>/dev/null || true
 rm -rf outputs/streamlit_reports
-rm -f docker-compose.yml docker-compose.v2.yml frontend-v2.tar.gz frontend-v2.tar.gz.b64
 $COMPOSE -f docker-compose.prod.yml up -d --build
+
 cat >/etc/nginx/sites-available/trade-review-agent <<'NGINX'
 server {{
     listen 80;
@@ -126,6 +137,7 @@ ln -sf /etc/nginx/sites-available/trade-review-agent /etc/nginx/sites-enabled/tr
 nginx -t
 systemctl reload nginx || service nginx reload
 $COMPOSE -f docker-compose.prod.yml ps
+git rev-parse HEAD
 """
     run(ssh, "bash -lc " + shlex.quote(deploy), timeout=None)
     run(ssh, "curl -I --max-time 10 http://127.0.0.1/ | head -n 1")

@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { ArrowLeft, Loader2, RefreshCcw, ShieldCheck, TrendingUp } from "lucide-react";
-import { FeatureSidebar } from "@/components/feature-sidebar";
-import { getAuthToken } from "@/lib/auth-client";
+import { ArrowLeft, BarChart3, FileUp, Loader2, RefreshCcw, ShieldCheck, TrendingUp, Trophy } from "lucide-react";
+import { getAuthToken, storeUser } from "@/lib/auth-client";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || (process.env.NODE_ENV === "development" ? "http://127.0.0.1:8600" : "");
 
@@ -63,7 +63,17 @@ type MarketDayReport = {
 type StatusPayload = {
   status?: "queued" | "running" | "done" | "error";
   stage?: string;
+  billing_status?: "pending_generation" | "ready_to_charge" | "charged";
   report?: MarketDayEnvelope;
+  user?: {
+    id?: number;
+    phone?: string;
+    role?: string;
+    invite_code?: string;
+    credits?: number;
+    referral_count?: number;
+    created_at?: string;
+  };
   error?: string;
   detail?: string;
 };
@@ -72,10 +82,48 @@ export default function MarketDayReportPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
   const runId = decodeURIComponent(params.id);
+  const ackStartedRef = useRef(false);
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState("loading");
   const [errorText, setErrorText] = useState("");
+  const [billingMessage, setBillingMessage] = useState("");
   const [reportEnvelope, setReportEnvelope] = useState<MarketDayEnvelope | null>(null);
+
+  function syncUser(payload: StatusPayload) {
+    if (payload.user?.id && payload.user.phone && payload.user.role && payload.user.invite_code) {
+      storeUser({
+        id: payload.user.id,
+        phone: payload.user.phone,
+        role: payload.user.role as "user" | "admin",
+        invite_code: payload.user.invite_code,
+        credits: payload.user.credits || 0,
+        referral_count: payload.user.referral_count || 0,
+        created_at: payload.user.created_at || "",
+      });
+    }
+  }
+
+  async function acknowledgeVisibleReport() {
+    if (ackStartedRef.current) return;
+    ackStartedRef.current = true;
+    const token = getAuthToken();
+    if (!token) return;
+    try {
+      const response = await fetch(`${API_BASE}/api/market-day/reports/${encodeURIComponent(runId)}/ack`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        cache: "no-store",
+      });
+      const payload = (await response.json()) as StatusPayload & { ok?: boolean };
+      if (!response.ok) throw new Error(payload.error || "报告已展示，但扣除使用次数失败");
+      syncUser(payload);
+      const credits = typeof payload.user?.credits === "number" ? `剩余 ${payload.user.credits} 次。` : "";
+      setBillingMessage(`报告已成功展示，已扣除 1 次使用机会。${credits}`);
+    } catch (error) {
+      ackStartedRef.current = false;
+      setBillingMessage(error instanceof Error ? error.message : "报告已展示，但扣除使用次数失败");
+    }
+  }
 
   async function loadReport() {
     const token = getAuthToken();
@@ -95,6 +143,13 @@ export default function MarketDayReportPage() {
       setStatus(payload.stage || payload.status || "unknown");
       if (payload.status === "done" && payload.report) {
         setReportEnvelope(payload.report);
+        if (payload.billing_status === "charged") {
+          syncUser(payload);
+          const credits = typeof payload.user?.credits === "number" ? `剩余 ${payload.user.credits} 次。` : "";
+          setBillingMessage(`报告已成功展示，已扣除 1 次使用机会。${credits}`);
+        } else {
+          void acknowledgeVisibleReport();
+        }
       } else if (payload.status === "error") {
         throw new Error([payload.error || "报告生成失败", payload.detail || ""].filter(Boolean).join("\n"));
       }
@@ -124,7 +179,33 @@ export default function MarketDayReportPage() {
 
   return (
     <main className="review-workbench-page market-day-page market-day-report-surface">
-      <FeatureSidebar active="market-day" />
+      <aside className="review-workbench-rail">
+        <Link className="review-workbench-brand" href="/">
+          <span className="brand-mark">盈</span>
+          <span>
+            <b>盈航</b>
+            <small>MARKET REPORT</small>
+          </span>
+        </Link>
+        <nav className="review-workbench-nav" aria-label="核心功能">
+          <Link href="/review">
+            <FileUp />
+            <span><b>AI复盘</b></span>
+          </Link>
+          <Link href="/watch">
+            <BarChart3 />
+            <span><b>AI盯盘</b></span>
+          </Link>
+          <Link className="active" href="/market-day">
+            <TrendingUp />
+            <span><b>AI当日行情</b></span>
+          </Link>
+          <Link href="/auction-strength">
+            <Trophy />
+            <span><b>竞价强者</b></span>
+          </Link>
+        </nav>
+      </aside>
 
       <section className="review-workbench-main">
         <header className="review-workbench-topbar">
@@ -167,6 +248,7 @@ export default function MarketDayReportPage() {
                 <p className="review-kicker">MARKET JUDGE RESULT</p>
                 <h1>{report.oneLineConclusion || "AI当日行情复盘"}</h1>
                 <p>{report.mainline?.reason || "Judge 已完成当天行情主线判断。"}</p>
+                {billingMessage ? <div className="market-day-billing-note">{billingMessage}</div> : null}
               </div>
               <div className="market-day-score-board">
                 <div>

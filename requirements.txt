@@ -6,3 +6,5 @@ fastapi>=0.115
 edge-tts>=7.2
 PyYAML>=6.0
 openai>=1.0
+cryptography>=49.0
+qrcode[pil]>=8.2

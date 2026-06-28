@@ -35,7 +35,12 @@ type DashboardPayload = {
     status: string;
     created_at: string;
   }>;
-  top_users: Array<{ id: number; phone: string; role: string; used_count: number; credits: number; created_at: string }>;
+  top_users: Array<{ id: number; phone: string; username?: string; email?: string; role: string; used_count: number; credits: number; created_at: string }>;
+};
+
+type GrantDraft = {
+  credits: string;
+  reason: string;
 };
 
 export default function AdminPage() {
@@ -44,6 +49,7 @@ export default function AdminPage() {
   const [data, setData] = useState<DashboardPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState("");
+  const [grantDrafts, setGrantDrafts] = useState<Record<number, GrantDraft>>({});
 
   useEffect(() => {
     refreshCurrentUser()
@@ -79,6 +85,30 @@ export default function AdminPage() {
   async function markPaid(id: number) {
     await apiFetch(`/api/admin/orders/${id}/paid`, { method: "POST" });
     await loadDashboard();
+  }
+
+  function updateGrantDraft(userId: number, patch: Partial<GrantDraft>) {
+    setGrantDrafts((current) => ({
+      ...current,
+      [userId]: { ...(current[userId] || { credits: "", reason: "" }), ...patch },
+    }));
+  }
+
+  async function grantCredits(userId: number) {
+    const draft = grantDrafts[userId] || { credits: "", reason: "" };
+    setMessage("");
+    try {
+      const result = await apiFetch<{ email_notification?: { sent?: boolean; error?: string; skipped?: boolean } }>(`/api/admin/users/${userId}/credits`, {
+        method: "POST",
+        body: JSON.stringify({ credits: Number(draft.credits), reason: draft.reason }),
+      });
+      const notice = result.email_notification;
+      setGrantDrafts((current) => ({ ...current, [userId]: { credits: "", reason: "" } }));
+      await loadDashboard();
+      setMessage(notice?.sent ? "次数已增加，并已发送邮件提醒。" : `次数已增加，但邮件提醒未发送：${notice?.error || "未知原因"}`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "增加次数失败");
+    }
   }
 
   const chartMax = useMemo(() => {
@@ -167,9 +197,29 @@ export default function AdminPage() {
                 <div className="admin-table">
                   {data.top_users.map((item) => (
                     <div key={item.id}>
-                      <span>{item.phone}</span>
+                      <span>{item.username || item.email || item.phone}</span>
                       <b>{item.used_count} 次使用</b>
                       <em>{item.role === "admin" ? "无限免扣" : `${item.credits} 次余额`}</em>
+                      {item.role !== "admin" && (
+                        <div className="admin-credit-grant">
+                          <input
+                            type="number"
+                            min="1"
+                            step="1"
+                            value={grantDrafts[item.id]?.credits || ""}
+                            onChange={(event) => updateGrantDraft(item.id, { credits: event.target.value })}
+                            placeholder="增加次数"
+                          />
+                          <input
+                            value={grantDrafts[item.id]?.reason || ""}
+                            onChange={(event) => updateGrantDraft(item.id, { reason: event.target.value })}
+                            placeholder="增加原因，会写入邮件"
+                          />
+                          <button type="button" onClick={() => grantCredits(item.id)}>
+                            增加并邮件提醒
+                          </button>
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
