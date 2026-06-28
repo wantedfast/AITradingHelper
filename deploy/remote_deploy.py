@@ -138,10 +138,22 @@ nginx -t
 systemctl reload nginx || service nginx reload
 $COMPOSE -f docker-compose.prod.yml ps
 git rev-parse HEAD
+for attempt in $(seq 1 60); do
+  if curl -fsS --max-time 5 http://127.0.0.1:8600/api/health >/dev/null; then
+    break
+  fi
+  if [ "$attempt" -eq 60 ]; then
+    echo 'ERROR: backend health check did not pass after deployment.' >&2
+    $COMPOSE -f docker-compose.prod.yml ps >&2 || true
+    $COMPOSE -f docker-compose.prod.yml logs --tail=120 trade-review-api >&2 || true
+    exit 3
+  fi
+  sleep 2
+done
 """
     run(ssh, "bash -lc " + shlex.quote(deploy), timeout=None)
-    run(ssh, "curl -I --max-time 10 http://127.0.0.1/ | head -n 1")
-    run(ssh, "curl -s --max-time 10 http://127.0.0.1/api/health")
+    run(ssh, "curl -fsSI --max-time 10 http://127.0.0.1/ | head -n 1")
+    run(ssh, "curl -fsS --max-time 10 http://127.0.0.1/api/health")
     ssh.close()
 
 
