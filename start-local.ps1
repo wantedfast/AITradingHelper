@@ -2,6 +2,7 @@ $ErrorActionPreference = "Stop"
 
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Frontend = Join-Path $Root "frontend"
+$ProjectPython = Join-Path $Root ".venv\Scripts\python.exe"
 $RuntimeRoot = Join-Path $env:USERPROFILE ".cache\codex-runtimes\codex-primary-runtime\dependencies"
 $BundledNode = Join-Path $RuntimeRoot "node\bin\node.exe"
 $BundledPython = Join-Path $RuntimeRoot "python\python.exe"
@@ -36,7 +37,7 @@ function Test-PythonRuntime {
   return $Succeeded
 }
 
-$PythonCandidates = @($BundledPython, "D:\an\python.exe")
+$PythonCandidates = @($ProjectPython, $BundledPython, "D:\an\python.exe")
 $PythonCommand = Get-Command python -ErrorAction SilentlyContinue
 if ($PythonCommand) {
   $PythonCandidates += $PythonCommand.Source

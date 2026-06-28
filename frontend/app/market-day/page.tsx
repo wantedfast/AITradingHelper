@@ -15,6 +15,8 @@ type MarketDayPayload = {
   status_url?: string;
   report_url?: string;
   market_date?: string;
+  billing_status?: "pending_generation" | "ready_to_charge" | "charged";
+  estimated_seconds?: number;
   error?: string;
   detail?: string;
   report?: MarketDayReportEnvelope;
@@ -261,6 +263,10 @@ export default function MarketDayPage() {
               {generating ? <Loader2 className="spin-icon" /> : <TrendingUp />}
               {generating ? "正在生成行情复盘" : marketDate === today ? "生成今天行情复盘" : "生成所选日期行情复盘"}
             </button>
+            <div className="market-day-time-note">
+              <Info />
+              <span>预计 1-3 分钟。离开页面后可从历史报告继续查看；只有报告成功展示到前端后，才会扣除 1 次使用机会。</span>
+            </div>
             {generating ? (
               <div className="generation-progress" role="status" aria-live="polite">
                 <div className="generation-progress-head">

@@ -8,32 +8,40 @@ import socket
 import threading
 import traceback
 import csv
+import base64
 from dataclasses import asdict
 from datetime import datetime
+from decimal import Decimal
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, quote_plus, unquote, urlencode, urlparse
 from uuid import uuid4
 from zoneinfo import ZoneInfo
+
+import requests
 
 from trade_review_agent.auth_system import (
     AuthError,
     admin_dashboard,
     consume_feature_credit,
+    consume_feature_credit_once,
+    credit_packages,
     create_order,
+    ensure_feature_credit_available,
+    get_order,
+    get_order_by_order_no,
     get_current_user,
+    grant_user_credits,
     init_auth_db,
     login_password_user,
-    login_user,
     logout_user,
+    mark_order_paid_by_order_no,
     mark_order_paid,
     register_password_user,
-    register_user,
     require_admin,
     require_user,
     review_feedback,
     send_email_code,
-    send_login_code,
     submit_feedback,
 )
 from trade_review_agent.watch.alerts import AlertPlan, evaluate_plans, event_dedupe_key, load_plans, save_plans
@@ -110,6 +118,12 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             if path == "/api/admin/dashboard":
                 self._admin_dashboard()
                 return
+            if path == "/api/pay/packages":
+                self._pay_packages()
+                return
+            if path.startswith("/api/orders/"):
+                self._get_order(path)
+                return
             if path == "/api/reports":
                 self._list_reports()
                 return
@@ -175,17 +189,41 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             if path == "/api/orders":
                 self._create_order()
                 return
+            if path == "/api/pay/alipay/precreate":
+                self._alipay_precreate()
+                return
+            if path == "/api/pay/jinshuju/checkout":
+                self._jinshuju_checkout()
+                return
+            if path == "/api/pay/alipay/notify":
+                self._alipay_notify()
+                return
+            if path == "/api/pay/jinshuju/notify":
+                self._jinshuju_notify()
+                return
             if path.startswith("/api/admin/feedback/"):
                 self._admin_review_feedback(path)
                 return
             if path.startswith("/api/admin/orders/"):
                 self._admin_mark_order(path)
                 return
+            if path.startswith("/api/admin/users/"):
+                self._admin_grant_user_credits(path)
+                return
             if path == "/api/reports":
                 self._create_reports()
                 return
+            if path.startswith("/api/reports/"):
+                self._ack_report(path)
+                return
             if path == "/api/market-day/reports":
                 self._create_market_day_report()
+                return
+            if path.startswith("/api/market-day/reports/"):
+                self._ack_market_day_report(path)
+                return
+            if path == "/api/auction-strength/ack":
+                self._ack_auction_strength_report()
                 return
             if path == "/api/webhooks":
                 self._receive_webhook()
@@ -221,14 +259,56 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
 
     def _create_reports(self) -> None:
         user = self._require_user()
-        updated_user = consume_feature_credit(
+        current_user = ensure_feature_credit_available(
             AUTH_DB,
             user_id=int(user["id"]),
             feature="review_report",
             ip=self._client_ip(),
         )
-        self._charged_user = updated_user
+        self._pending_user = current_user
+        self._report_user_id = int(user["id"])
         self._create_reports_resilient()
+
+    def _ack_report(self, path: str) -> None:
+        parts = path.split("/")
+        if len(parts) != 5 or parts[4] != "ack":
+            self._json({"error": "not found"}, status=404)
+            return
+        user = self._require_user()
+        run_id = parts[3]
+        run_dir = REPORT_DIR / run_id
+        manifest = _recover_report_manifest(run_id, run_dir)
+        if not manifest or not manifest.get("reports"):
+            self._json({"error": "复盘报告尚未生成成功，暂不扣次数"}, status=409)
+            return
+
+        status_payload = _read_report_status_payload(run_dir) or _report_status_payload(run_id, status="done", stage="done")
+        owner_id = int(status_payload.get("user_id") or 0)
+        if owner_id and owner_id != int(user["id"]) and user.get("role") != "admin":
+            raise AuthError("只能确认扣除自己生成的 AI 复盘次数", 403)
+
+        updated_user = consume_feature_credit_once(
+            AUTH_DB,
+            user_id=int(user["id"]),
+            feature="review_report",
+            ip=self._client_ip(),
+            related_id=run_id,
+        )
+        status_payload.update(manifest)
+        status_payload.update(
+            {
+                "run_id": run_id,
+                "status": "done",
+                "stage": "done",
+                "status_url": f"/api/reports/{run_id}/status",
+                "billing_status": "charged",
+                "charged_at": datetime.now(CN_TZ).isoformat(),
+                "user_id": owner_id or int(user["id"]),
+                "user": updated_user,
+            }
+        )
+        _write_report_status_payload(run_dir, status_payload)
+        self._json({"ok": True, "billing_status": "charged", "user": updated_user})
 
     def _list_reports(self) -> None:
         self._require_user()
@@ -249,26 +329,75 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
         market_date = normalize_market_date(str(payload.get("market_date") or "").strip() or None)
         run_id = f"{market_date.replace('-', '')}_{datetime.now(CN_TZ).strftime('%H%M%S')}_{uuid4().hex[:6]}"
         run_dir = MARKET_DAY_REPORT_DIR / run_id
-        updated_user = consume_feature_credit(
+        current_user = ensure_feature_credit_available(
             AUTH_DB,
             user_id=int(user["id"]),
             feature="market_day_report",
             ip=self._client_ip(),
             related_id=run_id,
         )
-        self._charged_user = updated_user
         request_id = getattr(self, "_request_id", "") or uuid4().hex
-        _write_market_day_status(run_id, run_dir, status="queued", stage="queued", request_id=request_id)
+        status_payload = _market_day_status_payload(run_id, status="queued", stage="queued", request_id=request_id)
+        status_payload["market_date"] = market_date
+        status_payload["user_id"] = int(user["id"])
+        status_payload["billing_status"] = "pending_generation"
+        status_payload["estimated_seconds"] = 90
+        _write_market_day_status_payload(run_dir, status_payload)
         _start_market_day_generation_task(
             run_id=run_id,
             run_dir=run_dir,
             market_date=market_date,
             request_id=request_id,
+            user_id=int(user["id"]),
         )
         response = _market_day_status_payload(run_id, status="queued", stage="queued", request_id=request_id)
         response["market_date"] = market_date
-        response["user"] = updated_user
+        response["user"] = current_user
+        response["billing_status"] = "pending_generation"
+        response["estimated_seconds"] = 90
         self._json(response, status=202)
+
+    def _ack_market_day_report(self, path: str) -> None:
+        parts = path.split("/")
+        if len(parts) != 6 or parts[5] != "ack":
+            self._json({"error": "not found"}, status=404)
+            return
+        user = self._require_user()
+        run_id = parts[4]
+        run_dir = MARKET_DAY_REPORT_DIR / run_id
+        report_path = run_dir / MARKET_DAY_REPORT_NAME
+        if not report_path.exists() or not report_path.is_file():
+            self._json({"error": "当日行情报告尚未生成，暂不扣次数"}, status=409)
+            return
+
+        status_payload = _read_market_day_status_payload(run_dir) or _market_day_status_payload(run_id, status="done", stage="done")
+        owner_id = int(status_payload.get("user_id") or 0)
+        if owner_id and owner_id != int(user["id"]) and user.get("role") != "admin":
+            raise AuthError("只能确认扣除自己生成的当日行情复盘次数", 403)
+
+        updated_user = consume_feature_credit_once(
+            AUTH_DB,
+            user_id=int(user["id"]),
+            feature="market_day_report",
+            ip=self._client_ip(),
+            related_id=run_id,
+        )
+        status_payload.update(
+            {
+                "run_id": run_id,
+                "status": "done",
+                "stage": "done",
+                "status_url": f"/api/market-day/reports/{run_id}/status",
+                "report_url": f"/api/market-day/reports/{run_id}/{MARKET_DAY_REPORT_NAME}",
+                "billing_status": "charged",
+                "charged_at": datetime.now(CN_TZ).isoformat(),
+                "user_id": owner_id or int(user["id"]),
+            }
+        )
+        status_payload["report"] = _read_json_file(report_path)
+        status_payload["user"] = updated_user
+        _write_market_day_status_payload(run_dir, status_payload)
+        self._json({"ok": True, "billing_status": "charged", "user": updated_user})
 
     def _list_market_day_reports(self) -> None:
         self._require_user()
@@ -332,7 +461,46 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                         return
         reports = _recent_auction_strength_reports(AUCTION_STRENGTH_PATH, limit=limit, trade_date=trade_date)
         total = _auction_strength_report_count(AUCTION_STRENGTH_PATH, trade_date=trade_date)
-        self._json({"latest": reports[0] if reports else None, "reports": reports, "count": len(reports), "total": total})
+        if not reports:
+            self._json({"latest": None, "reports": [], "count": 0, "total": total, "billing_status": "no_data"})
+            return
+        user = self._require_user()
+        billing_trade_date = trade_date or str(reports[0].get("trade_date") or "").strip()
+        current_user = ensure_feature_credit_available(
+            AUTH_DB,
+            user_id=int(user["id"]),
+            feature="auction_strength_view",
+            ip=self._client_ip(),
+            related_id=billing_trade_date,
+        )
+        self._json(
+            {
+                "latest": reports[0],
+                "reports": reports,
+                "count": len(reports),
+                "total": total,
+                "billing_status": "pending_view",
+                "billing_trade_date": billing_trade_date,
+                "user": current_user,
+            }
+        )
+
+    def _ack_auction_strength_report(self) -> None:
+        user = self._require_user()
+        payload = self._read_json_body()
+        trade_date = normalize_market_date(str(payload.get("trade_date") or "").strip() or None)
+        reports = _recent_auction_strength_reports(AUCTION_STRENGTH_PATH, limit=1, trade_date=trade_date)
+        if not reports:
+            self._json({"error": "所选日期暂无竞价分析，暂不扣次数"}, status=409)
+            return
+        updated_user = consume_feature_credit_once(
+            AUTH_DB,
+            user_id=int(user["id"]),
+            feature="auction_strength_view",
+            ip=self._client_ip(),
+            related_id=trade_date,
+        )
+        self._json({"ok": True, "billing_status": "charged", "billing_trade_date": trade_date, "user": updated_user})
 
     def _receive_auction_strength_report(self) -> None:
         _assert_webhook_secret(
@@ -350,27 +518,10 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
         self._json({"ok": True, "report": _auction_strength_public_report(report)}, status=202)
 
     def _auth_register(self) -> None:
-        payload = self._read_json_body()
-        result = register_user(
-            AUTH_DB,
-            phone=str(payload.get("phone") or ""),
-            code=str(payload.get("code") or ""),
-            password=str(payload.get("password") or ""),
-            invite_code=str(payload.get("invite_code") or ""),
-            ip=self._client_ip(),
-        )
-        self._json(result)
+        raise AuthError("手机号注册已关闭，请使用邮箱注册。", 410)
 
     def _auth_login(self) -> None:
-        payload = self._read_json_body()
-        result = login_user(
-            AUTH_DB,
-            phone=str(payload.get("phone") or ""),
-            code=str(payload.get("code") or ""),
-            password=str(payload.get("password") or ""),
-            ip=self._client_ip(),
-        )
-        self._json(result)
+        raise AuthError("手机号登录已关闭，请使用账号名或邮箱密码登录。", 410)
 
     def _auth_password_register(self) -> None:
         payload = self._read_json_body()
@@ -396,15 +547,7 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
         self._json(result)
 
     def _auth_send_code(self) -> None:
-        payload = self._read_json_body()
-        result = send_login_code(
-            AUTH_DB,
-            phone=str(payload.get("phone") or ""),
-            purpose=str(payload.get("purpose") or "login"),
-            ip=self._client_ip(),
-            log_path=BASE_DIR / "work" / "sms_codes.log",
-        )
-        self._json(result)
+        raise AuthError("短信验证码已关闭，请使用邮箱验证码注册。", 410)
 
     def _auth_send_email_code(self) -> None:
         payload = self._read_json_body()
@@ -441,14 +584,134 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
     def _create_order(self) -> None:
         user = self._require_user()
         payload = self._read_json_body()
+        package_id = str(payload.get("package_id") or "")
+        if not package_id and user.get("role") != "admin":
+            raise AuthError("请选择有效的次数包", 400)
         result = create_order(
             AUTH_DB,
             user_id=int(user["id"]),
+            package_id=package_id,
             plan_name=str(payload.get("plan_name") or "次数包"),
             credits=int(payload.get("credits") or 0),
             amount_cents=int(payload.get("amount_cents") or 0),
         )
         self._json({"order": result})
+
+    def _get_order(self, path: str) -> None:
+        user = self._require_user()
+        parts = path.split("/")
+        if len(parts) != 4:
+            self._json({"error": "not found"}, status=404)
+            return
+        order = get_order(
+            AUTH_DB,
+            order_id=int(parts[3]),
+            user_id=int(user["id"]),
+            admin=user.get("role") == "admin",
+        )
+        refreshed = get_current_user(AUTH_DB, self._bearer_token())
+        self._json({"order": order, "user": refreshed})
+
+    def _pay_packages(self) -> None:
+        self._json({"packages": credit_packages()})
+
+    def _alipay_precreate(self) -> None:
+        user = self._require_user()
+        payload = self._read_json_body()
+        order_id = int(payload.get("order_id") or 0)
+        order = get_order(AUTH_DB, order_id=order_id, user_id=int(user["id"]), admin=user.get("role") == "admin")
+        if order["status"] == "paid":
+            self._json({"order": order, "paid": True})
+            return
+        result = _alipay_trade_precreate(order)
+        self._json({"order": order, **result})
+
+    def _alipay_notify(self) -> None:
+        try:
+            payload = self._read_form_body()
+            if not _alipay_verify_payload(payload):
+                self._plain("failure")
+                return
+            trade_status = str(payload.get("trade_status") or "")
+            if trade_status not in {"TRADE_SUCCESS", "TRADE_FINISHED"}:
+                self._plain("success")
+                return
+            order = mark_order_paid_by_order_no(
+                AUTH_DB,
+                order_no=str(payload.get("out_trade_no") or ""),
+                total_amount=str(payload.get("total_amount") or ""),
+                provider_trade_no=str(payload.get("trade_no") or ""),
+                payment_provider="alipay",
+            )
+            _write_api_event("alipay_notify", {"order_no": order.get("order_no"), "trade_no": payload.get("trade_no")})
+            self._plain("success")
+        except Exception as exc:
+            _write_api_error(
+                request_id=getattr(self, "_request_id", uuid4().hex),
+                method=self.command,
+                path=self._request_path(),
+                run_id="",
+                stage="alipay_notify",
+                exc=exc,
+                recovered=False,
+            )
+            self._plain("failure")
+
+    def _jinshuju_checkout(self) -> None:
+        user = self._require_user()
+        payload = self._read_json_body()
+        package_id = str(payload.get("package_id") or "")
+        if not package_id:
+            raise AuthError("请选择有效的次数包", 400)
+        order = create_order(
+            AUTH_DB,
+            user_id=int(user["id"]),
+            package_id=package_id,
+        )
+        checkout_url = _jinshuju_checkout_url(order=order, user=user, package_id=package_id)
+        self._json({"order": order, "checkout_url": checkout_url, "provider": "jinshuju"})
+
+    def _jinshuju_notify(self) -> None:
+        try:
+            _assert_webhook_secret(
+                expected=os.getenv("JINSHUJU_WEBHOOK_SECRET", os.getenv("WEBHOOK_SECRET", "")),
+                header_value=self.headers.get("x-jinshuju-secret", "") or self.headers.get("x-webhook-secret", ""),
+                query=urlparse(self.path).query,
+            )
+            payload = self._read_webhook_payload()
+            result = _process_jinshuju_payment_webhook(payload)
+            _write_api_event(
+                "jinshuju_notify",
+                {
+                    "order_no": result.get("order", {}).get("order_no"),
+                    "provider_trade_no": result.get("provider_trade_no"),
+                    "ignored": bool(result.get("ignored")),
+                },
+            )
+            self._json({"ok": True, **result}, status=202)
+        except AuthError as exc:
+            _write_api_error(
+                request_id=getattr(self, "_request_id", uuid4().hex),
+                method=self.command,
+                path=self._request_path(),
+                run_id="",
+                stage="jinshuju_notify",
+                exc=exc,
+                recovered=False,
+            )
+            status = exc.status if exc.status in {401, 403} else 202
+            self._json({"ok": False, "error": exc.message}, status=status)
+        except Exception as exc:
+            _write_api_error(
+                request_id=getattr(self, "_request_id", uuid4().hex),
+                method=self.command,
+                path=self._request_path(),
+                run_id="",
+                stage="jinshuju_notify",
+                exc=exc,
+                recovered=False,
+            )
+            self._json({"ok": False, "error": "金数据回调处理失败"}, status=500)
 
     def _admin_dashboard(self) -> None:
         self._require_admin()
@@ -483,6 +746,22 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             return
         result = mark_order_paid(AUTH_DB, order_id=int(parts[4]))
         self._json({"order": result})
+
+    def _admin_grant_user_credits(self, path: str) -> None:
+        admin = self._require_admin()
+        parts = path.split("/")
+        if len(parts) != 6 or parts[5] != "credits":
+            self._json({"error": "not found"}, status=404)
+            return
+        payload = self._read_json_body()
+        result = grant_user_credits(
+            AUTH_DB,
+            user_id=int(parts[4]),
+            credits=int(payload.get("credits") or 0),
+            reason=str(payload.get("reason") or ""),
+            admin_id=int(admin["id"]),
+        )
+        self._json(result)
 
     def _create_reports_resilient(self) -> None:
         run_id = ""
@@ -527,7 +806,10 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                 upload_path.write_bytes(data or b"")
 
             self._set_stage("queued", run_id=run_id)
-            _write_report_status(run_id, run_dir, status="queued", stage="queued", request_id=self._request_id)
+            status_payload = _report_status_payload(run_id, status="queued", stage="queued", request_id=self._request_id)
+            status_payload["user_id"] = getattr(self, "_report_user_id", 0)
+            status_payload["billing_status"] = "pending_generation"
+            _write_report_status_payload(run_dir, status_payload)
             _start_report_generation_task(
                 run_id=run_id,
                 run_dir=run_dir,
@@ -537,9 +819,10 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                 request_id=self._request_id,
             )
             queued = _report_status_payload(run_id, status="queued", stage="queued")
-            charged_user = getattr(self, "_charged_user", None)
-            if charged_user:
-                queued["user"] = charged_user
+            queued["billing_status"] = "pending_generation"
+            pending_user = getattr(self, "_pending_user", None)
+            if pending_user:
+                queued["user"] = pending_user
             self._json(queued, status=202)
         except Exception as exc:
             recovered = _recover_report_manifest(run_id, run_dir) if run_id and run_dir else None
@@ -701,6 +984,14 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             raise ValueError("JSON body must be an object")
         return payload
 
+    def _read_form_body(self) -> dict[str, str]:
+        content_length = int(self.headers.get("content-length", "0") or 0)
+        if content_length <= 0:
+            return {}
+        raw = self.rfile.read(content_length)
+        parsed = parse_qs(raw.decode("utf-8", errors="ignore"), keep_blank_values=True)
+        return {key: values[-1] if values else "" for key, values in parsed.items()}
+
     def _read_webhook_payload(self) -> object:
         content_length = int(self.headers.get("content-length", "0") or 0)
         if content_length <= 0:
@@ -768,11 +1059,13 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
         self._serve_file(report_path)
 
     def _serve_report_status(self, run_id: str, run_dir: Path) -> None:
+        existing_status = _read_report_status_payload(run_dir) or {}
         recovered = _recover_report_manifest(run_id, run_dir)
         if recovered:
             recovered["status"] = "done"
             recovered["stage"] = "done"
             recovered["status_url"] = f"/api/reports/{run_id}/status"
+            _copy_report_billing_fields(existing_status, recovered)
             self._json(recovered)
             return
         status_path = run_dir / REPORT_STATUS_NAME
@@ -805,12 +1098,21 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
 
     def _serve_market_day_status(self, run_id: str, run_dir: Path) -> None:
         report_path = run_dir / MARKET_DAY_REPORT_NAME
+        status_path = run_dir / REPORT_STATUS_NAME
         if report_path.exists():
-            payload = _market_day_status_payload(run_id, status="done", stage="done")
+            payload = _read_market_day_status_payload(run_dir) or _market_day_status_payload(run_id, status="done", stage="done")
+            payload.update(
+                {
+                    "run_id": run_id,
+                    "status": "done",
+                    "stage": "done",
+                    "status_url": f"/api/market-day/reports/{run_id}/status",
+                    "report_url": f"/api/market-day/reports/{run_id}/{MARKET_DAY_REPORT_NAME}",
+                }
+            )
             payload["report"] = _read_json_file(report_path)
             self._json(payload)
             return
-        status_path = run_dir / REPORT_STATUS_NAME
         if not status_path.exists():
             self._json(_market_day_status_payload(run_id, status="queued", stage="queued"))
             return
@@ -858,10 +1160,22 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
             return
 
+    def _plain(self, text: str, status: int = 200) -> None:
+        data = text.encode("utf-8")
+        self.send_response(status)
+        self._cors_headers()
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        try:
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            return
+
     def _cors_headers(self) -> None:
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Webhook-Secret, X-Auction-Strength-Secret")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Webhook-Secret, X-Jinshuju-Secret, X-Auction-Strength-Secret")
 
     def _begin_request(self) -> None:
         self._request_id = uuid4().hex
@@ -1074,6 +1388,7 @@ def _run_report_generation_task(
         done["status"] = "done"
         done["stage"] = "done"
         done["status_url"] = f"/api/reports/{run_id}/status"
+        _copy_report_billing_fields(_read_report_status_payload(run_dir) or {}, done)
         _write_report_status_payload(run_dir, done)
     except Exception as exc:
         recovered = _recover_report_manifest(run_id, run_dir)
@@ -1082,9 +1397,11 @@ def _run_report_generation_task(
             recovered["stage"] = "done"
             recovered["status_url"] = f"/api/reports/{run_id}/status"
             recovered["warning"] = "report generation recovered from completed artifacts"
+            _copy_report_billing_fields(_read_report_status_payload(run_dir) or {}, recovered)
             _write_report_status_payload(run_dir, recovered)
             return
         payload = _report_status_payload(run_id, status="error", stage=stage, request_id=request_id)
+        _copy_report_billing_fields(_read_report_status_payload(run_dir) or {}, payload)
         payload.update(_api_error_payload(exc, request_id=request_id, run_id=run_id, stage=stage))
         payload["status"] = "error"
         _write_report_status_payload(run_dir, payload)
@@ -1105,6 +1422,7 @@ def _start_market_day_generation_task(
     run_dir: Path,
     market_date: str,
     request_id: str,
+    user_id: int,
 ) -> None:
     thread = threading.Thread(
         target=_run_market_day_generation_task,
@@ -1113,6 +1431,7 @@ def _start_market_day_generation_task(
             "run_dir": run_dir,
             "market_date": market_date,
             "request_id": request_id,
+            "user_id": user_id,
         },
         daemon=True,
         name=f"market-day-{run_id[:8]}",
@@ -1126,6 +1445,7 @@ def _run_market_day_generation_task(
     run_dir: Path,
     market_date: str,
     request_id: str,
+    user_id: int,
 ) -> None:
     stage = "queued"
     try:
@@ -1143,6 +1463,8 @@ def _run_market_day_generation_task(
 
         done = _market_day_status_payload(run_id, status="done", stage="done", request_id=request_id)
         done["market_date"] = market_date
+        done["user_id"] = user_id
+        done["billing_status"] = "ready_to_charge"
         done["report"] = report
         _write_market_day_status_payload(run_dir, done)
     except Exception as exc:
@@ -1181,6 +1503,28 @@ def _write_market_day_status_payload(run_dir: Path, payload: dict) -> None:
     (run_dir / REPORT_STATUS_NAME).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _read_market_day_status_payload(run_dir: Path) -> dict | None:
+    status_path = run_dir / REPORT_STATUS_NAME
+    if not status_path.exists():
+        return None
+    try:
+        data = json.loads(status_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _read_report_status_payload(run_dir: Path) -> dict | None:
+    status_path = run_dir / REPORT_STATUS_NAME
+    if not status_path.exists():
+        return None
+    try:
+        data = json.loads(status_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def _report_status_payload(run_id: str, *, status: str, stage: str, request_id: str = "") -> dict:
     return {
         "run_id": run_id,
@@ -1195,12 +1539,20 @@ def _report_status_payload(run_id: str, *, status: str, stage: str, request_id: 
 
 
 def _write_report_status(run_id: str, run_dir: Path, *, status: str, stage: str, request_id: str = "") -> None:
-    _write_report_status_payload(run_dir, _report_status_payload(run_id, status=status, stage=stage, request_id=request_id))
+    payload = _report_status_payload(run_id, status=status, stage=stage, request_id=request_id)
+    _copy_report_billing_fields(_read_report_status_payload(run_dir) or {}, payload)
+    _write_report_status_payload(run_dir, payload)
 
 
 def _write_report_status_payload(run_dir: Path, payload: dict) -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / REPORT_STATUS_NAME).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _copy_report_billing_fields(source: dict, target: dict) -> None:
+    for key in ("user_id", "billing_status", "charged_at"):
+        if key in source and key not in target:
+            target[key] = source[key]
 
 
 def _recover_report_manifest(run_id: str, run_dir: Path | None) -> dict | None:
@@ -1345,6 +1697,16 @@ def _write_api_error(
         print(f"[warn] failed to write API error log for {request_id}", flush=True)
 
 
+def _write_api_event(event: str, payload: dict) -> None:
+    try:
+        API_ERROR_LOG.parent.mkdir(parents=True, exist_ok=True)
+        record = {"time": datetime.now(CN_TZ).isoformat(), "event": event, **payload}
+        with (BASE_DIR / "work" / "api_events.log").open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception:
+        print(f"[warn] failed to write API event log: {event}", flush=True)
+
+
 def _redact_sensitive(text: str) -> str:
     redacted = str(text or "")
     for key in ("OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_PROXY_URL"):
@@ -1354,6 +1716,316 @@ def _redact_sensitive(text: str) -> str:
     redacted = re.sub(r"Bearer\s+[A-Za-z0-9._~+/=-]+", "Bearer <redacted>", redacted)
     redacted = re.sub(r"sk-[A-Za-z0-9._~+/=-]+", "<redacted>", redacted)
     return redacted
+
+
+def _jinshuju_checkout_url(*, order: dict, user: dict, package_id: str) -> str:
+    form_url = _jinshuju_form_url(package_id)
+    field_map = _jinshuju_checkout_field_map()
+    query_params: dict[str, str] = {}
+    values = {
+        "order": str(order.get("order_no") or ""),
+        "email": str(user.get("email") or ""),
+        "package": package_id,
+        "user": str(user.get("id") or ""),
+        "plan": str(order.get("plan_name") or ""),
+        "amount": _yuan_amount(int(order.get("amount_cents") or 0)),
+    }
+    for key, field_name in field_map.items():
+        if field_name and values.get(key):
+            query_params[field_name] = values[key]
+    return _append_query_params(form_url, query_params)
+
+
+def _jinshuju_form_url(package_id: str = "") -> str:
+    package_key = re.sub(r"[^A-Z0-9_]", "_", (package_id or "").upper())
+    form_url = os.getenv(f"JINSHUJU_FORM_URL_{package_key}", "").strip() if package_key else ""
+    form_url = form_url or os.getenv("JINSHUJU_FORM_URL", "").strip()
+    if not form_url:
+        raise AuthError("金数据收款表单未配置，请设置 JINSHUJU_FORM_URL", 500)
+    if not form_url.startswith(("http://", "https://")):
+        raise AuthError("JINSHUJU_FORM_URL 必须是完整的金数据表单链接", 500)
+    return form_url
+
+
+def _jinshuju_checkout_field_map() -> dict[str, str]:
+    return {
+        "order": os.getenv("JINSHUJU_ORDER_FIELD", "field_1").strip(),
+        "email": os.getenv("JINSHUJU_EMAIL_FIELD", "field_2").strip(),
+        "package": os.getenv("JINSHUJU_PACKAGE_FIELD", "field_3").strip(),
+        "user": os.getenv("JINSHUJU_USER_FIELD", "field_4").strip(),
+        "plan": os.getenv("JINSHUJU_PLAN_FIELD", "").strip(),
+        "amount": os.getenv("JINSHUJU_AMOUNT_FIELD", "").strip(),
+    }
+
+
+def _append_query_params(url: str, params: dict[str, str]) -> str:
+    if not params:
+        return url
+    separator = "&" if urlparse(url).query else "?"
+    return f"{url}{separator}{urlencode(params)}"
+
+
+def _process_jinshuju_payment_webhook(payload: object) -> dict:
+    if not isinstance(payload, dict):
+        raise AuthError("金数据回调格式不正确", 400)
+    entry = payload.get("entry")
+    if not isinstance(entry, dict):
+        entry = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    _assert_jinshuju_form_allowed(payload)
+    field_map = _jinshuju_checkout_field_map()
+    order_no = _jinshuju_entry_value(entry, field_map["order"])
+    payer_email = _jinshuju_entry_value(entry, field_map["email"])
+    total_amount = _jinshuju_total_amount(entry)
+    provider_trade_no = _jinshuju_provider_trade_no(payload, entry)
+    if not order_no:
+        raise AuthError(f"金数据回调缺少订单号字段：{field_map['order']}", 400)
+    if not total_amount:
+        raise AuthError("金数据回调缺少支付金额 total_price", 400)
+    order = mark_order_paid_by_order_no(
+        AUTH_DB,
+        order_no=order_no,
+        total_amount=total_amount,
+        provider_trade_no=provider_trade_no,
+        payment_provider="jinshuju",
+        payer_email=payer_email,
+    )
+    return {
+        "order": order,
+        "provider_trade_no": provider_trade_no,
+        "payer_email": payer_email,
+    }
+
+
+def _assert_jinshuju_form_allowed(payload: dict) -> None:
+    expected = os.getenv("JINSHUJU_FORM_TOKEN", "").strip()
+    if not expected:
+        return
+    allowed = {item.strip() for item in expected.split(",") if item.strip()}
+    actual = payload.get("form")
+    candidates: set[str] = set()
+    if isinstance(actual, dict):
+        for key in ("token", "id", "name"):
+            if actual.get(key):
+                candidates.add(str(actual.get(key)).strip())
+    elif actual:
+        candidates.add(str(actual).strip())
+    if candidates.isdisjoint(allowed):
+        raise AuthError("金数据表单来源不匹配", 401)
+
+
+def _jinshuju_total_amount(entry: dict) -> str:
+    value = _first_nested_value(
+        entry,
+        ("total_price",),
+        ("totalPrice",),
+        ("total_amount",),
+        ("amount",),
+        ("payment", "total_price"),
+        ("payment", "total_amount"),
+    )
+    return _normalize_jinshuju_amount(value)
+
+
+def _jinshuju_provider_trade_no(payload: dict, entry: dict) -> str:
+    form = payload.get("form")
+    if isinstance(form, dict):
+        form_id = str(form.get("token") or form.get("id") or form.get("name") or "").strip()
+    else:
+        form_id = str(form or "").strip()
+    serial = _first_nested_value(
+        entry,
+        ("serial_number",),
+        ("serialNumber",),
+        ("id",),
+        ("entry_id",),
+        ("entryId",),
+    )
+    serial_text = str(serial or "").strip()
+    if not serial_text:
+        serial_text = uuid4().hex
+    return f"jinshuju:{form_id}:{serial_text}"[:120]
+
+
+def _jinshuju_entry_value(entry: dict, field_name: str) -> str:
+    field_name = (field_name or "").strip()
+    if not field_name:
+        return ""
+    return _stringify_jinshuju_value(entry.get(field_name))
+
+
+def _first_nested_value(data: dict, *paths: tuple[str, ...]) -> object:
+    for path in paths:
+        current: object = data
+        for key in path:
+            if not isinstance(current, dict) or key not in current:
+                current = None
+                break
+            current = current.get(key)
+        if current not in (None, ""):
+            return current
+    return ""
+
+
+def _stringify_jinshuju_value(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, dict):
+        for key in ("value", "text", "name", "label"):
+            if key in value:
+                text = _stringify_jinshuju_value(value.get(key))
+                if text:
+                    return text
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    if isinstance(value, list):
+        parts = []
+        for item in value:
+            text = _stringify_jinshuju_value(item)
+            if text:
+                parts.append(text)
+        return ",".join(parts).strip()
+    return str(value).strip()
+
+
+def _normalize_jinshuju_amount(value: object) -> str:
+    text = _stringify_jinshuju_value(value)
+    if not text:
+        return ""
+    match = re.search(r"-?\d+(?:\.\d+)?", text.replace(",", ""))
+    if not match:
+        return ""
+    return match.group(0)
+
+
+def _alipay_trade_precreate(order: dict) -> dict:
+    config = _alipay_config()
+    biz_content = {
+        "out_trade_no": order["order_no"],
+        "total_amount": _yuan_amount(int(order["amount_cents"])),
+        "subject": order["plan_name"],
+        "timeout_express": os.getenv("ALIPAY_TIMEOUT_EXPRESS", "15m").strip() or "15m",
+    }
+    params = {
+        "app_id": config["app_id"],
+        "method": "alipay.trade.precreate",
+        "format": "JSON",
+        "charset": "utf-8",
+        "sign_type": "RSA2",
+        "timestamp": datetime.now(CN_TZ).strftime("%Y-%m-%d %H:%M:%S"),
+        "version": "1.0",
+        "notify_url": config["notify_url"],
+        "biz_content": json.dumps(biz_content, ensure_ascii=False, separators=(",", ":")),
+    }
+    params["sign"] = _alipay_sign(params, config["private_key"])
+    response = requests.post(config["gateway"], data=params, timeout=20)
+    try:
+        payload = response.json()
+    except Exception as exc:
+        raise AuthError(f"支付宝接口返回异常：HTTP {response.status_code}", 502) from exc
+    node = payload.get("alipay_trade_precreate_response") or {}
+    if node.get("code") != "10000":
+        message = node.get("sub_msg") or node.get("msg") or "支付宝预下单失败"
+        raise AuthError(message, 502)
+    qr_code = str(node.get("qr_code") or "")
+    if not qr_code:
+        raise AuthError("支付宝未返回支付二维码", 502)
+    return {
+        "qr_code": qr_code,
+        "qr_image": _qr_data_url(qr_code),
+        "expires_in": 15 * 60,
+    }
+
+
+def _alipay_config() -> dict[str, str]:
+    app_id = os.getenv("ALIPAY_APP_ID", "").strip()
+    private_key = _normalize_private_key(os.getenv("ALIPAY_APP_PRIVATE_KEY", ""))
+    public_key = _normalize_public_key(os.getenv("ALIPAY_PUBLIC_KEY", ""))
+    notify_url = os.getenv("ALIPAY_NOTIFY_URL", "").strip()
+    sandbox = os.getenv("ALIPAY_SANDBOX", "0").strip().lower() in {"1", "true", "yes", "on"}
+    gateway = os.getenv("ALIPAY_GATEWAY", "").strip()
+    if not gateway:
+        gateway = "https://openapi-sandbox.dl.alipaydev.com/gateway.do" if sandbox else "https://openapi.alipay.com/gateway.do"
+    missing = []
+    if not app_id:
+        missing.append("ALIPAY_APP_ID")
+    if not private_key:
+        missing.append("ALIPAY_APP_PRIVATE_KEY")
+    if not public_key:
+        missing.append("ALIPAY_PUBLIC_KEY")
+    if not notify_url:
+        missing.append("ALIPAY_NOTIFY_URL")
+    if missing:
+        raise AuthError(f"支付宝支付未配置完整，请检查 {', '.join(missing)}", 500)
+    return {"app_id": app_id, "private_key": private_key, "public_key": public_key, "notify_url": notify_url, "gateway": gateway}
+
+
+def _alipay_sign(params: dict[str, object], private_key: str) -> str:
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import padding
+
+    key = serialization.load_pem_private_key(private_key.encode("utf-8"), password=None)
+    signature = key.sign(_alipay_sign_content(params).encode("utf-8"), padding.PKCS1v15(), hashes.SHA256())
+    return base64.b64encode(signature).decode("ascii")
+
+
+def _alipay_verify_payload(payload: dict[str, str]) -> bool:
+    from cryptography.exceptions import InvalidSignature
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import padding
+
+    signature = payload.get("sign", "")
+    if not signature:
+        return False
+    public_key = _alipay_config()["public_key"]
+    key = serialization.load_pem_public_key(public_key.encode("utf-8"))
+    try:
+        key.verify(base64.b64decode(signature), _alipay_sign_content(payload).encode("utf-8"), padding.PKCS1v15(), hashes.SHA256())
+        return True
+    except (InvalidSignature, ValueError):
+        return False
+
+
+def _alipay_sign_content(params: dict[str, object]) -> str:
+    items = []
+    for key in sorted(params):
+        if key in {"sign", "sign_type"}:
+            continue
+        value = params[key]
+        if value is None or value == "":
+            continue
+        items.append(f"{key}={value}")
+    return "&".join(items)
+
+
+def _normalize_private_key(value: str) -> str:
+    text = (value or "").strip().replace("\\n", "\n")
+    if not text:
+        return ""
+    if "BEGIN" in text:
+        return text
+    return f"-----BEGIN RSA PRIVATE KEY-----\n{text}\n-----END RSA PRIVATE KEY-----"
+
+
+def _normalize_public_key(value: str) -> str:
+    text = (value or "").strip().replace("\\n", "\n")
+    if not text:
+        return ""
+    if "BEGIN" in text:
+        return text
+    return f"-----BEGIN PUBLIC KEY-----\n{text}\n-----END PUBLIC KEY-----"
+
+
+def _yuan_amount(amount_cents: int) -> str:
+    return f"{(Decimal(int(amount_cents)) / Decimal(100)).quantize(Decimal('0.01'))}"
+
+
+def _qr_data_url(value: str) -> str:
+    import io
+    import qrcode
+
+    image = qrcode.make(value)
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
 
 
 def _resolve_report_file(run_id: str, run_dir: Path, filename: str) -> Path:

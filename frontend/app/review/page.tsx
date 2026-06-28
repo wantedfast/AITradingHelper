@@ -25,7 +25,9 @@ import {
   ShieldCheck,
   Target,
   TrendingUp,
+  Trophy,
   Upload,
+  X,
 } from "lucide-react";
 import { getAuthToken, storeUser } from "@/lib/auth-client";
 
@@ -66,6 +68,8 @@ type ManualTradeForm = {
   buyPrice: string;
   side: "buy" | "sell";
 };
+
+type InputMode = "manual" | "csv";
 
 type RecentReport = {
   run_id: string;
@@ -229,6 +233,9 @@ export default function ReviewPage() {
     buyPrice: "",
     side: "buy",
   });
+  const [inputMode, setInputMode] = useState<InputMode>("manual");
+  const [csvFile, setCsvFile] = useState<File | null>(null);
+  const [showCsvGuide, setShowCsvGuide] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [reportUrl, setReportUrl] = useState("");
   const [reportRoute, setReportRoute] = useState("");
@@ -285,6 +292,17 @@ export default function ReviewPage() {
     setErrorText("");
   }
 
+  function selectInputMode(mode: InputMode) {
+    if (generating) return;
+    setInputMode(mode);
+    setErrorText("");
+  }
+
+  function updateCsvFile(file: File | null) {
+    setCsvFile(file);
+    setErrorText("");
+  }
+
   function manualTradeReady() {
     return Boolean(
       manualTrade.stockName.trim() &&
@@ -319,6 +337,16 @@ export default function ReviewPage() {
     if (!normalizedManualTradeTime()) return "交易时间格式异常，请重新选择";
     if (!manualTrade.buyPrice.trim()) return "请填写买入价格";
     if (!normalizedManualBuyPrice()) return "买入价格格式异常，请输入大于 0 的数字";
+    return "";
+  }
+
+  function csvTradeReady() {
+    return Boolean(csvFile && /\.(csv|xls|xlsx)$/i.test(csvFile.name));
+  }
+
+  function csvTradeError() {
+    if (!csvFile) return "请先选择交割单文件";
+    if (!/\.(csv|xls|xlsx)$/i.test(csvFile.name)) return "请上传 .csv、.xls 或 .xlsx 格式的交割单文件";
     return "";
   }
 
@@ -409,8 +437,9 @@ export default function ReviewPage() {
   }
 
   async function generateReport() {
-    if (!manualTradeReady()) {
-      const message = manualTradeError();
+    const validationMessage = inputMode === "csv" ? csvTradeError() : manualTradeError();
+    if (inputMode === "csv" ? !csvTradeReady() : !manualTradeReady()) {
+      const message = validationMessage;
       setErrorText(message);
       showToast(message);
       return;
@@ -434,12 +463,17 @@ export default function ReviewPage() {
     try {
       const formData = new FormData();
       formData.append("research_model_tier", researchModelTier);
-      const tradeTime = normalizedManualTradeTime();
-      formData.append("manual_trade", "1");
-      formData.append("manual_stock_name", manualTrade.stockName.trim());
-      formData.append("manual_trade_at", `${manualTrade.tradeDate.trim()}T${tradeTime}`);
-      formData.append("manual_price", normalizedManualBuyPrice());
-      formData.append("manual_side", manualTrade.side);
+      if (inputMode === "csv") {
+        if (!csvFile) throw new Error("请先选择交割单文件");
+        formData.append("file", csvFile, csvFile.name);
+      } else {
+        const tradeTime = normalizedManualTradeTime();
+        formData.append("manual_trade", "1");
+        formData.append("manual_stock_name", manualTrade.stockName.trim());
+        formData.append("manual_trade_at", `${manualTrade.tradeDate.trim()}T${tradeTime}`);
+        formData.append("manual_price", normalizedManualBuyPrice());
+        formData.append("manual_side", manualTrade.side);
+      }
 
       const response = await fetch(`${API_BASE}/api/reports`, {
         method: "POST",
@@ -520,6 +554,7 @@ export default function ReviewPage() {
 
   function resetUpload() {
     setManualTrade({ stockName: "", tradeDate: "", tradeTime: "", buyPrice: "", side: "buy" });
+    setCsvFile(null);
     setReportUrl("");
     setReportRoute("");
     setAgentSummaryUrl("");
@@ -563,6 +598,10 @@ export default function ReviewPage() {
             <TrendingUp />
             <span><b>AI当日行情</b></span>
           </Link>
+          <Link href="/auction-strength">
+            <Trophy />
+            <span><b>竞价强者</b></span>
+          </Link>
         </nav>
         <div className="review-rail-note">
           <Info />
@@ -597,10 +636,20 @@ export default function ReviewPage() {
                 <CalendarClock />
                 <div>
                   <h2>输入交割单</h2>
-                  <p>直接用你填写的交易事实生成复盘。</p>
+                  <p>{inputMode === "csv" ? "上传 CSV 或 Excel 交割单，系统会自动识别成交记录。" : "直接用你填写的交易事实生成复盘。"}</p>
                 </div>
               </div>
-              <div className="manual-trade-grid">
+              <div className="trade-input-switch" aria-label="交割单输入方式">
+                <button className={inputMode === "manual" ? "active" : ""} type="button" onClick={() => selectInputMode("manual")} disabled={generating}>
+                  手动输入
+                </button>
+                <button className={inputMode === "csv" ? "active" : ""} type="button" onClick={() => selectInputMode("csv")} disabled={generating}>
+                  文件上传
+                </button>
+              </div>
+              {inputMode === "manual" ? (
+                <>
+                <div className="manual-trade-grid">
                   <label>
                     <span>股票名字</span>
                     <input
@@ -661,6 +710,30 @@ export default function ReviewPage() {
                     卖出
                   </button>
               </div>
+                </>
+              ) : (
+                <div className="csv-trade-upload">
+                  <input
+                    key={csvFile ? csvFile.name : "empty-csv"}
+                    id="csv-trade-file"
+                    type="file"
+                    accept=".csv,.xls,.xlsx,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    onChange={(event) => updateCsvFile(event.target.files?.[0] || null)}
+                    disabled={generating}
+                  />
+                  <label htmlFor="csv-trade-file">
+                    <FileUp />
+                    <span>
+                      <b>{csvFile ? csvFile.name : "选择交割单文件"}</b>
+                      <small>{csvFile ? `${Math.max(1, Math.round(csvFile.size / 1024))} KB` : "支持券商导出的 CSV、XLS、XLSX 成交明细。"}</small>
+                    </span>
+                  </label>
+                  <button className="csv-guide-button" type="button" onClick={() => setShowCsvGuide(true)}>
+                    <CircleHelp />
+                    文件制作说明
+                  </button>
+                </div>
+              )}
             </div>
             {(
               <>
@@ -849,6 +922,48 @@ export default function ReviewPage() {
         )}
       </section>
       <div className={`studio-toast ${toast ? "show" : ""}`}>{toast}</div>
+      {showCsvGuide && (
+        <div className="csv-guide-backdrop" role="presentation" onMouseDown={() => setShowCsvGuide(false)}>
+          <section className="csv-guide-modal" role="dialog" aria-modal="true" aria-labelledby="csv-guide-title" onMouseDown={(event) => event.stopPropagation()}>
+            <button className="csv-guide-close" type="button" onClick={() => setShowCsvGuide(false)} aria-label="关闭说明">
+              <X />
+            </button>
+            <h2 id="csv-guide-title">交割单文件说明</h2>
+            <p>支持上传 CSV、XLS、XLSX。用 Excel 制作时，第一行保留表头，保存后直接上传即可。</p>
+            <div className="csv-guide-table" role="table" aria-label="交割单字段说明">
+              <div role="row">
+                <b role="cell">股票名称</b>
+                <span role="cell">如：东材科技</span>
+              </div>
+              <div role="row">
+                <b role="cell">股票代码</b>
+                <span role="cell">如：601208</span>
+              </div>
+              <div role="row">
+                <b role="cell">成交日期</b>
+                <span role="cell">如：2026-06-09</span>
+              </div>
+              <div role="row">
+                <b role="cell">成交时间</b>
+                <span role="cell">如：09:25:30</span>
+              </div>
+              <div role="row">
+                <b role="cell">买卖方向</b>
+                <span role="cell">填写：买入 或 卖出</span>
+              </div>
+              <div role="row">
+                <b role="cell">成交数量</b>
+                <span role="cell">如：100</span>
+              </div>
+              <div role="row">
+                <b role="cell">成交价格</b>
+                <span role="cell">如：58.71</span>
+              </div>
+            </div>
+            <p className="csv-guide-tip">至少保留一条完整成交记录；券商导出的表格可直接上传，字段名相近也可以自动识别。</p>
+          </section>
+        </div>
+      )}
     </main>
   );
 }

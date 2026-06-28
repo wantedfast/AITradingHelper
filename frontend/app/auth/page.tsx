@@ -2,15 +2,13 @@
 
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { FormEvent, Suspense, useMemo, useState } from "react";
+import { FormEvent, Suspense, useEffect, useMemo, useState } from "react";
 import {
   ArrowRight,
-  AtSign,
   KeyRound,
   LogIn,
   Mail,
   MessageSquareText,
-  Phone,
   ShieldCheck,
   Sparkles,
   UserPlus,
@@ -18,7 +16,7 @@ import {
 } from "lucide-react";
 import { apiFetch, storeAuth, type AuthResult } from "@/lib/auth-client";
 
-type Mode = "sms-login" | "password-login" | "sms-register" | "password-register" | "admin";
+type Mode = "password-login" | "password-register" | "admin";
 
 export default function AuthPage() {
   return (
@@ -31,11 +29,9 @@ export default function AuthPage() {
 function AuthContent() {
   const router = useRouter();
   const params = useSearchParams();
-  const inviteFromUrl = params.get("invite") || "";
+  const inviteFromUrl = normalizeInviteCode(params.get("invite") || params.get("invite_code") || params.get("ref") || "");
   const redirect = params.get("redirect") || "/review";
-  const [mode, setMode] = useState<Mode>(inviteFromUrl ? "sms-register" : "sms-login");
-  const [phone, setPhone] = useState("");
-  const [smsCode, setSmsCode] = useState("");
+  const [mode, setMode] = useState<Mode>(inviteFromUrl ? "password-register" : "password-login");
   const [account, setAccount] = useState("");
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
@@ -43,44 +39,31 @@ function AuthContent() {
   const [password, setPassword] = useState("");
   const [inviteCode, setInviteCode] = useState(inviteFromUrl);
   const [loading, setLoading] = useState(false);
-  const [sendingSms, setSendingSms] = useState(false);
   const [sendingEmail, setSendingEmail] = useState(false);
-  const [smsCountdown, setSmsCountdown] = useState(0);
   const [emailCountdown, setEmailCountdown] = useState(0);
   const [message, setMessage] = useState("");
 
-  const isRegister = mode === "sms-register" || mode === "password-register";
+  const isRegister = mode === "password-register";
   const title = titleForMode(mode);
   const actionLabel = actionForMode(mode);
   const helper = useMemo(() => helperForMode(mode), [mode]);
 
-  async function sendSmsCode() {
-    setSendingSms(true);
-    setMessage("");
-    try {
-      const result = await apiFetch<{ debug_code?: string; resend_after?: number }>("/api/auth/send-code", {
-        method: "POST",
-        body: JSON.stringify({ phone, purpose: "login" }),
-      });
-      startCountdown(result.resend_after || 60, setSmsCountdown);
-      setMessage(result.debug_code ? `本地测试短信验证码：${result.debug_code}` : "短信验证码已发送。");
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "短信验证码发送失败");
-    } finally {
-      setSendingSms(false);
-    }
-  }
+  useEffect(() => {
+    if (!inviteFromUrl) return;
+    setInviteCode(inviteFromUrl);
+    setMode("password-register");
+  }, [inviteFromUrl]);
 
   async function sendEmailCode() {
     setSendingEmail(true);
     setMessage("");
     try {
-      const result = await apiFetch<{ debug_code?: string; resend_after?: number }>("/api/auth/send-email-code", {
+      const result = await apiFetch<{ resend_after?: number }>("/api/auth/send-email-code", {
         method: "POST",
         body: JSON.stringify({ email, purpose: "register" }),
       });
       startCountdown(result.resend_after || 60, setEmailCountdown);
-      setMessage(result.debug_code ? `本地测试邮箱验证码：${result.debug_code}` : "邮箱验证码已发送，请查看收件箱。");
+      setMessage("邮箱验证码已发送，请查看收件箱。");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "邮箱验证码发送失败");
     } finally {
@@ -94,17 +77,7 @@ function AuthContent() {
     setMessage("");
     try {
       let result: AuthResult;
-      if (mode === "sms-login") {
-        result = await apiFetch<AuthResult>("/api/auth/login", {
-          method: "POST",
-          body: JSON.stringify({ phone, code: smsCode }),
-        });
-      } else if (mode === "sms-register") {
-        result = await apiFetch<AuthResult>("/api/auth/register", {
-          method: "POST",
-          body: JSON.stringify({ phone, code: smsCode, password, invite_code: inviteCode }),
-        });
-      } else if (mode === "password-register") {
+      if (mode === "password-register") {
         result = await apiFetch<AuthResult>("/api/auth/password-register", {
           method: "POST",
           body: JSON.stringify({ username, email, password, email_code: emailCode, invite_code: inviteCode }),
@@ -140,7 +113,7 @@ function AuthContent() {
             </p>
             <h1>把复盘能力，绑定到每一次真实使用。</h1>
             <p>
-              支持短信验证码登录，也支持手机号、账号或邮箱密码登录。注册时设置密码，方便后续直接登录。
+              仅支持邮箱注册。注册时设置账号名和密码，后续可使用邮箱或账号名登录。
             </p>
           </div>
           <div className="account-rules">
@@ -160,28 +133,15 @@ function AuthContent() {
         </section>
 
         <section className="account-panel">
-          <div className="account-mode-switch account-mode-switch--triple">
-            <button className={mode === "sms-login" ? "active" : ""} type="button" onClick={() => setMode("sms-login")}>
-              短信登录
-            </button>
-            <button className={mode === "password-login" ? "active" : ""} type="button" onClick={() => setMode("password-login")}>
+          <div className="account-mode-switch">
+            <button className={mode === "password-login" || mode === "admin" ? "active" : ""} type="button" onClick={() => setMode("password-login")}>
               密码登录
             </button>
-            <button className={isRegister ? "active" : ""} type="button" onClick={() => setMode("sms-register")}>
-              注册
+            <button className={isRegister ? "active" : ""} type="button" onClick={() => setMode("password-register")}>
+              邮箱注册
             </button>
           </div>
           <div className="account-submode-row">
-            {isRegister && (
-              <>
-                <button className={mode === "sms-register" ? "active" : ""} type="button" onClick={() => setMode("sms-register")}>
-                  手机号注册
-                </button>
-                <button className={mode === "password-register" ? "active" : ""} type="button" onClick={() => setMode("password-register")}>
-                  账号密码注册
-                </button>
-              </>
-            )}
             {!isRegister && (
               <button className={mode === "admin" ? "active" : ""} type="button" onClick={() => setMode(mode === "admin" ? "password-login" : "admin")}>
                 {mode === "admin" ? "返回普通密码登录" : "管理员入口"}
@@ -191,34 +151,13 @@ function AuthContent() {
           <h2>{title}</h2>
           <p>{helper}</p>
           <form className="account-form" onSubmit={submit}>
-            {(mode === "sms-login" || mode === "sms-register") && (
-              <>
-                <label>
-                  <span>手机号</span>
-                  <i>
-                    <Phone />
-                    <input value={phone} onChange={(event) => setPhone(event.target.value)} placeholder="请输入手机号" />
-                  </i>
-                </label>
-                <CodeField
-                  label="短信验证码"
-                  value={smsCode}
-                  onChange={setSmsCode}
-                  onSend={sendSmsCode}
-                  sending={sendingSms}
-                  countdown={smsCountdown}
-                />
-                {mode === "sms-register" && <PasswordField value={password} onChange={setPassword} placeholder="至少 8 位密码" />}
-              </>
-            )}
-
             {mode === "password-login" && (
               <>
                 <label>
-                  <span>手机号、账号或邮箱</span>
+                  <span>账号或邮箱</span>
                   <i>
                     <UserRound />
-                    <input value={account} onChange={(event) => setAccount(event.target.value)} placeholder="手机号、账号名或邮箱" />
+                    <input value={account} onChange={(event) => setAccount(event.target.value)} placeholder="账号名或邮箱" />
                   </i>
                 </label>
                 <PasswordField value={password} onChange={setPassword} placeholder="请输入密码" />
@@ -271,8 +210,11 @@ function AuthContent() {
                 <span>邀请码</span>
                 <i>
                   <UserPlus />
-                  <input value={inviteCode} onChange={(event) => setInviteCode(event.target.value.toUpperCase())} placeholder="选填" />
+                  <input value={inviteCode} onChange={(event) => setInviteCode(normalizeInviteCode(event.target.value))} placeholder="选填" />
                 </i>
+                <small className="account-invite-hint">
+                  填入邀请码并完成注册后，邀请方增加 5 次使用机会；被邀请方在注册赠送 5 次基础上，再额外增加 2 次。
+                </small>
               </label>
             )}
             {message && <div className="account-error">{message}</div>}
@@ -282,7 +224,7 @@ function AuthContent() {
             </button>
           </form>
           <div className="account-note">
-            验证码用于确认本人操作。请勿向任何人泄露验证码，平台工作人员不会索要你的验证码或密码。
+            邮箱验证码用于确认本人操作。请勿向任何人泄露验证码，平台工作人员不会索要你的验证码或密码。
           </div>
         </section>
       </div>
@@ -334,27 +276,25 @@ function PasswordField({ value, onChange, placeholder }: { value: string; onChan
 }
 
 function titleForMode(mode: Mode) {
-  if (mode === "sms-login") return "短信验证码登录";
-  if (mode === "password-login") return "手机号、账号或邮箱登录";
-  if (mode === "sms-register") return "手机号注册";
+  if (mode === "password-login") return "账号或邮箱登录";
   if (mode === "password-register") return "账号密码注册";
   return "管理员登录";
 }
 
 function actionForMode(mode: Mode) {
-  if (mode === "sms-login") return "验证码登录";
   if (mode === "password-login") return "密码登录";
-  if (mode === "sms-register") return "手机号注册并领取 5 次免费机会";
   if (mode === "password-register") return "账号注册并领取 5 次免费机会";
   return "登录管理台";
 }
 
 function helperForMode(mode: Mode) {
-  if (mode === "sms-login") return "输入手机号并获取短信验证码，无需密码即可登录。";
-  if (mode === "password-login") return "可以使用手机号、账号名或注册邮箱登录。";
-  if (mode === "sms-register") return "手机号验证码注册适合快速开始，设置密码后赠送 5 次免费使用机会。";
+  if (mode === "password-login") return "可以使用账号名或注册邮箱登录。";
   if (mode === "password-register") return "填写账号名、注册邮箱和密码；邮箱验证码通过后即可创建账号。";
-  return "管理员保留密码登录，避免短信或邮件服务异常时无法进入后台。";
+  return "管理员保留密码登录，避免邮件服务异常时无法进入后台。";
+}
+
+function normalizeInviteCode(value: string) {
+  return value.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 32).toUpperCase();
 }
 
 function startCountdown(seconds: number, setter: (value: number | ((value: number) => number)) => void) {

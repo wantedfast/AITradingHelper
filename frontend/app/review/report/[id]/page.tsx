@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { getAuthToken, storeUser, type UserProfile } from "@/lib/auth-client";
 
 type ViewKey = "review" | "choice" | "theme" | "logic";
 
@@ -85,6 +86,13 @@ type Presenter = {
   };
 };
 
+type AckPayload = {
+  ok?: boolean;
+  error?: string;
+  billing_status?: "pending_generation" | "charged";
+  user?: UserProfile;
+};
+
 type ReviewReportPageProps = {
   params: { id: string };
 };
@@ -127,6 +135,35 @@ export default function ReviewReportPage({ params }: ReviewReportPageProps) {
   const [presenter, setPresenter] = useState<Presenter | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
+  const [billingMessage, setBillingMessage] = useState("");
+  const ackStartedRef = useRef(false);
+
+  const acknowledgeVisibleReport = useCallback(async () => {
+    if (ackStartedRef.current) return;
+    ackStartedRef.current = true;
+    const token = getAuthToken();
+    if (!token) {
+      ackStartedRef.current = false;
+      return;
+    }
+    try {
+      const response = await fetch(`${API_BASE}/api/reports/${encodeURIComponent(reportId)}/ack`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        cache: "no-store",
+      });
+      const payload = (await response.json()) as AckPayload;
+      if (!response.ok) throw new Error(payload.error || "报告已展示，但扣除使用次数失败");
+      if (payload.user) {
+        storeUser(payload.user);
+        const credits = typeof payload.user.credits === "number" ? `剩余 ${payload.user.credits} 次。` : "";
+        setBillingMessage(`报告已成功展示，已扣除 1 次使用机会。${credits}`);
+      }
+    } catch (ackError) {
+      ackStartedRef.current = false;
+      setBillingMessage(ackError instanceof Error ? ackError.message : "报告已展示，但扣除使用次数失败");
+    }
+  }, [reportId]);
 
   const loadPresenter = useCallback(async () => {
     setLoading(true);
@@ -139,12 +176,13 @@ export default function ReviewReportPage({ params }: ReviewReportPageProps) {
         throw new Error(`Presenter 请求失败：${response.status}`);
       }
       setPresenter((await response.json()) as Presenter);
+      void acknowledgeVisibleReport();
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Presenter 加载失败");
     } finally {
       setLoading(false);
     }
-  }, [presenterUrl]);
+  }, [acknowledgeVisibleReport, presenterUrl]);
 
   useEffect(() => {
     void loadPresenter();
@@ -201,6 +239,12 @@ export default function ReviewReportPage({ params }: ReviewReportPageProps) {
         </aside>
 
         <div className="content">
+          {billingMessage && (
+            <div className="billing-note glass" role="status">
+              {billingMessage}
+            </div>
+          )}
+
           {loading && (
             <section className="state glass" aria-live="polite">
               <span className="state-mark" aria-hidden="true">...</span>
@@ -592,6 +636,15 @@ a {
 
 .content {
   min-width: 0;
+}
+
+.billing-note {
+  margin-bottom: 12px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 .report-view {

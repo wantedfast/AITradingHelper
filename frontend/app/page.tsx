@@ -3,7 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { FormEvent, useEffect, useState } from "react";
-import { BellRing, ChevronDown, Copy, FileSearch, Gift, Info, LogOut, MessageSquare, ShieldCheck, Sparkles, TrendingUp, Trophy, UserRound, X } from "lucide-react";
+import { BellRing, ChevronDown, Copy, CreditCard, FileSearch, Gift, Info, LogOut, MessageSquare, ShieldCheck, Sparkles, TrendingUp, Trophy, UserRound, X } from "lucide-react";
 import { GoldMagicCube } from "@/components/gold-magic-cube";
 import { HomeMusic } from "@/components/home-music";
 import { apiFetch, clearAuth, getStoredUser, inviteUrl, refreshCurrentUser, type UserProfile } from "@/lib/auth-client";
@@ -73,7 +73,7 @@ export default function Page() {
     if (!url) return;
     await navigator.clipboard.writeText(url);
     setInviteCopied(true);
-    setFeedbackMessage("邀请链接已复制。新用户用该链接注册登录后，你会获得 5 次免费机会。");
+    setFeedbackMessage("邀请链接已复制。新用户用该链接注册后，邀请方增加 5 次；被邀请方在注册赠送 5 次基础上，再额外增加 2 次。");
     window.setTimeout(() => setInviteCopied(false), 2200);
   }
 
@@ -151,7 +151,7 @@ export default function Page() {
                         <UserRound className="h-4 w-4" />
                         当前账号
                       </span>
-                      <b>{user.username || user.phone}</b>
+                      <b>{user.username || user.email || user.phone}</b>
                     </div>
                     <div className="home-user-row">
                       <span>邮箱</span>
@@ -175,6 +175,10 @@ export default function Page() {
                       <Copy className="h-4 w-4" />
                       {inviteCopied ? "已复制邀请链接" : "复制邀请链接"}
                     </button>
+                    <Link className="home-user-copy" href="/billing" onClick={() => setShowUserMenu(false)}>
+                      <CreditCard className="h-4 w-4" />
+                      购买次数
+                    </Link>
                     <button className="home-user-logout" type="button" onClick={logout}>
                       <LogOut className="h-4 w-4" />
                       退出登录
@@ -209,7 +213,7 @@ export default function Page() {
               </Link>
               {hydrated && !user && (
                 <Link className="secondary home-auth-link" href="/auth?redirect=/review">
-                  手机号注册，送 5 次免费
+                  邮箱注册，送 5 次免费
                 </Link>
               )}
             </div>
