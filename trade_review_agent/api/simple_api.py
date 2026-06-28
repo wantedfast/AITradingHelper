@@ -45,6 +45,7 @@ from trade_review_agent.auth_system import (
     submit_feedback,
 )
 from trade_review_agent.watch.alerts import AlertPlan, evaluate_plans, event_dedupe_key, load_plans, save_plans
+from trade_review_agent.auction_strength.top1_performance import auction_top1_performance_payload
 from trade_review_agent.ocr.ai_trade_parser import TradeParsingError
 from trade_review_agent.common.config import load_env
 from trade_review_agent.ocr.ocr_trades import trade_file_to_trade_csv
@@ -69,6 +70,7 @@ WATCH_AUDIO_DIR = BASE_DIR / "work" / "tts"
 WATCH_SEEN_EVENTS = BASE_DIR / "work" / "watch_seen_events.json"
 WEBHOOK_EVENTS_PATH = BASE_DIR / "work" / "webhook_events.jsonl"
 AUCTION_STRENGTH_PATH = BASE_DIR / "work" / "auction_strength_reports.jsonl"
+AUCTION_TOP1_PERFORMANCE_PATH = BASE_DIR / "work" / "auction_top1_performance.jsonl"
 API_ERROR_LOG = BASE_DIR / "work" / "api_errors.log"
 AUTH_DB = BASE_DIR / "work" / "auth.sqlite"
 CN_TZ = ZoneInfo("Asia/Shanghai")
@@ -132,6 +134,9 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/webhooks":
                 self._list_webhooks()
+                return
+            if path == "/api/auction-strength/performance":
+                self._auction_strength_performance()
                 return
             if path == "/api/auction-strength":
                 self._list_auction_strength_reports()
@@ -439,6 +444,15 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
         )
         _append_webhook_event(WEBHOOK_EVENTS_PATH, event)
         self._json({"ok": True, "event": _webhook_public_event(event)}, status=202)
+
+    def _auction_strength_performance(self) -> None:
+        self._json(
+            auction_top1_performance_payload(
+                performance_path=AUCTION_TOP1_PERFORMANCE_PATH,
+                auction_reports_path=AUCTION_STRENGTH_PATH,
+                cache_db=CACHE_DB,
+            )
+        )
 
     def _list_auction_strength_reports(self) -> None:
         limit = 20

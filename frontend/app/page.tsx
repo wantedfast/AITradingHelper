@@ -4,6 +4,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { FormEvent, useEffect, useState } from "react";
 import { BellRing, ChevronDown, Copy, CreditCard, FileSearch, Gift, Info, LogOut, MessageSquare, ShieldCheck, Sparkles, TrendingUp, Trophy, UserRound, X } from "lucide-react";
+import { AuctionStrengthPerformanceTicker, useAuctionStrengthPerformance } from "@/components/auction-strength-performance-ticker";
 import { GoldMagicCube } from "@/components/gold-magic-cube";
 import { HomeMusic } from "@/components/home-music";
 import { apiFetch, clearAuth, getStoredUser, inviteUrl, refreshCurrentUser, type UserProfile } from "@/lib/auth-client";
@@ -51,7 +52,10 @@ export default function Page() {
   const [feedbackMessage, setFeedbackMessage] = useState("");
   const [showProductGuide, setShowProductGuide] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
+  const [showAuctionTooltip, setShowAuctionTooltip] = useState(false);
   const [inviteCopied, setInviteCopied] = useState(false);
+  const auctionPerformance = useAuctionStrengthPerformance();
+  const recentAuctionTop1Rows = auctionPerformance.rows.slice(-5).reverse();
 
   useEffect(() => {
     setHydrated(true);
@@ -213,6 +217,40 @@ export default function Page() {
                 </Link>
               )}
             </div>
+            <div
+              className={`hero-performance-chip${showAuctionTooltip ? " is-tooltip-open" : ""}`}
+              tabIndex={0}
+              aria-label="查看最近五个交易日竞价强者 Top1"
+              onMouseEnter={() => setShowAuctionTooltip(true)}
+              onMouseLeave={() => setShowAuctionTooltip(false)}
+              onFocus={() => setShowAuctionTooltip(true)}
+              onBlur={() => setShowAuctionTooltip(false)}
+              onClick={() => setShowAuctionTooltip((value) => !value)}
+            >
+              <div className="hero-performance-label">竞价强者选股胜率</div>
+              <div className="hero-performance-rate">{auctionPerformance.win_rate_text}</div>
+              <div className="hero-performance-meta">
+                <span>集合竞价强者 Top1</span>
+                <span>
+                  持有一天收益 <strong>{auctionPerformance.recent_5_avg_return_text}</strong>
+                </span>
+              </div>
+              <div className="hero-performance-tooltip" role="tooltip">
+                <div className="hero-performance-tooltip-head">
+                  <span>最近五个交易日</span>
+                  <strong>Top1</strong>
+                </div>
+                <div className="hero-performance-tooltip-list">
+                  {recentAuctionTop1Rows.map((row) => (
+                    <div className="hero-performance-tooltip-row" key={`${row.trade_date}-${row.code || row.name}`}>
+                      <span>{row.trade_date}</span>
+                      <b>{row.name}</b>
+                      <em>{row.return_text}</em>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
             {hydrated && user && user.role !== "admin" && (
               <div className="home-credit-strip">
                 <span>
@@ -231,6 +269,16 @@ export default function Page() {
             <div className="orb" />
             <div className="cube-stage">
               <GoldMagicCube />
+            </div>
+          </div>
+          <div className="hero-performance-chip">
+            <div className="hero-performance-label">目前集合竞价选股胜率</div>
+            <div className="hero-performance-rate">{auctionPerformance.win_rate_text}</div>
+            <div className="hero-performance-meta">
+              <span>集合竞价强者 Top1</span>
+              <span>
+                持有一天收益 <strong>{auctionPerformance.recent_5_avg_return_text}</strong>
+              </span>
             </div>
           </div>
         </section>
@@ -287,6 +335,25 @@ export default function Page() {
               </div>
             </div>
           </div>
+        </section>
+
+        <section className="auction-strength-section" aria-labelledby="auction-strength-proof-title">
+          <div className="auction-strength-copy">
+            <span className="section-kicker">集合竞价强者</span>
+            <h2 id="auction-strength-proof-title">每天开盘前，先看到最强的那一个。</h2>
+            <p>
+              系统在集合竞价结束后，自动识别当日强势个股 Top1，并持续记录买入价格、次日收益和累计胜率。
+            </p>
+            <div className="auction-strength-points">
+              <span>9:25 后快速定位强势个股</span>
+              <span>记录买入价格与第二天盈利</span>
+              <span>持续沉淀当前个股胜率</span>
+            </div>
+            <Link className="auction-strength-cta" href="/auction-strength">
+              查看今日强者
+            </Link>
+          </div>
+          <AuctionStrengthPerformanceTicker performance={auctionPerformance} />
         </section>
 
         <section id="feedback" className="home-feedback-section">

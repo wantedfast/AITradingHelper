@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "clean": "node -e \"require('fs').rmSync('.next',{recursive:true,force:true})\"",
-    "dev": "next dev --hostname 0.0.0.0 --port 3000",
-    "dev:clean": "npm run clean && next dev --hostname 0.0.0.0 --port 3000",
+    "clean": "node -e \"const fs=require('fs'); for (const dir of ['.next','.next-dev']) fs.rmSync(dir,{recursive:true,force:true})\"",
+    "dev": "node -e \"const cp=require('child_process'); process.env.NEXT_DIST_DIR='.next-dev'; const next=require.resolve('next/dist/bin/next'); const child=cp.spawn(process.execPath,[next,'dev','--hostname','0.0.0.0','--port','3000'],{stdio:'inherit',env:process.env}); child.on('exit', code => process.exit(code ?? 0));\"",
+    "dev:clean": "npm run clean && npm run dev",
     "build": "next build",
     "start": "next start --hostname 0.0.0.0 --port 3000",
     "start:clean": "npm run clean && npm run build && next start --hostname 0.0.0.0 --port 3000",
