@@ -1477,33 +1477,27 @@ h1 {
 }
 
 .feature-shell {
-  width: calc(100% + 220px);
-  margin-left: -110px;
+  width: min(100%, 1480px);
+  margin: 0 auto;
   position: relative;
   overflow: hidden;
-  padding: 30px;
-  border: 1px solid rgba(245, 215, 122, 0.24);
-  border-radius: 30px;
-  background:
-    radial-gradient(circle at 50% 0%, rgba(245, 215, 122, 0.08), transparent 28%),
-    linear-gradient(180deg, rgba(16, 14, 10, 0.94), rgba(8, 8, 8, 0.92));
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.05),
-    inset 0 -28px 48px rgba(20, 16, 8, 0.16),
-    0 28px 80px rgba(0, 0, 0, 0.34);
-  backdrop-filter: blur(18px) saturate(120%);
-  -webkit-backdrop-filter: blur(18px) saturate(120%);
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 
 .feature-shell::before {
   content: "";
   position: absolute;
   top: 0;
-  left: 50%;
-  width: min(52%, 520px);
+  left: 32px;
+  right: 32px;
   height: 1px;
-  transform: translateX(-50%);
-  background: linear-gradient(90deg, transparent, rgba(245, 215, 122, 0.78), transparent);
+  background: linear-gradient(90deg, transparent, rgba(181, 144, 60, 0.5), rgba(255, 224, 141, 0.95), rgba(181, 144, 60, 0.5), transparent);
   box-shadow: 0 0 28px rgba(245, 215, 122, 0.18);
   pointer-events: none;
 }
@@ -1554,47 +1548,66 @@ h1 {
   letter-spacing: 0;
 }
 
-.feature-carousel {
+.feature-marquee-viewport {
   position: relative;
   z-index: 1;
   width: 100%;
-  overflow: visible;
+  overflow: hidden;
+  padding: 8px 0 18px;
 }
 
-.feature-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(420px, 520px));
-  justify-content: center;
-  width: max-content;
-  max-width: none;
-  margin: 0 auto;
+.feature-marquee-viewport::before,
+.feature-marquee-viewport::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  width: 140px;
+  height: 100%;
+  z-index: 5;
+  pointer-events: none;
+}
+
+.feature-marquee-viewport::before {
+  left: 0;
+  background: linear-gradient(90deg, rgba(0, 0, 0, 0.96), rgba(0, 0, 0, 0));
+}
+
+.feature-marquee-viewport::after {
+  right: 0;
+  background: linear-gradient(270deg, rgba(0, 0, 0, 0.96), rgba(0, 0, 0, 0));
+}
+
+.feature-marquee-track {
+  display: flex;
+  align-items: stretch;
   gap: 24px;
-  animation: featureTrackFlow 18s ease-in-out infinite;
+  width: max-content;
+  animation: featureMarquee 34s linear infinite;
   will-change: transform;
 }
 
-.feature-carousel:hover .feature-grid {
+.feature-marquee-viewport:hover .feature-marquee-track {
   animation-play-state: paused;
 }
 
 .feature-card {
   position: relative;
+  flex: 0 0 420px;
   overflow: hidden;
-  min-height: 330px;
-  padding: 30px;
-  border: 1px solid rgba(245, 215, 122, 0.18);
-  border-radius: 18px;
+  height: 220px;
+  padding: 24px;
+  border: 1px solid rgba(204, 168, 83, 0.34);
+  border-radius: 16px;
   background:
-    radial-gradient(circle at 14% 0%, rgba(245, 215, 122, 0.08), transparent 28%),
-    linear-gradient(145deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.02)),
-    linear-gradient(180deg, rgba(15, 12, 8, 0.62), rgba(7, 7, 7, 0.34));
+    radial-gradient(circle at 16% 12%, rgba(221, 181, 83, 0.14), transparent 36%),
+    linear-gradient(145deg, rgba(31, 29, 22, 0.96), rgba(8, 8, 7, 0.98));
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.06),
-    inset 0 -18px 30px rgba(20, 16, 8, 0.2),
-    0 24px 70px rgba(0, 0, 0, 0.28),
-    0 0 0 1px rgba(201, 166, 70, 0.03);
-  backdrop-filter: blur(24px) saturate(140%);
-  -webkit-backdrop-filter: blur(24px) saturate(140%);
+    inset 0 1px 0 rgba(255, 232, 160, 0.12),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.7),
+    0 14px 34px rgba(0, 0, 0, 0.48),
+    0 0 20px rgba(210, 170, 75, 0.08);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
   transform: translateY(0) scale(1);
   will-change: transform, box-shadow, border-color;
   transition:
@@ -8986,6 +8999,17 @@ button.radar-core,
   box-shadow: none;
 }
 
+.site-page #features .feature-shell {
+  width: 100%;
+  margin: 0 auto;
+  overflow: hidden;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
 .feature-shell::before,
 .feature-shell::after {
   content: none;
@@ -8997,8 +9021,8 @@ button.radar-core,
 
 .feature-top-edge {
   position: relative;
-  width: min(100%, 1780px);
-  height: 54px;
+  width: min(calc(100% - 64px), 1120px);
+  height: 42px;
   margin: 0 auto;
   pointer-events: none;
 }
@@ -9038,9 +9062,9 @@ button.radar-core,
 
 .feature-cat-mark {
   display: block;
-  width: 116px;
-  height: 116px;
-  margin: 0 auto 18px;
+  width: 104px;
+  height: 104px;
+  margin: 0 auto 16px;
   object-fit: contain;
   background: transparent;
   filter:
@@ -9050,7 +9074,7 @@ button.radar-core,
 
 .feature-section-title {
   width: fit-content;
-  margin: 0 auto 46px;
+  margin: 0 auto 38px;
   font-family: Georgia, "Times New Roman", serif;
   font-size: clamp(30px, 3.4vw, 54px);
   line-height: 1;
@@ -9239,26 +9263,13 @@ button.radar-core,
   box-shadow: 0 0 0 1px rgba(242, 207, 103, 0.12);
 }
 
-.feature-grid {
-  grid-template-columns: repeat(4, minmax(430px, 500px));
-  width: max-content;
-  max-width: none;
-  margin: 0 auto;
-  align-items: stretch;
-  gap: 16px;
-  animation: featureTrackFlow 18s ease-in-out infinite;
-  will-change: transform;
-}
-
-.feature-carousel:hover .feature-grid {
-  animation-play-state: paused;
+.feature-marquee-track {
+  gap: 24px;
 }
 
 .feature-card {
-  min-height: 230px;
-  padding: 18px;
   animation: none;
-  will-change: transform;
+  will-change: transform, box-shadow, border-color;
 }
 
 .feature-top {
@@ -9281,18 +9292,23 @@ button.radar-core,
 
 .feature-card h3 {
   margin-top: 3px;
-  font-size: 23px;
+  font-size: 24px;
+  line-height: 1.14;
 }
 
 .feature-card p {
-  margin-top: 14px;
+  display: -webkit-box;
+  margin-top: 12px;
   font-size: 14px;
-  line-height: 1.58;
+  line-height: 1.55;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .feature-card ul {
   gap: 8px 10px;
-  margin-top: 16px;
+  margin-top: 14px;
 }
 
 .feature-card li {
@@ -9313,7 +9329,7 @@ button.radar-core,
 }
 
 .feature-card__shine {
-  animation: featureShineFlow 14s ease-in-out infinite;
+  display: none;
 }
 
 .feature-card:nth-child(2) .feature-card__glow,
@@ -9340,10 +9356,19 @@ button.radar-core,
 
 @keyframes featureTrackFlow {
   0%, 100% {
-    transform: translate3d(-72px, 0, 0);
+    transform: translate3d(0, 0, 0);
   }
   50% {
-    transform: translate3d(72px, 0, 0);
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes featureMarquee {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-33.333%);
   }
 }
 
@@ -9370,7 +9395,7 @@ button.radar-core,
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .feature-grid,
+  .feature-marquee-track,
   .feature-card,
   .feature-card__glow,
   .feature-card__shine {
@@ -9379,17 +9404,34 @@ button.radar-core,
 }
 
 @media (max-width: 1180px) {
-  .feature-grid {
-    grid-template-columns: repeat(3, minmax(340px, 1fr));
-    width: max-content;
+  .feature-card {
+    flex-basis: 360px;
+    height: 210px;
+    padding: 22px;
+  }
+
+  .feature-shell {
+    padding-left: 20px;
+    padding-right: 20px;
   }
 }
 
 @media (max-width: 720px) {
-  .feature-grid {
-    grid-template-columns: 1fr;
-    width: 100%;
-    animation: none;
+  .feature-card {
+    flex: 0 0 78vw;
+    max-width: 360px;
+    height: 210px;
+    padding: 22px;
+  }
+
+  .feature-marquee-track {
+    gap: 16px;
+    animation-duration: 30s;
+  }
+
+  .feature-marquee-viewport::before,
+  .feature-marquee-viewport::after {
+    width: 64px;
   }
 }
 
@@ -11348,40 +11390,9 @@ button.radar-core,
 }
 
 .auction-page {
-  min-height: 100vh;
-  display: grid;
-  grid-template-columns: 260px minmax(0, 1fr);
-  color: #f3f6ee;
-  background:
-    linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px),
-    linear-gradient(0deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px),
-    linear-gradient(135deg, #080c0d 0%, #111915 44%, #1a1510 100%);
-  background-size: 48px 48px, 48px 48px, auto;
+  color: var(--rw-text, #f3f6ee);
 }
 
-.auction-rail {
-  position: sticky;
-  top: 0;
-  height: 100vh;
-  display: grid;
-  grid-template-rows: auto 1fr;
-  gap: 28px;
-  padding: 28px 18px;
-  border-right: 1px solid rgba(243, 246, 238, 0.12);
-  background: rgba(4, 9, 9, 0.8);
-  backdrop-filter: blur(16px);
-}
-
-.auction-brand,
-.auction-nav a,
-.auction-nav button {
-  color: inherit;
-  text-decoration: none;
-}
-
-.auction-brand,
-.auction-nav a,
-.auction-nav button,
 .auction-kicker,
 .auction-panel-head {
   display: flex;
@@ -11389,19 +11400,6 @@ button.radar-core,
   gap: 12px;
 }
 
-.auction-brand .brand-mark {
-  display: grid;
-  place-items: center;
-  width: 42px;
-  height: 42px;
-  border: 1px solid rgba(245, 199, 107, 0.28);
-  border-radius: 8px;
-  color: #f5c76b;
-  background: rgba(245, 199, 107, 0.1);
-}
-
-.auction-brand b,
-.auction-nav b,
 .auction-topbar b,
 .auction-hero h1,
 .auction-status-strip b,
@@ -11413,8 +11411,6 @@ button.radar-core,
   color: #fbfbef;
 }
 
-.auction-brand small,
-.auction-nav small,
 .auction-topbar span,
 .auction-hero p,
 .auction-status-strip span,
@@ -11425,30 +11421,6 @@ button.radar-core,
 .auction-empty span,
 .auction-history-list span {
   color: rgba(243, 246, 238, 0.64);
-}
-
-.auction-nav {
-  display: grid;
-  align-content: start;
-  gap: 10px;
-}
-
-.auction-nav a,
-.auction-nav button {
-  width: 100%;
-  min-height: 68px;
-  padding: 12px;
-  border: 1px solid transparent;
-  border-radius: 8px;
-  background: transparent;
-  text-align: left;
-  cursor: pointer;
-}
-
-.auction-nav a:hover,
-.auction-nav button:hover {
-  border-color: rgba(245, 199, 107, 0.28);
-  background: rgba(255, 255, 255, 0.045);
 }
 
 .auction-main {
@@ -11481,6 +11453,41 @@ button.radar-core,
   padding: 10px 12px;
   color: #fde68a;
   background: rgba(5, 8, 8, 0.66);
+}
+
+.auction-topbar-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  min-width: 0;
+}
+
+.auction-topbar-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 42px;
+  border: 1px solid rgba(245, 199, 107, 0.22);
+  border-radius: 8px;
+  padding: 0 14px;
+  color: #fde68a;
+  background: rgba(5, 8, 8, 0.66);
+  font-weight: 850;
+  cursor: pointer;
+}
+
+.auction-topbar-actions button:disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
+
+.auction-topbar-actions button span {
+  color: inherit;
+  font-size: 14px;
+  letter-spacing: 0;
+  text-transform: none;
 }
 
 .auction-date-picker svg {
@@ -11523,6 +11530,21 @@ button.radar-core,
   margin: 0;
   font-size: clamp(34px, 4vw, 58px);
   line-height: 1.05;
+  letter-spacing: 0;
+}
+
+.auction-buy-note {
+  display: inline-flex;
+  width: fit-content;
+  margin-top: 16px;
+  border: 1px solid rgba(245, 199, 107, 0.34);
+  border-radius: 999px;
+  padding: 8px 14px;
+  color: #fde68a;
+  background: rgba(245, 199, 107, 0.08);
+  box-shadow: inset 0 1px 0 rgba(255, 239, 186, 0.12);
+  font-size: 14px;
+  font-weight: 900;
   letter-spacing: 0;
 }
 
@@ -11703,11 +11725,6 @@ button.radar-core,
   border-left-color: rgba(248, 113, 113, 0.7);
 }
 
-.auction-nav button:disabled {
-  cursor: wait;
-  opacity: 0.74;
-}
-
 .auction-confirm-panel {
   display: grid;
   gap: 22px;
@@ -11808,23 +11825,22 @@ button.radar-core,
   padding: 16px;
 }
 
-@media (max-width: 1120px) {
-  .auction-page,
+@media (max-width: 1240px) {
   .auction-hero,
   .auction-grid,
   .auction-grid--lower {
     grid-template-columns: 1fr;
   }
 
-  .auction-rail {
-    position: relative;
-    height: auto;
-    border-right: 0;
-    border-bottom: 1px solid rgba(243, 246, 238, 0.12);
+  .auction-topbar {
+    flex-wrap: wrap;
+    align-items: flex-start;
   }
 
-  .auction-nav {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .auction-topbar-actions {
+    width: 100%;
+    justify-content: flex-start;
+    flex-wrap: wrap;
   }
 }
 
@@ -11835,7 +11851,6 @@ button.radar-core,
   }
 
   .auction-topbar,
-  .auction-nav,
   .auction-status-strip,
   .auction-stock-card header {
     grid-template-columns: 1fr;
@@ -11850,6 +11865,10 @@ button.radar-core,
   .auction-date-picker {
     width: 100%;
     justify-content: flex-start;
+  }
+
+  .auction-topbar-actions button {
+    width: 100%;
   }
 
   .auction-hero,

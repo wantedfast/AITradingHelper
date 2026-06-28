@@ -1,11 +1,11 @@
 "use client";
 
-import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { ReactNode } from "react";
-import { ArrowLeft, BarChart3, CalendarDays, Flame, Loader2, LockKeyhole, RefreshCcw, ShieldAlert, Trophy } from "lucide-react";
+import { BarChart3, CalendarDays, Flame, Loader2, LockKeyhole, RefreshCcw, ShieldAlert, Trophy } from "lucide-react";
 import { getAuthToken, storeUser, type UserProfile } from "@/lib/auth-client";
+import { MainSidebar } from "@/components/main-sidebar";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || (process.env.NODE_ENV === "development" ? "http://127.0.0.1:8600" : "");
 
@@ -231,45 +231,30 @@ export default function AuctionStrengthPage() {
   }, [acknowledgeVisibleReport, confirmed, selectedDate, selectedReport]);
 
   return (
-    <main className="auction-page">
-      <aside className="auction-rail">
-        <Link className="auction-brand" href="/">
-          <span className="brand-mark">
-            <Trophy className="h-5 w-5" />
-          </span>
-          <span>
-            <b>竞价强者</b>
-            <small>09:25 强弱映射</small>
-          </span>
-        </Link>
-        <nav className="auction-nav" aria-label="auction strength navigation">
-          <Link href="/">
-            <ArrowLeft className="h-5 w-5" />
-            <span>
-              <b>返回首页</b>
-              <small>回到盈航主界面</small>
-            </span>
-          </Link>
-          <button type="button" onClick={() => confirmed ? loadReports() : confirmView()} disabled={loading}>
-            {loading ? <Loader2 className="spin-icon" /> : <RefreshCcw className="h-5 w-5" />}
-            <span>
-              <b>{confirmed ? "刷新数据" : "确认查看"}</b>
-              <small>{confirmed ? isToday ? "当日自动刷新中" : "读取所选日期" : "查看会扣次数"}</small>
-            </span>
-          </button>
-        </nav>
-      </aside>
+    <main className="review-workbench-page auction-page">
+      <MainSidebar
+        activeKey="auction-strength"
+        note="09:25 竞价强弱映射，确认查看后展示强势标的、回避标的和全局结论。"
+      />
 
-      <section className="auction-main">
+      <section className="review-workbench-main auction-main">
         <header className="auction-topbar">
           <div>
             <span>AUCTION STRENGTH</span>
             <b>竞价强者数据看板</b>
           </div>
-          <label className="auction-date-picker">
-            <CalendarDays className="h-4 w-4" />
-            <input type="date" value={selectedDate} onChange={(event) => handleDateChange(event.target.value)} />
-          </label>
+          <div className="auction-topbar-actions">
+            <label className="auction-date-picker">
+              <CalendarDays className="h-4 w-4" />
+              <input type="date" value={selectedDate} onChange={(event) => handleDateChange(event.target.value)} />
+            </label>
+            {confirmed ? (
+              <button type="button" onClick={() => loadReports()} disabled={loading}>
+                {loading ? <Loader2 className="spin-icon" /> : <RefreshCcw className="h-4 w-4" />}
+                <span>刷新数据</span>
+              </button>
+            ) : null}
+          </div>
         </header>
 
         <section className="auction-hero">
@@ -279,6 +264,7 @@ export default function AuctionStrengthPage() {
               {selectedReport?.trade_date || selectedDate || "等待数据"} · {confirmed ? selectedReport?.analysis_time || "09:25 集合竞价后" : "确认后查看"}
             </p>
             <h1>{confirmed ? selectedReport?.summary.one_sentence || "当前日期暂无竞价强者数据。" : "查看竞价分析会扣除 1 次使用机会。"}</h1>
+            <span className="auction-buy-note">建议以买限价格买入</span>
             <p>{confirmed ? selectedReport?.global_conclusion.one_sentence_for_930 || "当日数据进入后，页面会自动刷新并展示 9:30 前执行重点。" : "确认查看后才会加载 Top5 强势标的、回避标的和全局结论；没有数据或读取失败不会扣次数。"}</p>
           </div>
           <div className="auction-status-strip">

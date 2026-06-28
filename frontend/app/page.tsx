@@ -12,38 +12,34 @@ const features = [
   {
     href: "/review",
     title: "AI 复盘",
-    label: "Trade Review",
+    label: "TRADE REVIEW",
     icon: FileSearch,
-    description:
-      "上传交割单后，系统自动结构化买卖过程，结合个股 K 线、大盘情绪、板块强弱和产业链位置，给出可执行的复盘结论。",
-    points: ["买卖点评分", "最佳卖点推演", "板块与指数共振", "产业链位置判断"],
+    description: "上传交割单，自动还原买卖过程，结合个股走势、市场情绪与板块强弱，生成可执行的复盘结论。",
+    points: ["买卖点评分", "交易逻辑拆解", "板块强弱判断", "复盘结论生成"],
   },
   {
     href: "/watch",
     title: "AI 盯盘",
-    label: "Trading Watch",
+    label: "TRADING WATCH",
     icon: BellRing,
-    description:
-      "把复盘结论变成盘中预案，价格、涨跌幅、量能与指数环境触发后提醒交易者执行，避免临盘凭感觉改剧本。",
-    points: ["预案触发", "声音提醒", "风险条件", "执行记录"],
+    description: "围绕买入价、仓位和市场环境生成次日交易预案，触发关键条件时提醒执行，减少临盘犹豫。",
+    points: ["次日预案", "执行提醒", "风险条件", "执行记录"],
   },
   {
     href: "/market-day",
-    title: "AI当日行情",
-    label: "Market Day",
+    title: "AI 当日行情",
+    label: "MARKET DAY",
     icon: TrendingUp,
-    description:
-      "默认复盘今天 A股全市场，先由 Doubao 搜索行情主线、涨停潮和连板梯队，再由 Judge 判断主线内最强势个股。",
-    points: ["当日主线", "强势个股", "龙头中军判断", "证据链复盘"],
+    description: "自动梳理当日 A 股行情，识别主线题材、强势梯队与核心个股，帮助你抓住市场真正的方向。",
+    points: ["主线识别", "强势个股", "梯队判断", "证据链复盘"],
   },
   {
     href: "/auction-strength",
     title: "竞价强者",
-    label: "Auction Strength",
+    label: "AUCTION STRENGTH",
     icon: Trophy,
-    description:
-      "接收 09:25 集合竞价后的强弱 JSON，展示 Top5 强势标的、回避标的、最强题材和 9:30 执行重点。",
-    points: ["强者排序", "负反馈回避", "题材结论", "原始 JSON"],
+    description: "解析集合竞价后的强弱信号，筛选高关注标的、回避风险方向，并给出开盘前的执行重点。",
+    points: ["竞价强弱", "开盘重点", "风险回避", "题材结论"],
   },
 ];
 
@@ -252,12 +248,19 @@ export default function Page() {
             />
             <h2 className="feature-section-title">看懂市场涨跌</h2>
             <div className="feature-shell__glow" />
-            <div className="feature-carousel">
-              <div className="feature-grid">
-                {features.map((feature) => {
+            <div className="feature-marquee-viewport">
+              <div className="feature-marquee-track">
+                {[...features, ...features, ...features].map((feature, index) => {
                   const Icon = feature.icon;
+                  const duplicate = index >= features.length;
                   return (
-                    <Link className="feature-card feature-card--glass" href={feature.href} key={feature.title}>
+                    <Link
+                      aria-hidden={duplicate}
+                      className="feature-card feature-card--glass"
+                      href={feature.href}
+                      key={`${feature.title}-${index}`}
+                      tabIndex={duplicate ? -1 : undefined}
+                    >
                       <div className="feature-card__glow" />
                       <div className="feature-card__shine" />
                       <div className="feature-top">
@@ -271,7 +274,7 @@ export default function Page() {
                       </div>
                       <p>{feature.description}</p>
                       <ul>
-                        {feature.points.map((point) => (
+                        {feature.points.slice(0, 2).map((point) => (
                           <li key={point}>
                             <ShieldCheck className="h-4 w-4" />
                             {point}
@@ -367,3 +370,4 @@ export default function Page() {
     </main>
   );
 }
+
