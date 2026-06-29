@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { ReactNode } from "react";
-import { BarChart3, CalendarDays, Flame, Loader2, LockKeyhole, RefreshCcw, ShieldAlert, Trophy } from "lucide-react";
+import { BarChart3, CalendarDays, Database, Flame, Loader2, LockKeyhole, RefreshCcw, ShieldAlert, Sparkles, Timer, Trophy } from "lucide-react";
 import { getAuthToken, storeUser, type UserProfile } from "@/lib/auth-client";
 import { MainSidebar } from "@/components/main-sidebar";
 
@@ -22,6 +22,7 @@ type AuctionConclusion = {
   best_capacity_confirmation: string;
   biggest_negative_feedback: string;
   one_sentence_for_930: string;
+  limit_open_emotion_anchors?: AuctionAnchor[];
 };
 
 type StrongStock = {
@@ -59,6 +60,13 @@ type AuctionReport = {
   top5_strong_stocks: StrongStock[];
   top5_avoid_stocks: AvoidStock[];
   global_conclusion: AuctionConclusion;
+  theme_gate_result?: ThemeGateResult;
+  emotion_anchors?: AuctionAnchor[];
+  timings?: Record<string, number>;
+  quote_provider?: string;
+  source_csv?: string;
+  data_limit?: string[];
+  warnings?: string[];
 };
 
 type AuctionPayload = {
@@ -78,6 +86,40 @@ type AuctionAckPayload = {
   billing_status?: "charged";
   billing_trade_date?: string;
   user?: UserProfile;
+};
+
+type ThemeCandidate = {
+  theme?: string;
+  confidence?: string;
+  reason?: string;
+  leader_candidates?: Array<{
+    code?: string;
+    name?: string;
+    role?: string;
+    today_open_change?: string | number;
+    reason?: string;
+  }>;
+};
+
+type ThemeGateResult = {
+  type?: string;
+  compact_gate?: string;
+  admitted_themes?: ThemeCandidate[];
+  excluded_themes?: Array<{
+    theme?: string;
+    reason?: string;
+  }>;
+  strongest_theme?: string;
+  summary?: string;
+};
+
+type AuctionAnchor = {
+  code?: string;
+  name?: string;
+  theme?: string;
+  today_open_change?: string | number;
+  reason?: string;
+  participation_note?: string;
 };
 
 function todayIsoDate() {
@@ -105,6 +147,16 @@ function globalConclusionText(report: AuctionReport | null) {
   ].filter(Boolean);
   const lead = parts.length ? `${parts.join("，")}。` : "";
   return `${lead}${conclusion.one_sentence_for_930 || ""}`.trim();
+}
+
+function formatTiming(seconds: number | undefined) {
+  if (typeof seconds !== "number" || Number.isNaN(seconds)) return "--";
+  if (seconds >= 60) return `${(seconds / 60).toFixed(1)} 分钟`;
+  return `${seconds.toFixed(seconds >= 10 ? 1 : 2)} 秒`;
+}
+
+function anchorLabel(anchor: AuctionAnchor) {
+  return [anchor.name, anchor.code].filter(Boolean).join(" ") || "--";
 }
 
 export default function AuctionStrengthPage() {
@@ -346,12 +398,96 @@ export default function AuctionStrengthPage() {
               </section>
             </section>
 
-            <section className="auction-grid auction-grid--lower">
+            <section className="auction-grid auction-grid--v2">
               <section className="auction-panel auction-conclusion-panel">
-                <PanelHead icon={<BarChart3 className="h-5 w-5" />} title="全局结论" />
+                <PanelHead icon={<BarChart3 className="h-5 w-5" />} title="全局结论" text="把 9:25 最强、最超预期、容量确认和负反馈压缩成 9:30 观察重点。" />
+                <div className="auction-metric-grid">
+                  <MetricTile label="最强个股" value={selectedReport?.global_conclusion.strongest_stock_at_925 || "--"} />
+                  <MetricTile label="最强题材" value={selectedReport?.global_conclusion.strongest_theme_cluster || "--"} />
+                  <MetricTile label="最超预期" value={selectedReport?.global_conclusion.most_over_expected_stock || "--"} />
+                  <MetricTile label="容量确认" value={selectedReport?.global_conclusion.best_capacity_confirmation || "--"} />
+                  <MetricTile label="最大负反馈" value={selectedReport?.global_conclusion.biggest_negative_feedback || "--"} />
+                </div>
                 <p className="auction-conclusion-text">{conclusionText || "所选日期暂无全局结论。"}</p>
               </section>
 
+              <section className="auction-panel">
+                <PanelHead icon={<Sparkles className="h-5 w-5" />} title="情绪锚点" text="涨停开、一字、接近涨停或强度锚，只作为盘前参考。" />
+                <div className="auction-anchor-list">
+                  {selectedReport?.emotion_anchors?.length ? selectedReport.emotion_anchors.slice(0, 8).map((anchor, index) => (
+                    <article className="auction-v2-item" key={`${anchor.code || index}-${anchor.name || "anchor"}`}>
+                      <header>
+                        <b>{anchorLabel(anchor)}</b>
+                        <strong data-tone={changeTone(String(anchor.today_open_change ?? ""))}>{anchor.today_open_change ?? "--"}%</strong>
+                      </header>
+                      <span>{anchor.theme || "--"}</span>
+                      <p>{anchor.reason || anchor.participation_note || "--"}</p>
+                    </article>
+                  )) : <EmptyState text="所选日期没有情绪锚点字段，旧数据会保持空态。" />}
+                </div>
+              </section>
+            </section>
+
+            <section className="auction-grid auction-grid--v2">
+              <section className="auction-panel">
+                <PanelHead icon={<ShieldAlert className="h-5 w-5" />} title="题材门禁" text="Theme Gate 决定哪些题材放行，哪些题材排除。" />
+                <div className="auction-theme-gate">
+                  <MetricTile label="门禁状态" value={selectedReport?.theme_gate_result?.compact_gate || selectedReport?.theme_gate_result?.type || "--"} />
+                  <MetricTile label="最强题材" value={selectedReport?.theme_gate_result?.strongest_theme || selectedReport?.global_conclusion.strongest_theme_cluster || "--"} />
+                </div>
+                <div className="auction-theme-list">
+                  {(selectedReport?.theme_gate_result?.admitted_themes || []).slice(0, 5).map((theme, index) => (
+                    <article className="auction-v2-item" key={`${theme.theme || "admit"}-${index}`}>
+                      <header>
+                        <b>{theme.theme || "--"}</b>
+                        <span>{theme.confidence || "放行"}</span>
+                      </header>
+                      <p>{theme.reason || theme.leader_candidates?.map((item) => [item.name, item.code].filter(Boolean).join(" ")).filter(Boolean).join(" / ") || "--"}</p>
+                    </article>
+                  ))}
+                  {(selectedReport?.theme_gate_result?.excluded_themes || []).slice(0, 5).map((theme, index) => (
+                    <article className="auction-v2-item auction-v2-item--avoid" key={`${theme.theme || "exclude"}-${index}`}>
+                      <header>
+                        <b>{theme.theme || "--"}</b>
+                        <span>排除</span>
+                      </header>
+                      <p>{theme.reason || "--"}</p>
+                    </article>
+                  ))}
+                  {selectedReport?.theme_gate_result?.admitted_themes?.length || selectedReport?.theme_gate_result?.excluded_themes?.length ? null : <EmptyState text="所选日期没有题材门禁字段，旧数据会保持空态。" />}
+                </div>
+              </section>
+
+              <section className="auction-panel">
+                <PanelHead icon={<Timer className="h-5 w-5" />} title="链路耗时" text="展示 webhook 中传来的 V2 阶段耗时。" />
+                <div className="auction-metric-grid">
+                  <MetricTile label="总耗时" value={formatTiming(selectedReport?.timings?.total_elapsed_seconds)} />
+                  <MetricTile label="9:25后" value={formatTiming(selectedReport?.timings?.post_auction_elapsed_seconds)} />
+                  <MetricTile label="行情获取" value={formatTiming(selectedReport?.timings?.quote_fetch_elapsed_seconds)} />
+                  <MetricTile label="题材判断" value={formatTiming(selectedReport?.timings?.theme_judge_elapsed_seconds)} />
+                  <MetricTile label="个股判断" value={formatTiming(selectedReport?.timings?.stock_judge_elapsed_seconds)} />
+                </div>
+                <div className="auction-data-box">
+                  <Database className="h-4 w-4" />
+                  <div>
+                    <b>{selectedReport?.quote_provider || "行情源 --"}</b>
+                    <span>{selectedReport?.source_csv || "CSV --"}</span>
+                  </div>
+                </div>
+                {selectedReport?.data_limit?.length ? (
+                  <ul className="auction-note-list">
+                    {selectedReport.data_limit.map((item, index) => <li key={`${item}-${index}`}>{item}</li>)}
+                  </ul>
+                ) : null}
+                {selectedReport?.warnings?.length ? (
+                  <ul className="auction-note-list auction-note-list--warning">
+                    {selectedReport.warnings.map((item, index) => <li key={`${item}-${index}`}>{item}</li>)}
+                  </ul>
+                ) : null}
+              </section>
+            </section>
+
+            <section className="auction-grid auction-grid--lower auction-grid--single">
               <section className="auction-panel auction-day-list-panel">
                 <PanelHead icon={<CalendarDays className="h-5 w-5" />} title="当日记录" text="同一日期有多次推送时，可切换查看。" />
                 <div className="auction-history-list">
@@ -390,5 +526,14 @@ function EmptyState({ text }: { text: string }) {
       <b>暂无数据</b>
       <span>{text}</span>
     </div>
+  );
+}
+
+function MetricTile({ label, value }: { label: string; value: string }) {
+  return (
+    <article className="auction-metric-tile">
+      <span>{label}</span>
+      <b>{value}</b>
+    </article>
   );
 }

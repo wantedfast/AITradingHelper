@@ -2454,7 +2454,7 @@ def _auction_strength_report_from_payload(*, payload: dict, source_ip: str, requ
     conclusion = payload.get("global_conclusion") if isinstance(payload.get("global_conclusion"), dict) else {}
     strong_stocks = _auction_stock_items(payload.get("top5_strong_stocks"), mode="strong")
     avoid_stocks = _auction_stock_items(payload.get("top5_avoid_stocks"), mode="avoid")
-    return {
+    report = {
         "id": uuid4().hex,
         "request_id": request_id,
         "received_at": datetime.now(CN_TZ).strftime("%Y-%m-%d %H:%M:%S"),
@@ -2478,6 +2478,22 @@ def _auction_strength_report_from_payload(*, payload: dict, source_ip: str, requ
         },
         "raw_payload": payload,
     }
+    report["global_conclusion"]["limit_open_emotion_anchors"] = _safe_auction_list(
+        conclusion.get("limit_open_emotion_anchors") if isinstance(conclusion, dict) else [],
+        limit=30,
+    )
+    report.update(
+        {
+            "theme_gate_result": _safe_auction_json(payload.get("theme_gate_result"), limit=100),
+            "emotion_anchors": _safe_auction_list(payload.get("emotion_anchors"), limit=30),
+            "timings": _auction_timings(payload),
+            "quote_provider": _short_text(payload.get("quote_provider"), 80),
+            "source_csv": _short_text(payload.get("source_csv"), 300),
+            "data_limit": _safe_text_list(payload.get("data_limit"), limit=30, item_limit=300),
+            "warnings": _safe_auction_warnings(payload.get("warnings")),
+        }
+    )
+    return report
 
 
 def _auction_stock_items(value: object, *, mode: str) -> list[dict]:
@@ -2511,6 +2527,76 @@ def _safe_rank(value: object, *, fallback: int) -> int:
     except Exception:
         return fallback
     return rank if rank > 0 else fallback
+
+
+def _safe_text_list(value: object, *, limit: int, item_limit: int) -> list[str]:
+    if isinstance(value, list):
+        raw_items = value
+    elif value is None or value == "":
+        raw_items = []
+    else:
+        raw_items = [value]
+    items: list[str] = []
+    for item in raw_items[:limit]:
+        text = _short_text(item, item_limit)
+        if text:
+            items.append(text)
+    return items
+
+
+def _safe_auction_warnings(value: object) -> list[str]:
+    blocked = ("不要输出", "提示词", "prompt", "system message", "developer message")
+    return [
+        item
+        for item in _safe_text_list(value, limit=20, item_limit=300)
+        if not any(token.lower() in item.lower() for token in blocked)
+    ]
+
+
+def _safe_auction_list(value: object, *, limit: int) -> list[object]:
+    if not isinstance(value, list):
+        return []
+    return [_safe_auction_json(item, limit=limit) for item in value[:limit]]
+
+
+def _safe_auction_json(value: object, *, limit: int = 50) -> object:
+    if isinstance(value, dict):
+        return {str(key): _safe_auction_json(item, limit=limit) for key, item in list(value.items())[:limit]}
+    if isinstance(value, list):
+        return [_safe_auction_json(item, limit=limit) for item in value[:limit]]
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    return _short_text(value, 500)
+
+
+def _auction_number(value: object) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return round(float(value), 3)
+    except Exception:
+        return None
+
+
+def _auction_timings(payload: dict) -> dict:
+    source = payload.get("timings") if isinstance(payload.get("timings"), dict) else {}
+    keys = [
+        "prearm_elapsed_seconds",
+        "quote_fetch_elapsed_seconds",
+        "theme_summary_elapsed_seconds",
+        "theme_judge_elapsed_seconds",
+        "stock_pool_elapsed_seconds",
+        "stock_judge_elapsed_seconds",
+        "push_elapsed_seconds",
+        "total_elapsed_seconds",
+        "post_auction_elapsed_seconds",
+    ]
+    timings = {}
+    for key in keys:
+        number = _auction_number(source.get(key) if isinstance(source, dict) and key in source else payload.get(key))
+        if number is not None:
+            timings[key] = number
+    return timings
 
 
 def _recent_auction_strength_reports(path: Path, *, limit: int = 20, trade_date: str = "") -> list[dict]:
@@ -2564,7 +2650,7 @@ def _auction_strength_report_count(path: Path, *, trade_date: str = "") -> int:
 def _auction_strength_public_report(report: dict) -> dict:
     summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
     conclusion = report.get("global_conclusion") if isinstance(report.get("global_conclusion"), dict) else {}
-    return {
+    public_report = {
         "id": str(report.get("id") or ""),
         "request_id": str(report.get("request_id") or ""),
         "received_at": str(report.get("received_at") or ""),
@@ -2585,9 +2671,22 @@ def _auction_strength_public_report(report: dict) -> dict:
             "best_capacity_confirmation": str(conclusion.get("best_capacity_confirmation") or ""),
             "biggest_negative_feedback": str(conclusion.get("biggest_negative_feedback") or ""),
             "one_sentence_for_930": str(conclusion.get("one_sentence_for_930") or ""),
+            "limit_open_emotion_anchors": conclusion.get("limit_open_emotion_anchors") if isinstance(conclusion.get("limit_open_emotion_anchors"), list) else [],
         },
         "raw_payload": report.get("raw_payload") if "raw_payload" in report else {},
     }
+    public_report.update(
+        {
+            "theme_gate_result": report.get("theme_gate_result") if isinstance(report.get("theme_gate_result"), dict) else {},
+            "emotion_anchors": report.get("emotion_anchors") if isinstance(report.get("emotion_anchors"), list) else [],
+            "timings": report.get("timings") if isinstance(report.get("timings"), dict) else {},
+            "quote_provider": str(report.get("quote_provider") or ""),
+            "source_csv": str(report.get("source_csv") or ""),
+            "data_limit": report.get("data_limit") if isinstance(report.get("data_limit"), list) else [],
+            "warnings": report.get("warnings") if isinstance(report.get("warnings"), list) else [],
+        }
+    )
+    return public_report
 
 
 def _public_auction_stock_items(value: object, *, follow_key: str) -> list[dict]:
