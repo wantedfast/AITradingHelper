@@ -2504,15 +2504,18 @@ def _auction_stock_items(value: object, *, mode: str) -> list[dict]:
         if not isinstance(raw_item, dict):
             continue
         follow_key = "observe_after_930" if mode == "strong" else "risk_after_930"
+        label_value = raw_item.get("label") or raw_item.get("role")
+        if mode == "avoid":
+            label_value = label_value or raw_item.get("risk_type")
         items.append(
             {
                 "rank": _safe_rank(raw_item.get("rank"), fallback=index),
                 "code": _short_text(raw_item.get("code"), 16),
                 "name": _short_text(raw_item.get("name"), 80),
                 "theme": _short_text(raw_item.get("theme"), 120),
-                "today_open_change": _short_text(raw_item.get("today_open_change"), 40),
-                "label": _short_text(raw_item.get("label"), 80),
-                "theme_level": _short_text(raw_item.get("theme_level"), 120),
+                "today_open_change": _short_text(raw_item.get("today_open_change") if raw_item.get("today_open_change") not in {None, ""} else raw_item.get("today_open_change_pct"), 40),
+                "label": _short_text(label_value, 80),
+                "theme_level": _short_text(raw_item.get("theme_level") or raw_item.get("expectation_status"), 120),
                 "reason": _short_text(raw_item.get("reason"), 800),
                 follow_key: _short_text(raw_item.get(follow_key), 800),
             }

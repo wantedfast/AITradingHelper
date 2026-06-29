@@ -118,6 +118,7 @@ type AuctionAnchor = {
   name?: string;
   theme?: string;
   today_open_change?: string | number;
+  today_open_change_pct?: string | number;
   reason?: string;
   participation_note?: string;
 };
@@ -418,7 +419,7 @@ export default function AuctionStrengthPage() {
                     <article className="auction-v2-item" key={`${anchor.code || index}-${anchor.name || "anchor"}`}>
                       <header>
                         <b>{anchorLabel(anchor)}</b>
-                        <strong data-tone={changeTone(String(anchor.today_open_change ?? ""))}>{anchor.today_open_change ?? "--"}%</strong>
+                        <strong data-tone={changeTone(String(anchor.today_open_change ?? anchor.today_open_change_pct ?? ""))}>{anchor.today_open_change ?? anchor.today_open_change_pct ?? "--"}%</strong>
                       </header>
                       <span>{anchor.theme || "--"}</span>
                       <p>{anchor.reason || anchor.participation_note || "--"}</p>
