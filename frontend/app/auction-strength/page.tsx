@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { ReactNode } from "react";
-import { BarChart3, CalendarDays, Database, Flame, Loader2, LockKeyhole, RefreshCcw, ShieldAlert, Sparkles, Timer, Trophy } from "lucide-react";
+import { BarChart3, CalendarDays, Flame, GitBranch, Loader2, LockKeyhole, RefreshCcw, ShieldAlert, Sparkles, Trophy } from "lucide-react";
 import { getAuthToken, storeUser, type UserProfile } from "@/lib/auth-client";
 import { MainSidebar } from "@/components/main-sidebar";
 
@@ -31,7 +31,10 @@ type StrongStock = {
   name: string;
   theme: string;
   today_open_change: string;
+  today_open_change_pct?: string | number;
   label: string;
+  role?: string;
+  expectation_status?: string;
   theme_level: string;
   reason: string;
   observe_after_930: string;
@@ -43,7 +46,10 @@ type AvoidStock = {
   name: string;
   theme: string;
   today_open_change: string;
+  today_open_change_pct?: string | number;
   label: string;
+  role?: string;
+  expectation_status?: string;
   theme_level: string;
   reason: string;
   risk_after_930: string;
@@ -91,14 +97,19 @@ type AuctionAckPayload = {
 type ThemeCandidate = {
   theme?: string;
   confidence?: string;
+  priority?: number | string;
   reason?: string;
+  theme_level?: string;
+  theme_status?: string;
   leader_candidates?: Array<{
     code?: string;
     name?: string;
     role?: string;
     today_open_change?: string | number;
+    today_open_change_pct?: string | number;
     reason?: string;
   }>;
+  emotion_anchors?: AuctionAnchor[];
 };
 
 type ThemeGateResult = {
@@ -109,6 +120,7 @@ type ThemeGateResult = {
     theme?: string;
     reason?: string;
   }>;
+  excluded_theme_count?: number;
   strongest_theme?: string;
   summary?: string;
 };
@@ -117,6 +129,8 @@ type AuctionAnchor = {
   code?: string;
   name?: string;
   theme?: string;
+  role?: string;
+  label?: string;
   today_open_change?: string | number;
   today_open_change_pct?: string | number;
   reason?: string;
@@ -128,12 +142,28 @@ function todayIsoDate() {
   return `${today.getFullYear()}-${`${today.getMonth() + 1}`.padStart(2, "0")}-${`${today.getDate()}`.padStart(2, "0")}`;
 }
 
-function changeTone(value: string) {
-  const number = Number(value);
+function normalizeChangeNumber(value: string | number | undefined) {
+  if (typeof value === "number") return value;
+  if (!value) return Number.NaN;
+  return Number(String(value).replace("%", "").trim());
+}
+
+function changeTone(value: string | number | undefined) {
+  const number = normalizeChangeNumber(value);
   if (Number.isNaN(number)) return "flat";
   if (number > 0) return "up";
   if (number < 0) return "down";
   return "flat";
+}
+
+function changeText(value: string | number | undefined) {
+  if (value === undefined || value === null || value === "") return "--";
+  const text = String(value);
+  return text.includes("%") ? text : `${text}%`;
+}
+
+function stockTitle(item: { name?: string; code?: string }) {
+  return [item.name, item.code].filter(Boolean).join(" ") || "--";
 }
 
 function globalConclusionText(report: AuctionReport | null) {
@@ -148,16 +178,6 @@ function globalConclusionText(report: AuctionReport | null) {
   ].filter(Boolean);
   const lead = parts.length ? `${parts.join("，")}。` : "";
   return `${lead}${conclusion.one_sentence_for_930 || ""}`.trim();
-}
-
-function formatTiming(seconds: number | undefined) {
-  if (typeof seconds !== "number" || Number.isNaN(seconds)) return "--";
-  if (seconds >= 60) return `${(seconds / 60).toFixed(1)} 分钟`;
-  return `${seconds.toFixed(seconds >= 10 ? 1 : 2)} 秒`;
-}
-
-function anchorLabel(anchor: AuctionAnchor) {
-  return [anchor.name, anchor.code].filter(Boolean).join(" ") || "--";
 }
 
 export default function AuctionStrengthPage() {
@@ -178,7 +198,28 @@ export default function AuctionStrengthPage() {
   }, [latest, reports, selectedId]);
 
   const conclusionText = useMemo(() => globalConclusionText(selectedReport), [selectedReport]);
+  const displayAnchors = useMemo(() => {
+    const themeAnchors = selectedReport?.theme_gate_result?.admitted_themes?.flatMap((theme) =>
+      (theme.emotion_anchors || []).map((anchor) => ({ ...anchor, theme: anchor.theme || theme.theme })),
+    ) || [];
+    const allAnchors = [
+      ...(selectedReport?.global_conclusion.limit_open_emotion_anchors || []),
+      ...themeAnchors,
+      ...(selectedReport?.emotion_anchors || []),
+    ];
+    const seen = new Set<string>();
+    return allAnchors.filter((anchor) => {
+      const key = [anchor.code, anchor.name, anchor.theme, anchor.reason].filter(Boolean).join("|");
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }, [selectedReport]);
   const isToday = selectedDate === todayIsoDate();
+  const themeGate = selectedReport?.theme_gate_result;
+  const admittedThemes = themeGate?.admitted_themes || [];
+  const excludedThemes = themeGate?.excluded_themes || [];
+  const excludedCount = themeGate?.excluded_theme_count ?? excludedThemes.length;
 
   function handleDateChange(value: string) {
     setSelectedDate(value);
@@ -349,9 +390,9 @@ export default function AuctionStrengthPage() {
         ) : (
           <>
             {billingMessage ? <p className="auction-message">{billingMessage}</p> : null}
-            <section className="auction-grid">
+            <section className="auction-grid auction-grid--primary">
               <section className="auction-panel auction-strong-panel">
-                <PanelHead icon={<Trophy className="h-5 w-5" />} title="Top5 强势标的" text="按后端 JSON 的 rank 顺序展示竞价强者。" />
+                <PanelHead icon={<Trophy className="h-5 w-5" />} title="Top5 强势标的" text="最终进入 9:30 前优先观察的主板个股。" />
                 <div className="auction-stock-list">
                   {selectedReport?.top5_strong_stocks.length ? selectedReport.top5_strong_stocks.map((stock) => (
                     <article className="auction-stock-card" key={`${stock.rank}-${stock.code}`}>
@@ -359,12 +400,12 @@ export default function AuctionStrengthPage() {
                       <div>
                         <header>
                           <h2>{stock.name} <small>{stock.code}</small></h2>
-                          <strong data-tone={changeTone(stock.today_open_change)}>{stock.today_open_change}%</strong>
+                          <strong data-tone={changeTone(stock.today_open_change ?? stock.today_open_change_pct)}>{changeText(stock.today_open_change ?? stock.today_open_change_pct)}</strong>
                         </header>
                         <div className="auction-chip-row">
                           <span>{stock.theme}</span>
-                          <span>{stock.label}</span>
-                          <span>{stock.theme_level}</span>
+                          <span>{stock.label || stock.role || "--"}</span>
+                          <span>{stock.expectation_status || stock.theme_level}</span>
                         </div>
                         <p>{stock.reason}</p>
                         <em>{stock.observe_after_930}</em>
@@ -374,35 +415,9 @@ export default function AuctionStrengthPage() {
                 </div>
               </section>
 
-              <section className="auction-panel auction-avoid-panel">
-                <PanelHead icon={<ShieldAlert className="h-5 w-5" />} title="Top5 回避标的" text="展示竞价负反馈、掉队前排和需要回避的方向。" />
-                <div className="auction-stock-list">
-                  {selectedReport?.top5_avoid_stocks.length ? selectedReport.top5_avoid_stocks.map((stock) => (
-                    <article className="auction-stock-card auction-stock-card--avoid" key={`${stock.rank}-${stock.code}`}>
-                      <div className="auction-stock-rank">{stock.rank}</div>
-                      <div>
-                        <header>
-                          <h2>{stock.name} <small>{stock.code}</small></h2>
-                          <strong data-tone={changeTone(stock.today_open_change)}>{stock.today_open_change}%</strong>
-                        </header>
-                        <div className="auction-chip-row">
-                          <span>{stock.theme}</span>
-                          <span>{stock.label}</span>
-                          <span>{stock.theme_level}</span>
-                        </div>
-                        <p>{stock.reason}</p>
-                        <em>{stock.risk_after_930}</em>
-                      </div>
-                    </article>
-                  )) : <EmptyState text="所选日期还没有回避标的数据。" />}
-                </div>
-              </section>
-            </section>
-
-            <section className="auction-grid auction-grid--v2">
               <section className="auction-panel auction-conclusion-panel">
                 <PanelHead icon={<BarChart3 className="h-5 w-5" />} title="全局结论" text="把 9:25 最强、最超预期、容量确认和负反馈压缩成 9:30 观察重点。" />
-                <div className="auction-metric-grid">
+                <div className="auction-conclusion-stack">
                   <MetricTile label="最强个股" value={selectedReport?.global_conclusion.strongest_stock_at_925 || "--"} />
                   <MetricTile label="最强题材" value={selectedReport?.global_conclusion.strongest_theme_cluster || "--"} />
                   <MetricTile label="最超预期" value={selectedReport?.global_conclusion.most_over_expected_stock || "--"} />
@@ -411,84 +426,92 @@ export default function AuctionStrengthPage() {
                 </div>
                 <p className="auction-conclusion-text">{conclusionText || "所选日期暂无全局结论。"}</p>
               </section>
-
-              <section className="auction-panel">
-                <PanelHead icon={<Sparkles className="h-5 w-5" />} title="情绪锚点" text="涨停开、一字、接近涨停或强度锚，只作为盘前参考。" />
-                <div className="auction-anchor-list">
-                  {selectedReport?.emotion_anchors?.length ? selectedReport.emotion_anchors.slice(0, 8).map((anchor, index) => (
-                    <article className="auction-v2-item" key={`${anchor.code || index}-${anchor.name || "anchor"}`}>
-                      <header>
-                        <b>{anchorLabel(anchor)}</b>
-                        <strong data-tone={changeTone(String(anchor.today_open_change ?? anchor.today_open_change_pct ?? ""))}>{anchor.today_open_change ?? anchor.today_open_change_pct ?? "--"}%</strong>
-                      </header>
-                      <span>{anchor.theme || "--"}</span>
-                      <p>{anchor.reason || anchor.participation_note || "--"}</p>
-                    </article>
-                  )) : <EmptyState text="所选日期没有情绪锚点字段，旧数据会保持空态。" />}
-                </div>
-              </section>
             </section>
 
-            <section className="auction-grid auction-grid--v2">
-              <section className="auction-panel">
-                <PanelHead icon={<ShieldAlert className="h-5 w-5" />} title="题材门禁" text="Theme Gate 决定哪些题材放行，哪些题材排除。" />
-                <div className="auction-theme-gate">
-                  <MetricTile label="门禁状态" value={selectedReport?.theme_gate_result?.compact_gate || selectedReport?.theme_gate_result?.type || "--"} />
-                  <MetricTile label="最强题材" value={selectedReport?.theme_gate_result?.strongest_theme || selectedReport?.global_conclusion.strongest_theme_cluster || "--"} />
+            <section className="auction-panel auction-anchor-panel">
+              <PanelHead icon={<Sparkles className="h-5 w-5" />} title="情绪锚点" text="涨停开、一字、接近涨停或强度锚，只给用户参考，不等于 Top5 可观察标的。" />
+              <div className="auction-anchor-grid">
+                {displayAnchors.length ? displayAnchors.map((anchor, index) => (
+                  <article className="auction-anchor-card" key={`${anchor.code || index}-${anchor.name || "anchor"}`}>
+                    <header>
+                      <b>{stockTitle(anchor)}</b>
+                      <strong data-tone={changeTone(anchor.today_open_change ?? anchor.today_open_change_pct)}>{changeText(anchor.today_open_change ?? anchor.today_open_change_pct)}</strong>
+                    </header>
+                    <div className="auction-chip-row">
+                      <span>{anchor.theme || "--"}</span>
+                      {anchor.role || anchor.label ? <span>{anchor.role || anchor.label}</span> : null}
+                    </div>
+                    <p>{anchor.reason || "--"}</p>
+                    {anchor.participation_note ? <em>{anchor.participation_note}</em> : null}
+                  </article>
+                )) : <EmptyState text="所选日期没有情绪锚点字段，旧数据会保持空态。" />}
+              </div>
+            </section>
+
+            <section className="auction-grid">
+              <section className="auction-panel auction-avoid-panel">
+                <PanelHead icon={<ShieldAlert className="h-5 w-5" />} title="Top5 回避标的" text="竞价负反馈、掉队前排和高开低质方向。" />
+                <div className="auction-stock-list">
+                  {selectedReport?.top5_avoid_stocks.length ? selectedReport.top5_avoid_stocks.map((stock) => (
+                    <article className="auction-stock-card auction-stock-card--avoid" key={`${stock.rank}-${stock.code}`}>
+                      <div className="auction-stock-rank">{stock.rank}</div>
+                      <div>
+                        <header>
+                          <h2>{stock.name} <small>{stock.code}</small></h2>
+                          <strong data-tone={changeTone(stock.today_open_change ?? stock.today_open_change_pct)}>{changeText(stock.today_open_change ?? stock.today_open_change_pct)}</strong>
+                        </header>
+                        <div className="auction-chip-row">
+                          <span>{stock.theme}</span>
+                          <span>{stock.label || stock.role || "--"}</span>
+                          <span>{stock.expectation_status || stock.theme_level}</span>
+                        </div>
+                        <p>{stock.reason}</p>
+                        <em>{stock.risk_after_930}</em>
+                      </div>
+                    </article>
+                  )) : <EmptyState text="所选日期还没有回避标的数据。" />}
+                </div>
+              </section>
+
+              <section className="auction-panel auction-v2-panel">
+                <PanelHead icon={<GitBranch className="h-5 w-5" />} title="题材门禁" text="Theme Gate 决定哪些题材放行，哪些题材排除。" />
+                <div className="auction-v2-summary">
+                  <MetricTile label="最强题材" value={themeGate?.strongest_theme || selectedReport?.global_conclusion.strongest_theme_cluster || "--"} />
+                  <MetricTile label="放行题材" value={String(admittedThemes.length)} />
+                  <MetricTile label="排除数量" value={String(excludedCount)} />
                 </div>
                 <div className="auction-theme-list">
-                  {(selectedReport?.theme_gate_result?.admitted_themes || []).slice(0, 5).map((theme, index) => (
-                    <article className="auction-v2-item" key={`${theme.theme || "admit"}-${index}`}>
-                      <header>
-                        <b>{theme.theme || "--"}</b>
-                        <span>{theme.confidence || "放行"}</span>
-                      </header>
-                      <p>{theme.reason || theme.leader_candidates?.map((item) => [item.name, item.code].filter(Boolean).join(" ")).filter(Boolean).join(" / ") || "--"}</p>
+                  {admittedThemes.length ? admittedThemes.map((theme, index) => (
+                    <article key={`${theme.theme || "admit"}-${index}`}>
+                      <b>{theme.theme || "--"}</b>
+                      <span>{theme.confidence || theme.theme_status || "放行"}</span>
+                      {theme.reason ? <p>{theme.reason}</p> : null}
+                      {theme.leader_candidates?.length ? (
+                        <div className="auction-mini-stock-list">
+                          {theme.leader_candidates.map((candidate, candidateIndex) => (
+                            <span key={`${candidate.code || candidate.name || candidateIndex}`}>
+                              {candidate.code || "--"} {candidate.name || "--"} · {candidate.role || "--"} · {changeText(candidate.today_open_change ?? candidate.today_open_change_pct)}
+                            </span>
+                          ))}
+                        </div>
+                      ) : null}
                     </article>
-                  ))}
-                  {(selectedReport?.theme_gate_result?.excluded_themes || []).slice(0, 5).map((theme, index) => (
-                    <article className="auction-v2-item auction-v2-item--avoid" key={`${theme.theme || "exclude"}-${index}`}>
-                      <header>
-                        <b>{theme.theme || "--"}</b>
-                        <span>排除</span>
-                      </header>
-                      <p>{theme.reason || "--"}</p>
-                    </article>
-                  ))}
-                  {selectedReport?.theme_gate_result?.admitted_themes?.length || selectedReport?.theme_gate_result?.excluded_themes?.length ? null : <EmptyState text="所选日期没有题材门禁字段，旧数据会保持空态。" />}
+                  )) : null}
+                  {excludedThemes.length ? (
+                    <div className="auction-note-list">
+                      {excludedThemes.map((theme, index) => (
+                        <span key={`${theme.theme || "exclude"}-${index}`}>
+                          {theme.theme || "未命名题材"}：{theme.reason || "--"}
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
+                  {admittedThemes.length || excludedThemes.length ? null : <EmptyState text="所选日期没有题材门禁字段，旧数据会保持空态。" />}
                 </div>
-              </section>
-
-              <section className="auction-panel">
-                <PanelHead icon={<Timer className="h-5 w-5" />} title="链路耗时" text="展示 webhook 中传来的 V2 阶段耗时。" />
-                <div className="auction-metric-grid">
-                  <MetricTile label="总耗时" value={formatTiming(selectedReport?.timings?.total_elapsed_seconds)} />
-                  <MetricTile label="9:25后" value={formatTiming(selectedReport?.timings?.post_auction_elapsed_seconds)} />
-                  <MetricTile label="行情获取" value={formatTiming(selectedReport?.timings?.quote_fetch_elapsed_seconds)} />
-                  <MetricTile label="题材判断" value={formatTiming(selectedReport?.timings?.theme_judge_elapsed_seconds)} />
-                  <MetricTile label="个股判断" value={formatTiming(selectedReport?.timings?.stock_judge_elapsed_seconds)} />
-                </div>
-                <div className="auction-data-box">
-                  <Database className="h-4 w-4" />
-                  <div>
-                    <b>{selectedReport?.quote_provider || "行情源 --"}</b>
-                    <span>{selectedReport?.source_csv || "CSV --"}</span>
-                  </div>
-                </div>
-                {selectedReport?.data_limit?.length ? (
-                  <ul className="auction-note-list">
-                    {selectedReport.data_limit.map((item, index) => <li key={`${item}-${index}`}>{item}</li>)}
-                  </ul>
-                ) : null}
-                {selectedReport?.warnings?.length ? (
-                  <ul className="auction-note-list auction-note-list--warning">
-                    {selectedReport.warnings.map((item, index) => <li key={`${item}-${index}`}>{item}</li>)}
-                  </ul>
-                ) : null}
               </section>
             </section>
 
-            <section className="auction-grid auction-grid--lower auction-grid--single">
+            <section className="auction-grid auction-grid--history">
               <section className="auction-panel auction-day-list-panel">
                 <PanelHead icon={<CalendarDays className="h-5 w-5" />} title="当日记录" text="同一日期有多次推送时，可切换查看。" />
                 <div className="auction-history-list">
