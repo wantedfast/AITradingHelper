@@ -1,122 +1,156 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
-import { ArrowLeft, CheckCircle2, CreditCard, ExternalLink, Loader2, RefreshCw, ShieldCheck } from "lucide-react";
+import { ArrowLeft, CheckCircle2, CreditCard, Loader2, QrCode, RefreshCw, Send, ShieldCheck } from "lucide-react";
 import { apiFetch, getAuthToken, storeUser, type UserProfile } from "@/lib/auth-client";
 
-type CreditPackage = {
+type MembershipPlan = {
   id: string;
   plan_name: string;
-  credits: number;
   amount_cents: number;
+  duration_days: number;
+  alipay_qr_url?: string;
+  wechat_qr_url?: string;
 };
 
 type OrderPayload = {
   id: number;
   order_no: string;
   plan_name: string;
-  credits: number;
   amount_cents: number;
-  status: "pending" | "paid" | string;
+  status: "pending" | "submitted" | "paid" | "rejected" | string;
+  payment_method?: string;
+  payer_name?: string;
+  payer_note?: string;
+  payer_paid_at?: string;
+  submitted_amount_cents?: number | null;
+  admin_note?: string;
   paid_at?: string | null;
-  payment_provider?: string | null;
+  admin_notification?: { sent?: boolean; error?: string; skipped?: boolean };
 };
 
-type CheckoutPayload = {
-  order: OrderPayload;
-  checkout_url: string;
-  provider: "jinshuju" | string;
-};
-
-type OrderStatusPayload = {
-  order: OrderPayload;
-  user?: UserProfile | null;
+type PaymentDraft = {
+  payment_method: "alipay" | "wechat";
+  payer_name: string;
+  payer_paid_at: string;
+  submitted_amount_yuan: string;
+  payer_note: string;
 };
 
 export default function BillingPage() {
   const router = useRouter();
-  const [packages, setPackages] = useState<CreditPackage[]>([]);
-  const [selectedId, setSelectedId] = useState("");
+  const [plans, setPlans] = useState<MembershipPlan[]>([]);
   const [order, setOrder] = useState<OrderPayload | null>(null);
-  const [checkoutUrl, setCheckoutUrl] = useState("");
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState("");
+  const [paymentMessage, setPaymentMessage] = useState("");
+  const [draft, setDraft] = useState<PaymentDraft>({
+    payment_method: "alipay",
+    payer_name: "",
+    payer_paid_at: "",
+    submitted_amount_yuan: "59.00",
+    payer_note: "",
+  });
 
-  const selectedPackage = useMemo(
-    () => packages.find((item) => item.id === selectedId) || packages[0],
-    [packages, selectedId],
-  );
+  const selectedPlan = useMemo(() => plans[0], [plans]);
 
   useEffect(() => {
     if (!getAuthToken()) {
       router.push("/auth?redirect=/billing");
       return;
     }
-    void loadPackages();
+    void loadPlans();
   }, [router]);
 
   useEffect(() => {
     if (!order || order.status === "paid") return;
     const timer = window.setInterval(() => {
       void refreshOrder(order.id, true);
-    }, 2500);
+    }, 4000);
     return () => window.clearInterval(timer);
   }, [order]);
 
-  async function loadPackages() {
+  async function loadPlans() {
     setLoading(true);
     setMessage("");
     try {
-      const payload = await apiFetch<{ packages: CreditPackage[] }>("/api/pay/packages");
-      setPackages(payload.packages || []);
-      setSelectedId(payload.packages?.[0]?.id || "");
+      const payload = await apiFetch<{ plans: MembershipPlan[] }>("/api/pay/membership/plans");
+      setPlans(payload.plans || []);
+      const plan = payload.plans?.[0];
+      if (plan) setDraft((current) => ({ ...current, submitted_amount_yuan: (plan.amount_cents / 100).toFixed(2) }));
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "读取次数包失败");
+      setMessage(error instanceof Error ? error.message : "读取会员套餐失败");
     } finally {
       setLoading(false);
     }
   }
 
-  async function createPayment() {
-    if (!selectedPackage || creating) return;
+  async function createMembershipOrder() {
+    if (!selectedPlan || creating) return;
     setCreating(true);
     setMessage("");
-    setCheckoutUrl("");
-    const payWindow = window.open("about:blank", "_blank");
     try {
-      const payload = await apiFetch<CheckoutPayload>("/api/pay/jinshuju/checkout", {
+      const payload = await apiFetch<{ order: OrderPayload; user?: UserProfile | null }>("/api/pay/membership/orders", {
         method: "POST",
-        body: JSON.stringify({ package_id: selectedPackage.id }),
+        body: JSON.stringify({ plan_id: selectedPlan.id }),
       });
       setOrder(payload.order);
-      setCheckoutUrl(payload.checkout_url);
-      if (payWindow) {
-        payWindow.location.href = payload.checkout_url;
-      } else {
-        window.location.href = payload.checkout_url;
-      }
-      setMessage("已打开金数据收款表单。支付完成后，次数会自动到账，本页会自动刷新订单状态。");
+      if (payload.user) storeUser(payload.user);
+      setMessage("订单已创建。扫码付款后，请点击“我已付款”提交信息，系统会邮件通知管理员。");
     } catch (error) {
-      if (payWindow) payWindow.close();
-      setMessage(error instanceof Error ? error.message : "创建金数据收款订单失败");
+      setMessage(error instanceof Error ? error.message : "创建会员订单失败");
     } finally {
       setCreating(false);
+    }
+  }
+
+  async function submitPayment() {
+    if (!order || submitting) return;
+    setSubmitting(true);
+    setMessage("");
+    setPaymentMessage("");
+    try {
+      const amount = Math.round(Number(draft.submitted_amount_yuan || "0") * 100);
+      const payload = await apiFetch<{ order: OrderPayload; user?: UserProfile | null }>(`/api/pay/membership/orders/${order.id}/submit`, {
+        method: "POST",
+        body: JSON.stringify({
+          payment_method: draft.payment_method,
+          payer_name: draft.payer_name,
+          payer_paid_at: draft.payer_paid_at,
+          submitted_amount_cents: amount,
+          payer_note: draft.payer_note || order.order_no,
+        }),
+      });
+      setOrder(payload.order);
+      if (payload.user) storeUser(payload.user);
+      const notice = payload.order.admin_notification;
+      const nextMessage = notice?.sent === false ? `付款信息已提交，但邮件提醒未发送：${notice.error || "未知原因"}` : "付款信息已提交，已邮件通知管理员核对到账。";
+      setMessage(nextMessage);
+      setPaymentMessage(nextMessage);
+    } catch (error) {
+      const nextMessage = error instanceof Error ? error.message : "提交付款信息失败";
+      setMessage(nextMessage);
+      setPaymentMessage(nextMessage);
+    } finally {
+      setSubmitting(false);
     }
   }
 
   async function refreshOrder(orderId: number, silent = false) {
     if (!silent) setMessage("");
     try {
-      const payload = await apiFetch<OrderStatusPayload>(`/api/orders/${orderId}`);
+      const payload = await apiFetch<{ order: OrderPayload; user?: UserProfile | null }>(`/api/orders/${orderId}`);
       setOrder(payload.order);
       if (payload.user) storeUser(payload.user);
       if (payload.order.status === "paid") {
-        setMessage(`支付成功，${payload.order.credits} 次使用机会已到账。`);
+        setMessage("会员已开通。");
       } else if (!silent) {
-        setMessage("订单仍在等待支付，请确认金数据表单是否已经完成付款。");
+        setMessage(orderStatusText(payload.order.status));
       }
     } catch (error) {
       if (!silent) setMessage(error instanceof Error ? error.message : "刷新订单失败");
@@ -132,74 +166,124 @@ export default function BillingPage() {
             返回首页
           </Link>
           <div>
-            <span>JINSHUJU CHECKOUT</span>
-            <h1>购买使用次数</h1>
-            <p>选择次数包后跳转金数据收款表单；支付成功后次数自动到账，并通过邮件提醒。</p>
+            <span>MONTHLY MEMBERSHIP</span>
+            <h1>开通 59 元/月会员</h1>
+            <p>扫码付款后点击“我已付款”，系统会邮件通知管理员；管理员确认到账后开通。</p>
           </div>
         </header>
 
         {message && <div className="billing-message">{message}</div>}
-        {loading && <div className="billing-message">正在读取次数包...</div>}
+        {loading && <div className="billing-message">正在读取会员套餐...</div>}
 
         <section className="billing-grid">
           <div className="billing-packages">
-            {packages.map((item) => (
-              <button className={selectedPackage?.id === item.id ? "active" : ""} type="button" key={item.id} onClick={() => setSelectedId(item.id)}>
+            {selectedPlan && (
+              <button className="active" type="button">
                 <CreditCard />
                 <span>
-                  <b>{item.plan_name}</b>
-                  <small>{item.credits} 次使用机会</small>
+                  <b>{selectedPlan.plan_name}</b>
+                  <small>{selectedPlan.duration_days} 天会员权益</small>
                 </span>
-                <strong>¥{(item.amount_cents / 100).toFixed(2)}</strong>
+                <strong>¥{(selectedPlan.amount_cents / 100).toFixed(2)}</strong>
               </button>
-            ))}
+            )}
+            <div className="billing-empty-qr">
+              <ShieldCheck />
+              <p>付款时请备注订单号或账号，未备注会延迟开通。管理员只在确认到账后开通会员。</p>
+            </div>
           </div>
 
           <aside className="billing-checkout">
             <div className="billing-card-head">
-              <ShieldCheck />
+              <QrCode />
               <span>
-                <b>{selectedPackage?.plan_name || "选择次数包"}</b>
-                <small>金数据收款表单</small>
+                <b>{order ? `订单 ${order.order_no}` : selectedPlan?.plan_name || "月度会员"}</b>
+                <small>{order ? orderStatusText(order.status) : "先创建订单，再扫码付款"}</small>
               </span>
             </div>
-            <div className="billing-empty-qr">
-              <ExternalLink />
-              <p>点击下方按钮后，会打开金数据收款表单。表单会自动带上订单号和你的账号邮箱。</p>
-            </div>
-            {order && (
-              <div className="billing-order">
-                <span>订单号</span>
-                <b>{order.order_no}</b>
-                <span>状态</span>
-                <b>{order.status === "paid" ? "已支付" : "待支付"}</b>
-              </div>
-            )}
-            <button className="billing-primary" type="button" onClick={createPayment} disabled={!selectedPackage || creating || loading}>
-              {creating ? <Loader2 className="spin-icon" /> : <ExternalLink />}
-              {creating ? "正在创建订单" : "打开金数据收款表单"}
-            </button>
-            {checkoutUrl && order?.status !== "paid" && (
-              <a className="billing-secondary" href={checkoutUrl} target="_blank" rel="noreferrer">
-                <ExternalLink />
-                重新打开收款表单
-              </a>
-            )}
-            {order && order.status !== "paid" && (
-              <button className="billing-secondary" type="button" onClick={() => refreshOrder(order.id)}>
-                <RefreshCw />
-                刷新支付状态
+
+            {order ? (
+              <>
+                <div className="billing-qr-row">
+                  <QrBox title="支付宝" src={selectedPlan?.alipay_qr_url || "/pay/alipay-qr.jpg"} />
+                  <QrBox title="微信" src={selectedPlan?.wechat_qr_url || "/pay/wechat-qr.jpg"} />
+                </div>
+                <div className="billing-order">
+                  <span>订单号</span>
+                  <b>{order.order_no}</b>
+                  <span>状态</span>
+                  <b>{orderStatusText(order.status)}</b>
+                </div>
+                {order.status !== "paid" && (
+                  <div className="billing-payment-form">
+                    {order.status === "submitted" ? <div className="billing-inline-message">付款信息已提交，正在等待管理员确认到账。</div> : null}
+                    <label>
+                      <span>付款方式</span>
+                      <select value={draft.payment_method} onChange={(event) => setDraft((current) => ({ ...current, payment_method: event.target.value as PaymentDraft["payment_method"] }))}>
+                        <option value="alipay">支付宝</option>
+                        <option value="wechat">微信</option>
+                      </select>
+                    </label>
+                    <label>
+                      <span>付款人昵称或姓名</span>
+                      <input value={draft.payer_name} onChange={(event) => setDraft((current) => ({ ...current, payer_name: event.target.value }))} />
+                    </label>
+                    <label>
+                      <span>付款时间</span>
+                      <input type="datetime-local" value={draft.payer_paid_at} onChange={(event) => setDraft((current) => ({ ...current, payer_paid_at: event.target.value }))} />
+                    </label>
+                    <label>
+                      <span>实付金额</span>
+                      <input value={draft.submitted_amount_yuan} onChange={(event) => setDraft((current) => ({ ...current, submitted_amount_yuan: event.target.value }))} />
+                    </label>
+                    <label>
+                      <span>付款备注</span>
+                      <input value={draft.payer_note} placeholder={order.order_no} onChange={(event) => setDraft((current) => ({ ...current, payer_note: event.target.value }))} />
+                    </label>
+                    <button className="billing-primary" type="button" onClick={submitPayment} disabled={submitting}>
+                      {submitting ? <Loader2 className="spin-icon" /> : <Send />}
+                      {submitting ? "正在提交" : "我已付款，通知管理员"}
+                    </button>
+                    {paymentMessage ? <div className="billing-inline-message">{paymentMessage}</div> : null}
+                  </div>
+                )}
+                <button className="billing-secondary" type="button" onClick={() => refreshOrder(order.id)}>
+                  <RefreshCw />
+                  刷新订单状态
+                </button>
+                {order.status === "paid" && (
+                  <div className="billing-paid">
+                    <CheckCircle2 />
+                    会员已开通
+                  </div>
+                )}
+              </>
+            ) : (
+              <button className="billing-primary" type="button" onClick={createMembershipOrder} disabled={!selectedPlan || creating || loading}>
+                {creating ? <Loader2 className="spin-icon" /> : <CreditCard />}
+                {creating ? "正在创建订单" : "创建会员订单"}
               </button>
-            )}
-            {order?.status === "paid" && (
-              <div className="billing-paid">
-                <CheckCircle2 />
-                次数已到账
-              </div>
             )}
           </aside>
         </section>
       </section>
     </main>
   );
+}
+
+function QrBox({ title, src }: { title: string; src: string }) {
+  return (
+    <div className="billing-qr">
+      <Image src={src} alt={`${title}收款二维码`} width={180} height={180} />
+      <code>{title}收款码</code>
+    </div>
+  );
+}
+
+function orderStatusText(status: string) {
+  if (status === "pending") return "待付款";
+  if (status === "submitted") return "待管理员确认";
+  if (status === "paid") return "已开通";
+  if (status === "rejected") return "异常/已驳回";
+  return status || "--";
 }

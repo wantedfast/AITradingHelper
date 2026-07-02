@@ -22,14 +22,6 @@ services:
       - .env
     environment:
       - TZ=Asia/Shanghai
-      - HTTP_PROXY=http://172.18.0.1:7890
-      - HTTPS_PROXY=http://172.18.0.1:7890
-      - ALL_PROXY=http://172.18.0.1:7890
-      - http_proxy=http://172.18.0.1:7890
-      - https_proxy=http://172.18.0.1:7890
-      - all_proxy=http://172.18.0.1:7890
-      - NO_PROXY=127.0.0.1,localhost,trade-review-api,trade-review-frontend
-      - no_proxy=127.0.0.1,localhost,trade-review-api,trade-review-frontend
 
   trade-review-frontend:
     build:

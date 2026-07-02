@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import os
 import re
 import secrets
@@ -33,6 +34,12 @@ CREDIT_PACKAGES = {
     "pack_10": {"plan_name": "10 次使用包", "credits": 10, "amount_cents": 990},
     "pack_50": {"plan_name": "50 次使用包", "credits": 50, "amount_cents": 3990},
     "pack_120": {"plan_name": "120 次使用包", "credits": 120, "amount_cents": 7990},
+}
+MONTHLY_MEMBERSHIP_PLAN = {
+    "id": "monthly_membership",
+    "plan_name": os.getenv("PAYMENT_MONTHLY_PLAN_NAME", "月度会员"),
+    "amount_cents": int(os.getenv("PAYMENT_MONTHLY_AMOUNT_CENTS", "5900") or "5900"),
+    "duration_days": 31,
 }
 
 
@@ -134,6 +141,32 @@ def init_auth_db(db_path: Path) -> None:
                 FOREIGN KEY (user_id) REFERENCES users(id)
             );
 
+            CREATE TABLE IF NOT EXISTS membership_ledger (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                order_id INTEGER NOT NULL,
+                plan_name TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                admin_id INTEGER,
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                FOREIGN KEY (order_id) REFERENCES orders(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS update_notices (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                version TEXT NOT NULL,
+                items_json TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'draft',
+                created_by INTEGER,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                published_at TEXT,
+                FOREIGN KEY (created_by) REFERENCES users(id)
+            );
+
             CREATE TABLE IF NOT EXISTS sms_codes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 phone TEXT NOT NULL,
@@ -159,6 +192,7 @@ def init_auth_db(db_path: Path) -> None:
             CREATE INDEX IF NOT EXISTS idx_usage_created ON usage_events(created_at);
             CREATE INDEX IF NOT EXISTS idx_feedback_status ON feedback(status);
             CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
+            CREATE INDEX IF NOT EXISTS idx_update_notices_status ON update_notices(status, published_at);
             CREATE INDEX IF NOT EXISTS idx_sms_codes_phone ON sms_codes(phone, purpose, created_at);
             CREATE INDEX IF NOT EXISTS idx_email_codes_email ON email_codes(email, purpose, created_at);
             """
@@ -180,6 +214,9 @@ def _ensure_user_columns(conn: sqlite3.Connection) -> None:
         "username": "ALTER TABLE users ADD COLUMN username TEXT",
         "email": "ALTER TABLE users ADD COLUMN email TEXT",
         "email_verified": "ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0",
+        "membership_plan": "ALTER TABLE users ADD COLUMN membership_plan TEXT",
+        "membership_status": "ALTER TABLE users ADD COLUMN membership_status TEXT",
+        "membership_expires_at": "ALTER TABLE users ADD COLUMN membership_expires_at TEXT",
     }
     for column, statement in migrations.items():
         if column not in columns:
@@ -192,6 +229,20 @@ def _ensure_order_columns(conn: sqlite3.Connection) -> None:
         "payment_provider": "ALTER TABLE orders ADD COLUMN payment_provider TEXT",
         "provider_trade_no": "ALTER TABLE orders ADD COLUMN provider_trade_no TEXT",
         "paid_amount_cents": "ALTER TABLE orders ADD COLUMN paid_amount_cents INTEGER",
+        "product_type": "ALTER TABLE orders ADD COLUMN product_type TEXT",
+        "package_id": "ALTER TABLE orders ADD COLUMN package_id TEXT",
+        "duration_days": "ALTER TABLE orders ADD COLUMN duration_days INTEGER",
+        "payment_method": "ALTER TABLE orders ADD COLUMN payment_method TEXT",
+        "payment_submit_status": "ALTER TABLE orders ADD COLUMN payment_submit_status TEXT",
+        "payer_name": "ALTER TABLE orders ADD COLUMN payer_name TEXT",
+        "payer_note": "ALTER TABLE orders ADD COLUMN payer_note TEXT",
+        "payer_paid_at": "ALTER TABLE orders ADD COLUMN payer_paid_at TEXT",
+        "submitted_amount_cents": "ALTER TABLE orders ADD COLUMN submitted_amount_cents INTEGER",
+        "submitted_at": "ALTER TABLE orders ADD COLUMN submitted_at TEXT",
+        "admin_id": "ALTER TABLE orders ADD COLUMN admin_id INTEGER",
+        "admin_note": "ALTER TABLE orders ADD COLUMN admin_note TEXT",
+        "confirmed_at": "ALTER TABLE orders ADD COLUMN confirmed_at TEXT",
+        "rejected_at": "ALTER TABLE orders ADD COLUMN rejected_at TEXT",
     }
     for column, statement in migrations.items():
         if column not in columns:
@@ -468,6 +519,9 @@ def consume_feature_credit(db_path: Path, *, user_id: int, feature: str, ip: str
         if user["role"] == "admin":
             _record_usage(conn, user_id, feature, 0, "admin_free", ip, related_id)
             return _user_payload(conn, user)
+        if _has_active_membership(user):
+            _record_usage(conn, user_id, feature, 0, "membership_free", ip, related_id)
+            return _user_payload(conn, user)
 
         balance = _credit_balance(conn, user_id)
         if balance <= 0:
@@ -485,6 +539,8 @@ def ensure_feature_credit_available(db_path: Path, *, user_id: int, feature: str
             return _user_payload(conn, user)
         if user["role"] == "admin":
             return _user_payload(conn, user)
+        if _has_active_membership(user):
+            return _user_payload(conn, user)
 
         balance = _credit_balance(conn, user_id)
         if balance <= 0:
@@ -501,6 +557,9 @@ def consume_feature_credit_once(db_path: Path, *, user_id: int, feature: str, ip
 
         if user["role"] == "admin":
             _record_usage(conn, user_id, feature, 0, "admin_free", ip, related_id)
+            return _user_payload(conn, user)
+        if _has_active_membership(user):
+            _record_usage(conn, user_id, feature, 0, "membership_free", ip, related_id)
             return _user_payload(conn, user)
 
         balance = _credit_balance(conn, user_id)
@@ -541,6 +600,17 @@ def credit_packages() -> list[dict[str, Any]]:
     return [{"id": key, **value} for key, value in CREDIT_PACKAGES.items()]
 
 
+def membership_plans() -> list[dict[str, Any]]:
+    plan = _membership_plan()
+    return [
+        {
+            **plan,
+            "alipay_qr_url": os.getenv("PAYMENT_ALIPAY_QR_URL", "/pay/alipay-qr.png").strip(),
+            "wechat_qr_url": os.getenv("PAYMENT_WECHAT_QR_URL", "/pay/wechat-qr.png").strip(),
+        }
+    ]
+
+
 def create_order(db_path: Path, *, user_id: int, plan_name: str = "", credits: int = 0, amount_cents: int = 0, package_id: str = "") -> dict[str, Any]:
     package_id = (package_id or "").strip()
     if package_id:
@@ -565,6 +635,26 @@ def create_order(db_path: Path, *, user_id: int, plan_name: str = "", credits: i
         return _order_payload(conn.execute("SELECT * FROM orders WHERE id = ?", (cursor.lastrowid,)).fetchone())
 
 
+def create_membership_order(db_path: Path, *, user_id: int, plan_id: str = "monthly_membership") -> dict[str, Any]:
+    plan = _membership_plan()
+    if plan_id and plan_id != plan["id"]:
+        raise AuthError("未知的会员套餐", 400)
+    order_no = f"YM{datetime.now(CN_TZ).strftime('%Y%m%d%H%M%S')}{secrets.token_hex(3).upper()}"
+    now = _now()
+    with _connect(db_path) as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO orders (
+                user_id, order_no, plan_name, credits, amount_cents, status, created_at,
+                product_type, package_id, duration_days, payment_submit_status
+            )
+            VALUES (?, ?, ?, 0, ?, 'pending', ?, 'membership', ?, ?, 'none')
+            """,
+            (user_id, order_no, plan["plan_name"], int(plan["amount_cents"]), now, plan["id"], int(plan["duration_days"])),
+        )
+        return _order_payload(conn.execute("SELECT * FROM orders WHERE id = ?", (cursor.lastrowid,)).fetchone())
+
+
 def get_order(db_path: Path, *, order_id: int, user_id: int | None = None, admin: bool = False) -> dict[str, Any]:
     with _connect(db_path) as conn:
         if admin:
@@ -574,6 +664,153 @@ def get_order(db_path: Path, *, order_id: int, user_id: int | None = None, admin
         if not row:
             raise AuthError("订单不存在", 404)
         return _order_payload(row)
+
+
+def submit_membership_payment(
+    db_path: Path,
+    *,
+    order_id: int,
+    user_id: int,
+    payment_method: str,
+    payer_name: str,
+    payer_paid_at: str,
+    submitted_amount_cents: int,
+    payer_note: str = "",
+) -> dict[str, Any]:
+    payment_method = _normalize_payment_method(payment_method)
+    payer_name = (payer_name or "").strip()[:80]
+    payer_note = (payer_note or "").strip()[:240]
+    payer_paid_at = (payer_paid_at or "").strip()[:60]
+    submitted_amount_cents = int(submitted_amount_cents or 0)
+    if not payer_name:
+        raise AuthError("请填写付款人昵称或姓名", 400)
+    if not payer_paid_at:
+        raise AuthError("请填写付款时间", 400)
+    if submitted_amount_cents <= 0:
+        raise AuthError("请填写实付金额", 400)
+    now = _now()
+    notify_result: dict[str, Any]
+    with _connect(db_path) as conn:
+        order = conn.execute("SELECT * FROM orders WHERE id = ? AND user_id = ?", (order_id, user_id)).fetchone()
+        if not order:
+            raise AuthError("订单不存在", 404)
+        if (order["product_type"] if "product_type" in order.keys() else "") != "membership":
+            raise AuthError("该订单不是会员订单", 400)
+        if order["status"] == "paid":
+            raise AuthError("该订单已开通，无需重复提交", 409)
+        if int(order["amount_cents"]) != submitted_amount_cents:
+            raise AuthError("实付金额与订单金额不一致，请核对后再提交", 400)
+        conn.execute(
+            """
+            UPDATE orders
+            SET status = 'submitted',
+                payment_method = ?,
+                payment_submit_status = 'submitted',
+                payer_name = ?,
+                payer_note = ?,
+                payer_paid_at = ?,
+                submitted_amount_cents = ?,
+                submitted_at = ?,
+                rejected_at = NULL
+            WHERE id = ?
+            """,
+            (payment_method, payer_name, payer_note, payer_paid_at, submitted_amount_cents, now, order_id),
+        )
+        updated = conn.execute("SELECT * FROM orders WHERE id = ?", (order_id,)).fetchone()
+        user = _fetch_user_by_id(conn, user_id)
+        order_payload = _order_payload(updated)
+        user_payload = _user_payload(conn, user)
+    notify_result = notify_admin_membership_payment(order=order_payload, user=user_payload)
+    order_payload["admin_notification"] = notify_result
+    return order_payload
+
+
+def confirm_membership_order(db_path: Path, *, order_id: int, admin_id: int, admin_note: str = "") -> dict[str, Any]:
+    now_dt = datetime.now(CN_TZ)
+    now = now_dt.isoformat()
+    admin_note = (admin_note or "").strip()[:300]
+    with _connect(db_path) as conn:
+        order = conn.execute("SELECT * FROM orders WHERE id = ?", (order_id,)).fetchone()
+        if not order:
+            raise AuthError("订单不存在", 404)
+        if (order["product_type"] if "product_type" in order.keys() else "") != "membership":
+            raise AuthError("该订单不是会员订单", 400)
+        if order["status"] == "paid":
+            return _order_payload(order)
+        if order["status"] != "submitted":
+            raise AuthError("用户尚未提交付款信息，不能确认开通", 400)
+        user = _fetch_user_by_id(conn, int(order["user_id"]))
+        start_dt = now_dt
+        current_expiry = str(user["membership_expires_at"] if "membership_expires_at" in user.keys() else "").strip()
+        if current_expiry:
+            try:
+                parsed = datetime.fromisoformat(current_expiry)
+                if parsed > start_dt:
+                    start_dt = parsed
+            except ValueError:
+                start_dt = now_dt
+        duration_days = int(order["duration_days"] if "duration_days" in order.keys() and order["duration_days"] else _membership_plan()["duration_days"])
+        expires_dt = start_dt + timedelta(days=duration_days)
+        conn.execute(
+            """
+            UPDATE orders
+            SET status = 'paid',
+                paid_at = ?,
+                confirmed_at = ?,
+                admin_id = ?,
+                admin_note = ?
+            WHERE id = ?
+            """,
+            (now, now, admin_id, admin_note, order_id),
+        )
+        conn.execute(
+            """
+            UPDATE users
+            SET membership_plan = ?,
+                membership_status = 'active',
+                membership_expires_at = ?
+            WHERE id = ?
+            """,
+            (order["plan_name"], expires_dt.isoformat(), int(order["user_id"])),
+        )
+        conn.execute(
+            """
+            INSERT INTO membership_ledger (user_id, order_id, plan_name, started_at, expires_at, created_at, admin_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (int(order["user_id"]), order_id, order["plan_name"], start_dt.isoformat(), expires_dt.isoformat(), now, admin_id),
+        )
+        updated = conn.execute("SELECT * FROM orders WHERE id = ?", (order_id,)).fetchone()
+        return _order_payload(updated)
+
+
+def reject_membership_order(db_path: Path, *, order_id: int, admin_id: int, admin_note: str = "") -> dict[str, Any]:
+    admin_note = (admin_note or "").strip()[:300]
+    if len(admin_note) < 2:
+        raise AuthError("请填写驳回或异常原因", 400)
+    now = _now()
+    with _connect(db_path) as conn:
+        order = conn.execute("SELECT * FROM orders WHERE id = ?", (order_id,)).fetchone()
+        if not order:
+            raise AuthError("订单不存在", 404)
+        if (order["product_type"] if "product_type" in order.keys() else "") != "membership":
+            raise AuthError("该订单不是会员订单", 400)
+        if order["status"] == "paid":
+            raise AuthError("已开通订单不能驳回", 409)
+        conn.execute(
+            """
+            UPDATE orders
+            SET status = 'rejected',
+                rejected_at = ?,
+                admin_id = ?,
+                admin_note = ?
+            WHERE id = ?
+            """,
+            (now, admin_id, admin_note, order_id),
+        )
+        updated = conn.execute("SELECT * FROM orders WHERE id = ?", (order_id,)).fetchone()
+        return _order_payload(updated)
+
 
 
 def get_order_by_order_no(db_path: Path, *, order_no: str) -> dict[str, Any]:
@@ -625,7 +862,7 @@ def admin_dashboard(db_path: Path, days: int = 14) -> dict[str, Any]:
         ).fetchall()
         orders = conn.execute(
             """
-            SELECT o.*, u.phone
+            SELECT o.*, u.phone, u.username, u.email
             FROM orders o
             JOIN users u ON u.id = o.user_id
             ORDER BY o.created_at DESC
@@ -648,9 +885,106 @@ def admin_dashboard(db_path: Path, days: int = 14) -> dict[str, Any]:
             "usage_by_day": [dict(row) for row in usage_rows],
             "new_users_by_day": [dict(row) for row in user_rows],
             "feedback": [_feedback_payload(row) for row in feedback_rows],
-            "orders": [_order_payload(row) | {"phone": row["phone"]} for row in orders],
+            "orders": [_order_payload(row) | {"phone": row["phone"], "username": row["username"], "email": row["email"]} for row in orders],
             "top_users": [dict(row) for row in top_users],
+            "update_notices": [_update_notice_payload(row) for row in _update_notice_rows(conn)],
         }
+
+
+def latest_published_update_notice(db_path: Path) -> dict[str, Any] | None:
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT *
+            FROM update_notices
+            WHERE status = 'published'
+            ORDER BY published_at DESC, id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        return _update_notice_payload(row) if row else None
+
+
+def list_update_notices(db_path: Path, limit: int = 20) -> list[dict[str, Any]]:
+    limit = max(1, min(100, int(limit or 20)))
+    with _connect(db_path) as conn:
+        return [_update_notice_payload(row) for row in _update_notice_rows(conn, limit=limit)]
+
+
+def create_update_notice(
+    db_path: Path,
+    *,
+    title: str,
+    version: str,
+    items: list[Any],
+    admin_id: int,
+    status: str = "draft",
+) -> dict[str, Any]:
+    title, version, items, status = _normalize_update_notice_input(title, version, items, status)
+    now = _now()
+    published_at = now if status == "published" else None
+    with _connect(db_path) as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO update_notices (title, version, items_json, status, created_by, created_at, updated_at, published_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (title, version, json.dumps(items, ensure_ascii=False), status, admin_id, now, now, published_at),
+        )
+        return _update_notice_payload(conn.execute("SELECT * FROM update_notices WHERE id = ?", (cursor.lastrowid,)).fetchone())
+
+
+def update_update_notice(
+    db_path: Path,
+    *,
+    notice_id: int,
+    title: str,
+    version: str,
+    items: list[Any],
+) -> dict[str, Any]:
+    title, version, items, _ = _normalize_update_notice_input(title, version, items, "draft")
+    with _connect(db_path) as conn:
+        existing = conn.execute("SELECT * FROM update_notices WHERE id = ?", (notice_id,)).fetchone()
+        if not existing:
+            raise AuthError("更新公告不存在", 404)
+        conn.execute(
+            """
+            UPDATE update_notices
+            SET title = ?, version = ?, items_json = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (title, version, json.dumps(items, ensure_ascii=False), _now(), notice_id),
+        )
+        return _update_notice_payload(conn.execute("SELECT * FROM update_notices WHERE id = ?", (notice_id,)).fetchone())
+
+
+def publish_update_notice(db_path: Path, *, notice_id: int) -> dict[str, Any]:
+    with _connect(db_path) as conn:
+        existing = conn.execute("SELECT * FROM update_notices WHERE id = ?", (notice_id,)).fetchone()
+        if not existing:
+            raise AuthError("更新公告不存在", 404)
+        now = _now()
+        conn.execute(
+            """
+            UPDATE update_notices
+            SET status = 'published', published_at = COALESCE(published_at, ?), updated_at = ?
+            WHERE id = ?
+            """,
+            (now, now, notice_id),
+        )
+        return _update_notice_payload(conn.execute("SELECT * FROM update_notices WHERE id = ?", (notice_id,)).fetchone())
+
+
+def unpublish_update_notice(db_path: Path, *, notice_id: int) -> dict[str, Any]:
+    with _connect(db_path) as conn:
+        existing = conn.execute("SELECT * FROM update_notices WHERE id = ?", (notice_id,)).fetchone()
+        if not existing:
+            raise AuthError("更新公告不存在", 404)
+        conn.execute(
+            "UPDATE update_notices SET status = 'draft', updated_at = ? WHERE id = ?",
+            (_now(), notice_id),
+        )
+        return _update_notice_payload(conn.execute("SELECT * FROM update_notices WHERE id = ?", (notice_id,)).fetchone())
 
 
 def review_feedback(db_path: Path, *, feedback_id: int, status: str, admin_note: str = "") -> dict[str, Any]:
@@ -697,6 +1031,8 @@ def mark_order_paid(db_path: Path, *, order_id: int) -> dict[str, Any]:
         order = conn.execute("SELECT * FROM orders WHERE id = ?", (order_id,)).fetchone()
         if not order:
             raise AuthError("订单不存在", 404)
+        if (order["product_type"] if "product_type" in order.keys() else "") == "membership":
+            raise AuthError("会员订单请使用确认开通操作", 400)
         if order["status"] != "paid":
             conn.execute("UPDATE orders SET status = 'paid', paid_at = ? WHERE id = ?", (now, order_id))
             _add_credits(conn, int(order["user_id"]), int(order["credits"]), "order_paid", str(order_id))
@@ -795,6 +1131,93 @@ def _payment_provider_label(provider: str) -> str:
         "wechat": "微信",
     }
     return labels.get((provider or "").strip().lower(), "支付平台")
+
+
+def notify_admin_membership_payment(*, order: dict[str, Any], user: dict[str, Any]) -> dict[str, Any]:
+    try:
+        admin_email = os.getenv("ADMIN_PAYMENT_NOTIFY_EMAIL", "").strip()
+        if not admin_email:
+            return {"sent": False, "skipped": True, "error": "ADMIN_PAYMENT_NOTIFY_EMAIL 未配置"}
+        amount = int(order.get("amount_cents") or 0) / 100
+        submitted_amount = int(order.get("submitted_amount_cents") or 0) / 100
+        payment_method = _payment_provider_label(str(order.get("payment_method") or ""))
+        subject = f"【盈航】用户已付款待确认 - 59元/月会员 - 订单号 {order.get('order_no')}"
+        admin_url = os.getenv("ADMIN_DASHBOARD_URL", "").strip() or "/admin"
+        user_label = user.get("username") or user.get("email") or user.get("phone") or f"用户 {user.get('id')}"
+        text = (
+            "有用户提交了会员付款信息，请核对支付宝/微信到账后再开通。\n\n"
+            f"订单号：{order.get('order_no')}\n"
+            f"用户：{user_label}\n"
+            f"手机号/账号：{user.get('phone') or ''}\n"
+            f"邮箱：{user.get('email') or ''}\n"
+            f"套餐：{order.get('plan_name')}\n"
+            f"应付金额：¥{amount:.2f}\n"
+            f"支付方式：{payment_method}\n"
+            f"付款人：{order.get('payer_name') or ''}\n"
+            f"付款时间：{order.get('payer_paid_at') or ''}\n"
+            f"实付金额：¥{submitted_amount:.2f}\n"
+            f"付款备注：{order.get('payer_note') or ''}\n"
+            f"管理后台：{admin_url}\n"
+        )
+        html = f"""
+        <html>
+          <body style="font-family:Arial,'Microsoft YaHei',sans-serif;background:#050505;color:#f4f0e8;padding:24px;">
+            <div style="max-width:640px;margin:auto;border:1px solid #c9a64655;border-radius:16px;padding:24px;background:#111;">
+              <h2 style="margin:0 0 16px;color:#f5d77a;">用户已付款待确认</h2>
+              <p>请核对支付宝/微信到账后，再到管理台确认开通会员。</p>
+              <p><strong>订单号：</strong>{_html_escape(str(order.get('order_no') or ''))}</p>
+              <p><strong>用户：</strong>{_html_escape(str(user_label))}</p>
+              <p><strong>账号：</strong>{_html_escape(str(user.get('phone') or ''))}</p>
+              <p><strong>邮箱：</strong>{_html_escape(str(user.get('email') or ''))}</p>
+              <p><strong>套餐：</strong>{_html_escape(str(order.get('plan_name') or ''))}</p>
+              <p><strong>应付金额：</strong>¥{amount:.2f}</p>
+              <p><strong>支付方式：</strong>{_html_escape(payment_method)}</p>
+              <p><strong>付款人：</strong>{_html_escape(str(order.get('payer_name') or ''))}</p>
+              <p><strong>付款时间：</strong>{_html_escape(str(order.get('payer_paid_at') or ''))}</p>
+              <p><strong>实付金额：</strong>¥{submitted_amount:.2f}</p>
+              <p><strong>付款备注：</strong>{_html_escape(str(order.get('payer_note') or ''))}</p>
+              <p><strong>管理后台：</strong>{_html_escape(admin_url)}</p>
+            </div>
+          </body>
+        </html>
+        """
+        provider = os.getenv("EMAIL_PROVIDER", "smtp").strip().lower() or "smtp"
+        if provider in {"log", "debug", "local"}:
+            _write_email_debug_log(admin_email, text, None)
+            return {"sent": False, "skipped": True, "provider": "log", "email": _mask_email(admin_email), "error": "EMAIL_PROVIDER=log，仅写入本地日志，未真实发送邮件"}
+        _send_smtp_message(admin_email, subject=subject, text=text, html=html)
+        return {"sent": True, "provider": "smtp", "email": _mask_email(admin_email)}
+    except Exception as exc:
+        return {"sent": False, "error": str(exc)}
+
+
+def _membership_plan() -> dict[str, Any]:
+    return {
+        "id": "monthly_membership",
+        "plan_name": os.getenv("PAYMENT_MONTHLY_PLAN_NAME", MONTHLY_MEMBERSHIP_PLAN["plan_name"]).strip() or "月度会员",
+        "amount_cents": int(os.getenv("PAYMENT_MONTHLY_AMOUNT_CENTS", str(MONTHLY_MEMBERSHIP_PLAN["amount_cents"])) or "5900"),
+        "duration_days": int(os.getenv("PAYMENT_MONTHLY_DURATION_DAYS", str(MONTHLY_MEMBERSHIP_PLAN["duration_days"])) or "31"),
+    }
+
+
+def _normalize_payment_method(value: str) -> str:
+    method = (value or "").strip().lower()
+    aliases = {"支付宝": "alipay", "微信": "wechat", "weixin": "wechat"}
+    method = aliases.get(method, method)
+    if method not in {"alipay", "wechat"}:
+        raise AuthError("请选择支付宝或微信付款", 400)
+    return method
+
+
+def _has_active_membership(user: sqlite3.Row | dict[str, Any]) -> bool:
+    status = str(user["membership_status"] if "membership_status" in user.keys() else "").strip()
+    expires_at = str(user["membership_expires_at"] if "membership_expires_at" in user.keys() else "").strip()
+    if status != "active" or not expires_at:
+        return False
+    try:
+        return datetime.fromisoformat(expires_at) > datetime.now(CN_TZ)
+    except ValueError:
+        return False
 
 
 def grant_user_credits(db_path: Path, *, user_id: int, credits: int, reason: str, admin_id: int | None = None) -> dict[str, Any]:
@@ -1210,6 +1633,8 @@ def _user_payload(conn: sqlite3.Connection, row: sqlite3.Row | dict[str, Any]) -
         "SELECT COUNT(*) AS count FROM referrals WHERE referrer_user_id = ? AND status = 'completed'",
         (user_id,),
     ).fetchone()["count"]
+    membership_expires_at = row["membership_expires_at"] if "membership_expires_at" in row.keys() else ""
+    membership_active = _has_active_membership(row)
     return {
         "id": user_id,
         "phone": row["phone"],
@@ -1218,6 +1643,10 @@ def _user_payload(conn: sqlite3.Connection, row: sqlite3.Row | dict[str, Any]) -
         "role": row["role"],
         "invite_code": row["invite_code"],
         "credits": _credit_balance(conn, user_id),
+        "membership_plan": row["membership_plan"] if "membership_plan" in row.keys() else "",
+        "membership_status": "active" if membership_active else (row["membership_status"] if "membership_status" in row.keys() else ""),
+        "membership_expires_at": membership_expires_at,
+        "membership_active": membership_active,
         "referral_count": int(referral_count),
         "created_at": row["created_at"],
     }
@@ -1239,6 +1668,38 @@ def _feedback_payload(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
+def _update_notice_rows(conn: sqlite3.Connection, limit: int = 20) -> list[sqlite3.Row]:
+    return conn.execute(
+        """
+        SELECT *
+        FROM update_notices
+        ORDER BY COALESCE(published_at, updated_at, created_at) DESC, id DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+
+
+def _update_notice_payload(row: sqlite3.Row) -> dict[str, Any]:
+    try:
+        items = json.loads(row["items_json"] or "[]")
+    except Exception:
+        items = []
+    if not isinstance(items, list):
+        items = []
+    return {
+        "id": row["id"],
+        "title": row["title"],
+        "version": row["version"],
+        "items": [str(item) for item in items if str(item).strip()],
+        "status": row["status"],
+        "created_by": row["created_by"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+        "published_at": row["published_at"],
+    }
+
+
 def _order_payload(row: sqlite3.Row) -> dict[str, Any]:
     return {
         "id": row["id"],
@@ -1253,11 +1714,48 @@ def _order_payload(row: sqlite3.Row) -> dict[str, Any]:
         "payment_provider": row["payment_provider"] if "payment_provider" in row.keys() else "",
         "provider_trade_no": row["provider_trade_no"] if "provider_trade_no" in row.keys() else "",
         "paid_amount_cents": row["paid_amount_cents"] if "paid_amount_cents" in row.keys() else None,
+        "product_type": row["product_type"] if "product_type" in row.keys() else "credits",
+        "package_id": row["package_id"] if "package_id" in row.keys() else "",
+        "duration_days": row["duration_days"] if "duration_days" in row.keys() else None,
+        "payment_method": row["payment_method"] if "payment_method" in row.keys() else "",
+        "payment_submit_status": row["payment_submit_status"] if "payment_submit_status" in row.keys() else "",
+        "payer_name": row["payer_name"] if "payer_name" in row.keys() else "",
+        "payer_note": row["payer_note"] if "payer_note" in row.keys() else "",
+        "payer_paid_at": row["payer_paid_at"] if "payer_paid_at" in row.keys() else "",
+        "submitted_amount_cents": row["submitted_amount_cents"] if "submitted_amount_cents" in row.keys() else None,
+        "submitted_at": row["submitted_at"] if "submitted_at" in row.keys() else "",
+        "admin_id": row["admin_id"] if "admin_id" in row.keys() else None,
+        "admin_note": row["admin_note"] if "admin_note" in row.keys() else "",
+        "confirmed_at": row["confirmed_at"] if "confirmed_at" in row.keys() else "",
+        "rejected_at": row["rejected_at"] if "rejected_at" in row.keys() else "",
     }
 
 
 def _now() -> str:
     return datetime.now(CN_TZ).isoformat()
+
+
+def _normalize_update_notice_input(
+    title: str,
+    version: str,
+    items: list[Any],
+    status: str,
+) -> tuple[str, str, list[str], str]:
+    title = str(title or "").strip()[:80]
+    version = str(version or "").strip()[:40]
+    status = str(status or "draft").strip()
+    if status not in {"draft", "published"}:
+        raise AuthError("更新公告状态不正确", 400)
+    if not title:
+        raise AuthError("更新公告标题不能为空", 400)
+    if not version:
+        raise AuthError("更新公告版本不能为空", 400)
+    if not isinstance(items, list):
+        raise AuthError("更新公告内容必须是列表", 400)
+    normalized_items = [str(item).strip()[:240] for item in items if str(item).strip()]
+    if not normalized_items:
+        raise AuthError("更新公告内容不能为空", 400)
+    return title, version, normalized_items[:12], status
 
 
 def _amount_yuan_to_cents(value: str) -> int:
