@@ -188,6 +188,13 @@ class WebhookApiTest(unittest.TestCase):
         self.assertEqual(filtered_total, 2)
         self.assertEqual(overall_total, 3)
 
+    def test_auction_strength_billing_only_treats_current_date_as_paid_view(self):
+        today = simple_api.datetime.now(simple_api.CN_TZ).date().isoformat()
+
+        self.assertTrue(simple_api._is_today_trade_date(today))
+        self.assertFalse(simple_api._is_today_trade_date("2000-01-01"))
+        self.assertFalse(simple_api._is_today_trade_date(""))
+
     def test_jinshuju_webhook_marks_order_paid_once(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "auth.sqlite"

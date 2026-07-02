@@ -30,7 +30,7 @@ function AuthContent() {
   const router = useRouter();
   const params = useSearchParams();
   const inviteFromUrl = normalizeInviteCode(params.get("invite") || params.get("invite_code") || params.get("ref") || "");
-  const redirect = params.get("redirect") || "/review";
+  const redirect = params.get("redirect") || "/";
   const [mode, setMode] = useState<Mode>(inviteFromUrl ? "password-register" : "password-login");
   const [account, setAccount] = useState("");
   const [username, setUsername] = useState("");
@@ -90,7 +90,7 @@ function AuthContent() {
       }
       storeAuth(result);
       const target = mode === "admin" && !params.get("redirect") ? "/admin" : redirect;
-      router.push(result.user.role !== "admin" && target === "/admin" ? "/review" : target);
+      router.push(result.user.role !== "admin" && target === "/admin" ? "/" : target);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "操作失败，请稍后重试");
     } finally {

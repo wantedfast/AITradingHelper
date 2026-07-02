@@ -1,9 +1,9 @@
-"use client";
+﻿"use client";
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
-import { BarChart3, CheckCircle2, CreditCard, Gift, LogOut, MessageSquare, RefreshCw, Users } from "lucide-react";
+import { BarChart3, CheckCircle2, CreditCard, Gift, LogOut, Megaphone, MessageSquare, RefreshCw, Users } from "lucide-react";
 import { apiFetch, clearAuth, getStoredUser, refreshCurrentUser, type UserProfile } from "@/lib/auth-client";
 
 type DashboardPayload = {
@@ -28,19 +28,52 @@ type DashboardPayload = {
   orders: Array<{
     id: number;
     phone: string;
+    username?: string;
+    email?: string;
     order_no: string;
     plan_name: string;
     credits: number;
     amount_cents: number;
     status: string;
+    product_type?: string;
+    payment_method?: string;
+    payer_name?: string;
+    payer_note?: string;
+    payer_paid_at?: string;
+    submitted_amount_cents?: number | null;
+    admin_note?: string;
     created_at: string;
   }>;
   top_users: Array<{ id: number; phone: string; username?: string; email?: string; role: string; used_count: number; credits: number; created_at: string }>;
+  update_notices: UpdateNotice[];
 };
 
 type GrantDraft = {
   credits: string;
   reason: string;
+};
+
+type UpdateNotice = {
+  id: number;
+  title: string;
+  version: string;
+  items: string[];
+  status: "draft" | "published";
+  created_at: string;
+  updated_at: string;
+  published_at?: string | null;
+};
+
+type NoticeDraft = {
+  title: string;
+  version: string;
+  itemsText: string;
+};
+
+const emptyNoticeDraft: NoticeDraft = {
+  title: "",
+  version: todayDateInputValue(),
+  itemsText: "",
 };
 
 export default function AdminPage() {
@@ -50,6 +83,8 @@ export default function AdminPage() {
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState("");
   const [grantDrafts, setGrantDrafts] = useState<Record<number, GrantDraft>>({});
+  const [noticeDraft, setNoticeDraft] = useState<NoticeDraft>(emptyNoticeDraft);
+  const [editingNoticeId, setEditingNoticeId] = useState<number | null>(null);
 
   useEffect(() => {
     refreshCurrentUser()
@@ -87,6 +122,24 @@ export default function AdminPage() {
     await loadDashboard();
   }
 
+  async function confirmMembership(id: number) {
+    await apiFetch(`/api/admin/orders/${id}/confirm-membership`, {
+      method: "POST",
+      body: JSON.stringify({ admin_note: "已人工核对到账，开通月度会员" }),
+    });
+    await loadDashboard();
+  }
+
+  async function rejectMembership(id: number) {
+    const reason = window.prompt("请输入异常或驳回原因");
+    if (!reason) return;
+    await apiFetch(`/api/admin/orders/${id}/reject`, {
+      method: "POST",
+      body: JSON.stringify({ admin_note: reason }),
+    });
+    await loadDashboard();
+  }
+
   function updateGrantDraft(userId: number, patch: Partial<GrantDraft>) {
     setGrantDrafts((current) => ({
       ...current,
@@ -109,6 +162,51 @@ export default function AdminPage() {
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "增加次数失败");
     }
+  }
+
+  async function saveUpdateNotice(status: "draft" | "published" = "draft") {
+    setMessage("");
+    try {
+      const body = JSON.stringify({
+        title: noticeDraft.title,
+        version: noticeDraft.version,
+        items_text: noticeDraft.itemsText,
+        status,
+      });
+      if (editingNoticeId) {
+        await apiFetch(`/api/admin/update-notices/${editingNoticeId}`, { method: "POST", body });
+        if (status === "published") {
+          await apiFetch(`/api/admin/update-notices/${editingNoticeId}/publish`, { method: "POST" });
+        }
+      } else {
+        await apiFetch("/api/admin/update-notices", { method: "POST", body });
+      }
+      setNoticeDraft(emptyNoticeDraft);
+      setEditingNoticeId(null);
+      await loadDashboard();
+      setMessage(status === "published" ? "更新公告已发布" : "更新公告已保存");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "保存更新公告失败");
+    }
+  }
+
+  function editUpdateNotice(notice: UpdateNotice) {
+    setEditingNoticeId(notice.id);
+    setNoticeDraft({
+      title: notice.title,
+      version: notice.version,
+      itemsText: notice.items.join("\n"),
+    });
+  }
+
+  async function publishUpdateNotice(id: number) {
+    await apiFetch(`/api/admin/update-notices/${id}/publish`, { method: "POST" });
+    await loadDashboard();
+  }
+
+  async function unpublishUpdateNotice(id: number) {
+    await apiFetch(`/api/admin/update-notices/${id}/unpublish`, { method: "POST" });
+    await loadDashboard();
   }
 
   const chartMax = useMemo(() => {
@@ -262,11 +360,32 @@ export default function AdminPage() {
                     <div className="admin-list-item" key={item.id}>
                       <header>
                         <b>{item.plan_name}</b>
-                        <span>{item.status}</span>
+                        <span>{orderStatusLabel(item.status)}</span>
                       </header>
-                      <p>{item.credits} 次 · ¥{(item.amount_cents / 100).toFixed(2)}</p>
-                      <small>{item.phone} · {item.order_no}</small>
-                      {item.status !== "paid" && (
+                      <p>{item.product_type === "membership" ? "会员订阅" : `${item.credits} 次`} · ¥{(item.amount_cents / 100).toFixed(2)}</p>
+                      <small>{item.username || item.email || item.phone} · {item.order_no}</small>
+                      {item.product_type === "membership" && (
+                        <p>
+                          {paymentMethodLabel(item.payment_method || "")}
+                          {item.payer_name ? ` · ${item.payer_name}` : ""}
+                          {item.payer_paid_at ? ` · ${item.payer_paid_at}` : ""}
+                          {item.submitted_amount_cents ? ` · ¥${(item.submitted_amount_cents / 100).toFixed(2)}` : ""}
+                          {item.payer_note ? ` · ${item.payer_note}` : ""}
+                        </p>
+                      )}
+                      {item.admin_note ? <small>备注：{item.admin_note}</small> : null}
+                      {item.product_type === "membership" && item.status === "submitted" && (
+                        <>
+                          <button type="button" onClick={() => confirmMembership(item.id)}>
+                            <CheckCircle2 />
+                            确认到账并开通
+                          </button>
+                          <button type="button" onClick={() => rejectMembership(item.id)}>
+                            标记异常
+                          </button>
+                        </>
+                      )}
+                      {item.product_type !== "membership" && item.status !== "paid" && (
                         <button type="button" onClick={() => markPaid(item.id)}>
                           <CheckCircle2 />
                           标记已支付
@@ -274,6 +393,85 @@ export default function AdminPage() {
                       )}
                     </div>
                   ))}
+                </div>
+              </article>
+            </section>
+
+            <section className="admin-grid">
+              <article className="admin-panel">
+                <div className="admin-panel-head">
+                  <Megaphone />
+                  <h2>更新公告</h2>
+                </div>
+                <div className="admin-notice-form">
+                  <input
+                    value={noticeDraft.title}
+                    onChange={(event) => setNoticeDraft((current) => ({ ...current, title: event.target.value }))}
+                    placeholder="公告标题，例如：本周更新"
+                  />
+                  <input
+                    type="date"
+                    value={noticeDraft.version}
+                    onChange={(event) => setNoticeDraft((current) => ({ ...current, version: event.target.value }))}
+                    aria-label="公告日期"
+                  />
+                  <textarea
+                    value={noticeDraft.itemsText}
+                    onChange={(event) => setNoticeDraft((current) => ({ ...current, itemsText: event.target.value }))}
+                    placeholder="每行一条更新内容"
+                    rows={5}
+                  />
+                  <div className="admin-notice-actions">
+                    <button type="button" onClick={() => saveUpdateNotice("draft")}>
+                      {editingNoticeId ? "保存修改" : "保存草稿"}
+                    </button>
+                    <button type="button" onClick={() => saveUpdateNotice("published")}>
+                      保存并发布
+                    </button>
+                    {editingNoticeId && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingNoticeId(null);
+                          setNoticeDraft(emptyNoticeDraft);
+                        }}
+                      >
+                        取消编辑
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </article>
+
+              <article className="admin-panel">
+                <div className="admin-panel-head">
+                  <Megaphone />
+                  <h2>公告列表</h2>
+                </div>
+                <div className="admin-list">
+                  {(data.update_notices || []).map((notice) => (
+                    <div className="admin-list-item" key={notice.id}>
+                      <header>
+                        <b>{notice.title}</b>
+                        <span>{notice.status === "published" ? "已发布" : "草稿"}</span>
+                      </header>
+                      <p>{notice.version} · {formatDate(notice.published_at || notice.updated_at)}</p>
+                      <small>{notice.items.join(" / ")}</small>
+                      <button type="button" onClick={() => editUpdateNotice(notice)}>
+                        编辑
+                      </button>
+                      {notice.status === "published" ? (
+                        <button type="button" onClick={() => unpublishUpdateNotice(notice.id)}>
+                          下线
+                        </button>
+                      ) : (
+                        <button type="button" onClick={() => publishUpdateNotice(notice.id)}>
+                          发布
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                  {!(data.update_notices || []).length && <p>暂无更新公告。</p>}
                 </div>
               </article>
             </section>
@@ -297,9 +495,33 @@ function Metric({ icon: Icon, label, value }: { icon: typeof Users; label: strin
 function featureLabel(value: string) {
   if (value === "review_report") return "AI 复盘";
   if (value === "watch_plan") return "AI 盯盘";
+  if (value === "membership_free") return "会员免扣";
   return value;
+}
+
+function orderStatusLabel(value: string) {
+  if (value === "pending") return "待付款";
+  if (value === "submitted") return "待确认";
+  if (value === "paid") return "已支付";
+  if (value === "rejected") return "异常";
+  return value;
+}
+
+function paymentMethodLabel(value: string) {
+  if (value === "alipay") return "支付宝";
+  if (value === "wechat") return "微信";
+  return "未提交付款方式";
 }
 
 function formatDate(value: string) {
   return value ? value.slice(0, 16).replace("T", " ") : "";
 }
+
+function todayDateInputValue() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+

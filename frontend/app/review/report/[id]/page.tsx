@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getAuthToken, storeUser, type UserProfile } from "@/lib/auth-client";
+import { getAuthToken, storeUser, usageBillingText, type UserProfile } from "@/lib/auth-client";
 
 type ViewKey = "review" | "choice" | "theme" | "logic";
 
@@ -156,8 +156,7 @@ export default function ReviewReportPage({ params }: ReviewReportPageProps) {
       if (!response.ok) throw new Error(payload.error || "报告已展示，但扣除使用次数失败");
       if (payload.user) {
         storeUser(payload.user);
-        const credits = typeof payload.user.credits === "number" ? `剩余 ${payload.user.credits} 次。` : "";
-        setBillingMessage(`报告已成功展示，已扣除 1 次使用机会。${credits}`);
+        setBillingMessage(`报告已成功展示。${usageBillingText(payload.user)}`);
       }
     } catch (ackError) {
       ackStartedRef.current = false;

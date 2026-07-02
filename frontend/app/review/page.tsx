@@ -56,6 +56,10 @@ type ReportPayload = {
     role?: string;
     invite_code?: string;
     credits?: number;
+    membership_plan?: string | null;
+    membership_status?: string | null;
+    membership_expires_at?: string | null;
+    membership_active?: boolean;
     referral_count?: number;
     created_at?: string;
   };
@@ -495,6 +499,10 @@ export default function ReviewPage() {
           role: payload.user.role as "user" | "admin",
           invite_code: payload.user.invite_code,
           credits: payload.user.credits || 0,
+          membership_plan: payload.user.membership_plan || "",
+          membership_status: payload.user.membership_status || "",
+          membership_expires_at: payload.user.membership_expires_at || "",
+          membership_active: Boolean(payload.user.membership_active),
           referral_count: payload.user.referral_count || 0,
           created_at: payload.user.created_at || "",
         });

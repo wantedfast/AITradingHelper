@@ -1,13 +1,13 @@
-"use client";
+﻿"use client";
 
 import Image from "next/image";
 import Link from "next/link";
 import { FormEvent, useEffect, useState } from "react";
-import { BellRing, ChevronDown, Copy, CreditCard, FileSearch, Gift, Info, LogOut, MessageSquare, ShieldCheck, Sparkles, TrendingUp, Trophy, UserRound, X } from "lucide-react";
+import { BellRing, ChevronDown, Copy, CreditCard, FileSearch, Gift, Info, LogOut, Megaphone, MessageSquare, ShieldCheck, Sparkles, TrendingUp, Trophy, UserRound, X } from "lucide-react";
 import { AuctionStrengthPerformanceTicker, useAuctionStrengthPerformance } from "@/components/auction-strength-performance-ticker";
 import { GoldMagicCube } from "@/components/gold-magic-cube";
 import { HomeMusic } from "@/components/home-music";
-import { apiFetch, clearAuth, getStoredUser, inviteUrl, refreshCurrentUser, type UserProfile } from "@/lib/auth-client";
+import { apiFetch, clearAuth, getStoredUser, inviteUrl, refreshCurrentUser, userAccessLabel, userBalanceText, type UserProfile } from "@/lib/auth-client";
 
 const features = [
   {
@@ -44,6 +44,16 @@ const features = [
   },
 ];
 
+type UpdateNotice = {
+  id: number;
+  title: string;
+  version: string;
+  items: string[];
+  published_at?: string | null;
+};
+
+const UPDATE_NOTICE_SEEN_KEY = "ai_trade_seen_update_notice_id";
+
 export default function Page() {
   const [hydrated, setHydrated] = useState(false);
   const [user, setUser] = useState<UserProfile | null>(null);
@@ -54,6 +64,8 @@ export default function Page() {
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [showAuctionTooltip, setShowAuctionTooltip] = useState(false);
   const [inviteCopied, setInviteCopied] = useState(false);
+  const [updateNotice, setUpdateNotice] = useState<UpdateNotice | null>(null);
+  const [showUpdateNotice, setShowUpdateNotice] = useState(false);
   const auctionPerformance = useAuctionStrengthPerformance();
   const recentAuctionTop1Rows = auctionPerformance.rows.slice(-5).reverse();
 
@@ -67,6 +79,27 @@ export default function Page() {
     window.addEventListener("ai-trade-auth", handleAuth);
     return () => window.removeEventListener("ai-trade-auth", handleAuth);
   }, []);
+
+  useEffect(() => {
+    apiFetch<{ notice: UpdateNotice | null }>("/api/update-notices/latest")
+      .then((payload) => {
+        if (!payload.notice) return;
+        const noticeId = String(payload.notice.id);
+        if (window.localStorage.getItem(UPDATE_NOTICE_SEEN_KEY) === noticeId) return;
+        setUpdateNotice(payload.notice);
+        setShowUpdateNotice(true);
+      })
+      .catch(() => {
+        // Update notices should never block the homepage.
+      });
+  }, []);
+
+  function closeUpdateNotice() {
+    if (updateNotice) {
+      window.localStorage.setItem(UPDATE_NOTICE_SEEN_KEY, String(updateNotice.id));
+    }
+    setShowUpdateNotice(false);
+  }
 
   async function copyInvite() {
     const url = inviteUrl(user);
@@ -141,7 +174,7 @@ export default function Page() {
               <div className="home-user-menu">
                 <button className="login home-user-pill" type="button" onClick={() => setShowUserMenu((value) => !value)} aria-expanded={showUserMenu}>
                   <UserRound className="h-4 w-4" />
-                  {user.role === "admin" ? "管理员" : `${user.credits} 次`}
+                  {userAccessLabel(user)}
                   <ChevronDown className="h-4 w-4" />
                 </button>
                 {showUserMenu && (
@@ -159,7 +192,7 @@ export default function Page() {
                     </div>
                     <div className="home-user-row">
                       <span>剩余次数</span>
-                      <em>{user.role === "admin" ? "管理员免扣次数" : `${user.credits} 次`}</em>
+                      <em>{userBalanceText(user)}</em>
                     </div>
                     <div className="home-user-row">
                       <span>邀请码</span>
@@ -212,7 +245,7 @@ export default function Page() {
                 立即开始
               </Link>
               {hydrated && !user && (
-                <Link className="secondary home-auth-link" href="/auth?redirect=/review">
+                <Link className="secondary home-auth-link" href="/auth">
                   邮箱注册，送 5 次免费
                 </Link>
               )}
@@ -255,7 +288,7 @@ export default function Page() {
               <div className="home-credit-strip">
                 <span>
                   <Gift className="h-4 w-4" />
-                  {`剩余 ${user.credits} 次免费机会`}
+                  {userBalanceText(user)}
                 </span>
                 <button type="button" onClick={copyInvite}>
                   <Copy className="h-4 w-4" />
@@ -388,6 +421,32 @@ export default function Page() {
           </form>
         </section>
       </div>
+      {showUpdateNotice && updateNotice && (
+        <div className="product-guide-backdrop" role="presentation" onMouseDown={closeUpdateNotice}>
+          <section className="update-notice-modal" role="dialog" aria-modal="true" aria-labelledby="update-notice-title" onMouseDown={(event) => event.stopPropagation()}>
+            <button className="product-guide-close" type="button" onClick={closeUpdateNotice} aria-label="关闭更新公告">
+              <X className="h-5 w-5" />
+            </button>
+            <div className="product-guide-kicker">
+              <Megaphone className="h-4 w-4" />
+              最新更新
+            </div>
+            <h2 id="update-notice-title">{updateNotice.title}</h2>
+            <p>
+              {updateNotice.version}
+              {updateNotice.published_at ? ` · ${formatUpdateNoticeDate(updateNotice.published_at)}` : ""}
+            </p>
+            <ul className="update-notice-list">
+              {updateNotice.items.map((item, index) => (
+                <li key={`${item}-${index}`}>{item}</li>
+              ))}
+            </ul>
+            <button className="update-notice-confirm" type="button" onClick={closeUpdateNotice}>
+              知道了
+            </button>
+          </section>
+        </div>
+      )}
       {showProductGuide && (
         <div className="product-guide-backdrop" role="presentation" onMouseDown={() => setShowProductGuide(false)}>
           <section className="product-guide-modal" role="dialog" aria-modal="true" aria-labelledby="product-guide-title" onMouseDown={(event) => event.stopPropagation()}>
@@ -437,4 +496,9 @@ export default function Page() {
     </main>
   );
 }
+
+function formatUpdateNoticeDate(value: string) {
+  return value ? value.slice(0, 16).replace("T", " ") : "";
+}
+
 

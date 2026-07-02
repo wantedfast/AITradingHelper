@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { ReactNode } from "react";
 import { BarChart3, CalendarDays, Flame, GitBranch, Loader2, LockKeyhole, RefreshCcw, ShieldAlert, Sparkles, Trophy } from "lucide-react";
-import { getAuthToken, storeUser, type UserProfile } from "@/lib/auth-client";
+import { getAuthToken, storeUser, usageBillingText, type UserProfile } from "@/lib/auth-client";
 import { MainSidebar } from "@/components/main-sidebar";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || (process.env.NODE_ENV === "development" ? "http://127.0.0.1:8600" : "");
@@ -80,7 +80,7 @@ type AuctionPayload = {
   reports?: AuctionReport[];
   count?: number;
   total?: number;
-  billing_status?: "no_data" | "pending_view" | "charged";
+  billing_status?: "no_data" | "pending_view" | "charged" | "free_history";
   billing_trade_date?: string;
   user?: UserProfile;
   error?: string;
@@ -89,7 +89,7 @@ type AuctionPayload = {
 type AuctionAckPayload = {
   ok?: boolean;
   error?: string;
-  billing_status?: "charged";
+  billing_status?: "charged" | "free_history";
   billing_trade_date?: string;
   user?: UserProfile;
 };
@@ -216,6 +216,14 @@ export default function AuctionStrengthPage() {
     });
   }, [selectedReport]);
   const isToday = selectedDate === todayIsoDate();
+  const confirmTitle = isToday ? "查看竞价分析会扣除 1 次使用机会。" : "查看历史竞价分析不扣次数。";
+  const confirmText = isToday
+    ? "查看所选交易日的竞价分析会扣除 1 次使用机会；同一交易日重复刷新或切换记录不会重复扣。"
+    : "历史日期记录可直接查看，不会扣除使用机会；同一交易日重复刷新或切换记录也不会扣。";
+  const confirmButtonText = isToday ? "确认查看并扣次" : "确认查看历史记录";
+  const confirmHint = isToday
+    ? "如果所选日期暂无数据，或数据读取失败，不会扣次数。"
+    : "历史日期仅读取已生成记录，不会触发扣次确认。";
   const themeGate = selectedReport?.theme_gate_result;
   const admittedThemes = themeGate?.admitted_themes || [];
   const excludedThemes = themeGate?.excluded_themes || [];
@@ -245,7 +253,7 @@ export default function AuctionStrengthPage() {
   const acknowledgeVisibleReport = useCallback(async (tradeDate: string) => {
     const token = getAuthToken();
     const key = tradeDate || selectedDate;
-    if (!token || !key || ackedDatesRef.current.has(key)) return;
+    if (!token || !key || key !== todayIsoDate() || ackedDatesRef.current.has(key)) return;
     ackedDatesRef.current.add(key);
     try {
       const response = await fetch(`${API_BASE}/api/auction-strength/ack`, {
@@ -261,8 +269,7 @@ export default function AuctionStrengthPage() {
       if (!response.ok) throw new Error(payload.error || "竞价分析已展示，但扣除使用次数失败");
       if (payload.user) {
         storeUser(payload.user);
-        const credits = typeof payload.user.credits === "number" ? `剩余 ${payload.user.credits} 次。` : "";
-        setBillingMessage(`竞价分析已展示，已按交易日确认扣除 1 次使用机会。${credits}`);
+        setBillingMessage(`竞价分析已展示。${usageBillingText(payload.user)}`);
       }
     } catch (error) {
       ackedDatesRef.current.delete(key);
@@ -357,8 +364,8 @@ export default function AuctionStrengthPage() {
               <Flame className="h-4 w-4" />
               {selectedReport?.trade_date || selectedDate || "等待数据"} · {confirmed ? selectedReport?.analysis_time || "09:25 集合竞价后" : "确认后查看"}
             </p>
-            <h1>{confirmed ? selectedReport?.summary.one_sentence || "当前日期暂无竞价强者数据。" : "查看竞价分析会扣除 1 次使用机会。"}</h1>
-            <span className="auction-buy-note">建议以买限价格买入</span>
+            <h1>{confirmed ? selectedReport?.summary.one_sentence || "当前日期暂无竞价强者数据。" : confirmTitle}</h1>
+            <span className="auction-buy-note">建议以买限价格买入，优先选择开盘方向向上个股</span>
             <p>{confirmed ? selectedReport?.global_conclusion.one_sentence_for_930 || "当日数据进入后，页面会自动刷新并展示 9:30 前执行重点。" : "确认查看后才会加载 Top5 强势标的、回避标的和全局结论；没有数据或读取失败不会扣次数。"}</p>
           </div>
           <div className="auction-status-strip">
@@ -379,18 +386,30 @@ export default function AuctionStrengthPage() {
 
         {!confirmed ? (
           <section className="auction-panel auction-confirm-panel">
-            <PanelHead icon={<LockKeyhole className="h-5 w-5" />} title="确认查看竞价分析" text="查看所选交易日的竞价分析会扣除 1 次使用机会；同一交易日重复刷新或切换记录不会重复扣。" />
+            <PanelHead icon={<LockKeyhole className="h-5 w-5" />} title="确认查看竞价分析" text={confirmText} />
             <div className="auction-confirm-actions">
               <button type="button" onClick={confirmView}>
-                确认查看并扣次
+                {confirmButtonText}
               </button>
-              <span>如果所选日期暂无数据，或数据读取失败，不会扣次数。</span>
+              <span>{confirmHint}</span>
             </div>
           </section>
         ) : (
           <>
             {billingMessage ? <p className="auction-message">{billingMessage}</p> : null}
             <section className="auction-grid auction-grid--primary">
+              <section className="auction-panel auction-conclusion-panel">
+                <PanelHead icon={<BarChart3 className="h-5 w-5" />} title="全局结论" text="把 9:25 最强、最超预期、容量确认和负反馈压缩成 9:30 观察重点。" />
+                <div className="auction-conclusion-stack">
+                  <MetricTile label="最强个股" value={selectedReport?.global_conclusion.strongest_stock_at_925 || "--"} tone="hot" />
+                  <MetricTile label="最强题材" value={selectedReport?.global_conclusion.strongest_theme_cluster || "--"} />
+                  <MetricTile label="最超预期" value={selectedReport?.global_conclusion.most_over_expected_stock || "--"} tone="hot" />
+                  <MetricTile label="容量确认" value={selectedReport?.global_conclusion.best_capacity_confirmation || "--"} />
+                  <MetricTile label="最大负反馈" value={selectedReport?.global_conclusion.biggest_negative_feedback || "--"} />
+                </div>
+                <p className="auction-conclusion-text">{conclusionText || "所选日期暂无全局结论。"}</p>
+              </section>
+
               <section className="auction-panel auction-strong-panel">
                 <PanelHead icon={<Trophy className="h-5 w-5" />} title="Top5 强势标的" text="最终进入 9:30 前优先观察的主板个股。" />
                 <div className="auction-stock-list">
@@ -413,18 +432,6 @@ export default function AuctionStrengthPage() {
                     </article>
                   )) : <EmptyState text="所选日期还没有强势标的数据。" />}
                 </div>
-              </section>
-
-              <section className="auction-panel auction-conclusion-panel">
-                <PanelHead icon={<BarChart3 className="h-5 w-5" />} title="全局结论" text="把 9:25 最强、最超预期、容量确认和负反馈压缩成 9:30 观察重点。" />
-                <div className="auction-conclusion-stack">
-                  <MetricTile label="最强个股" value={selectedReport?.global_conclusion.strongest_stock_at_925 || "--"} />
-                  <MetricTile label="最强题材" value={selectedReport?.global_conclusion.strongest_theme_cluster || "--"} />
-                  <MetricTile label="最超预期" value={selectedReport?.global_conclusion.most_over_expected_stock || "--"} />
-                  <MetricTile label="容量确认" value={selectedReport?.global_conclusion.best_capacity_confirmation || "--"} />
-                  <MetricTile label="最大负反馈" value={selectedReport?.global_conclusion.biggest_negative_feedback || "--"} />
-                </div>
-                <p className="auction-conclusion-text">{conclusionText || "所选日期暂无全局结论。"}</p>
               </section>
             </section>
 
@@ -553,9 +560,9 @@ function EmptyState({ text }: { text: string }) {
   );
 }
 
-function MetricTile({ label, value }: { label: string; value: string }) {
+function MetricTile({ label, value, tone }: { label: string; value: string; tone?: "hot" }) {
   return (
-    <article className="auction-metric-tile">
+    <article className="auction-metric-tile" data-tone={tone}>
       <span>{label}</span>
       <b>{value}</b>
     </article>
