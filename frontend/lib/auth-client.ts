@@ -21,6 +21,10 @@ export type AuthResult = {
   user: UserProfile;
 };
 
+type AccessUser = Partial<Omit<UserProfile, "role">> & {
+  role?: string | null;
+};
+
 const TOKEN_KEY = "ai_trade_token";
 const USER_KEY = "ai_trade_user";
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || (process.env.NODE_ENV === "development" ? "http://127.0.0.1:8600" : "");
@@ -62,22 +66,22 @@ export function clearAuth() {
   window.dispatchEvent(new CustomEvent("ai-trade-auth", { detail: null }));
 }
 
-export function hasActiveMembership(user: Partial<UserProfile> | null | undefined) {
+export function hasActiveMembership(user: AccessUser | null | undefined) {
   return Boolean(user?.membership_active || user?.membership_status === "active");
 }
 
-export function membershipExpiryText(user: Partial<UserProfile> | null | undefined) {
+export function membershipExpiryText(user: AccessUser | null | undefined) {
   return user?.membership_expires_at ? user.membership_expires_at.slice(0, 10) : "";
 }
 
-export function userAccessLabel(user: Partial<UserProfile> | null | undefined) {
+export function userAccessLabel(user: AccessUser | null | undefined) {
   if (!user) return "";
   if (user.role === "admin") return "管理员";
   if (hasActiveMembership(user)) return "会员无限";
   return `${user.credits} 次`;
 }
 
-export function userBalanceText(user: Partial<UserProfile> | null | undefined) {
+export function userBalanceText(user: AccessUser | null | undefined) {
   if (!user) return "";
   if (user.role === "admin") return "管理员免扣次数";
   if (hasActiveMembership(user)) {
@@ -87,7 +91,7 @@ export function userBalanceText(user: Partial<UserProfile> | null | undefined) {
   return `${user.credits} 次`;
 }
 
-export function usageBillingText(user: Partial<UserProfile> | null | undefined) {
+export function usageBillingText(user: AccessUser | null | undefined) {
   if (!user) return "";
   if (hasActiveMembership(user)) return "会员期内本次免扣，剩余次数不变。";
   return typeof user.credits === "number" ? `剩余 ${user.credits} 次。` : "";
