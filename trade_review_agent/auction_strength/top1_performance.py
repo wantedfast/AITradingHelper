@@ -1,13 +1,19 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
 from trade_review_agent.market.data_provider import MarketDataProvider
+
+
+CN_TZ = ZoneInfo("Asia/Shanghai")
+AUCTION_TOP1_REFRESH_HOUR = 16
 
 
 SEED_TOP1_PERFORMANCE: tuple[dict[str, Any], ...] = (
@@ -105,6 +111,14 @@ SEED_TOP1_PERFORMANCE: tuple[dict[str, Any], ...] = (
 )
 
 
+def auction_top1_next_refresh_at(now: datetime, *, hour: int = AUCTION_TOP1_REFRESH_HOUR) -> datetime:
+    local_now = now.astimezone(CN_TZ)
+    next_run = local_now.replace(hour=hour, minute=0, second=0, microsecond=0)
+    if next_run <= local_now:
+        next_run = next_run + timedelta(days=1)
+    return next_run
+
+
 def auction_top1_performance_payload(
     *,
     performance_path: Path,
@@ -118,7 +132,15 @@ def auction_top1_performance_payload(
             performance_path=performance_path,
             cache_db=cache_db,
         )
+    reports = read_jsonl(auction_reports_path)
+    valid_report_keys = {_record_key(top1) for report in reports if (top1 := top1_from_auction_report(report))}
     records = completed_records(merged_performance_records(performance_path))
+    if valid_report_keys:
+        records = [
+            record
+            for record in records
+            if str(record.get("source") or "") != "auction_strength_webhook" or _record_key(record) in valid_report_keys
+        ]
     rows = [_public_row(record) for record in sorted(records, key=lambda item: item["trade_date"])]
     sample_count = len(records)
     win_count = sum(1 for record in records if float(record.get("return_pct") or 0) > 0)
@@ -143,13 +165,19 @@ def auction_top1_performance_payload(
     }
 
 
-def refresh_top1_performance(*, auction_reports_path: Path, performance_path: Path, cache_db: Path) -> list[dict[str, Any]]:
+def refresh_top1_performance(
+    *,
+    auction_reports_path: Path,
+    performance_path: Path,
+    cache_db: Path,
+    provider: MarketDataProvider | None = None,
+) -> list[dict[str, Any]]:
     reports = read_jsonl(auction_reports_path)
     if not reports:
         return []
     existing = merged_performance_records(performance_path)
-    recorded_keys = {_record_key(record) for record in existing}
-    provider = MarketDataProvider(cache_db=cache_db, adjust="qfq")
+    recorded_keys = {_record_key(record) for record in completed_records(existing)}
+    provider = provider or MarketDataProvider(cache_db=cache_db, adjust="qfq")
     appended: list[dict[str, Any]] = []
     for report in reports:
         top1 = top1_from_auction_report(report)
@@ -198,6 +226,76 @@ def top1_from_auction_report(report: dict[str, Any]) -> dict[str, Any] | None:
         "name": name,
         "source": "auction_strength_webhook",
     }
+
+
+def _strongest_stock_text(report: dict[str, Any]) -> str:
+    conclusion = report.get("global_conclusion") if isinstance(report.get("global_conclusion"), dict) else {}
+    return str(conclusion.get("strongest_stock_at_925") or "").strip()
+
+
+def _stock_from_strongest_text(text: str, report: dict[str, Any]) -> dict[str, Any] | None:
+    code_match = re.search(r"(?<!\d)(\d{6})(?!\d)", text)
+    parsed_code = code_match.group(1) if code_match else ""
+    parsed_name = _name_from_strongest_text(text, parsed_code)
+    candidates = _stock_candidates_from_report(report)
+    if parsed_code:
+        matched = next((item for item in candidates if str(item.get("code") or "").strip() == parsed_code), None)
+        return {
+            "code": parsed_code,
+            "name": str((matched or {}).get("name") or parsed_name).strip(),
+        }
+    if parsed_name:
+        matched = next(
+            (
+                item
+                for item in candidates
+                if _stock_name_matches(parsed_name, str(item.get("name") or "").strip())
+            ),
+            None,
+        )
+        if matched:
+            return {"code": str(matched.get("code") or "").strip(), "name": str(matched.get("name") or "").strip()}
+        return {"code": "", "name": parsed_name}
+    return None
+
+
+def _name_from_strongest_text(text: str, code: str) -> str:
+    cleaned = text
+    if code:
+        cleaned = cleaned.replace(code, " ")
+    cleaned = re.sub(r"[，,。；;：:、|/\\()（）【】\[\]{}]+", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
+
+
+def _stock_candidates_from_report(report: dict[str, Any]) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+
+    def add_items(value: object) -> None:
+        if not isinstance(value, list):
+            return
+        for item in value:
+            if isinstance(item, dict):
+                code = str(item.get("code") or "").strip()
+                name = str(item.get("name") or "").strip()
+                if code or name:
+                    candidates.append({"code": code, "name": name})
+
+    add_items(report.get("top5_strong_stocks"))
+    add_items(report.get("top5_avoid_stocks"))
+    add_items(report.get("emotion_anchors"))
+    conclusion = report.get("global_conclusion") if isinstance(report.get("global_conclusion"), dict) else {}
+    add_items(conclusion.get("limit_open_emotion_anchors"))
+    theme_gate = report.get("theme_gate_result") if isinstance(report.get("theme_gate_result"), dict) else {}
+    for theme in theme_gate.get("admitted_themes") or []:
+        if isinstance(theme, dict):
+            add_items(theme.get("leader_candidates"))
+            add_items(theme.get("emotion_anchors"))
+    return candidates
+
+
+def _stock_name_matches(target: str, candidate: str) -> bool:
+    return bool(target and candidate and (target in candidate or candidate in target))
 
 
 def resolve_top1_performance(top1: dict[str, Any], *, provider: MarketDataProvider) -> dict[str, Any] | None:

@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { ArrowLeft, BarChart3, FileUp, Loader2, RefreshCcw, ShieldCheck, TrendingUp, Trophy } from "lucide-react";
-import { getAuthToken, storeUser } from "@/lib/auth-client";
+import { getAuthToken, storeUser, usageBillingText } from "@/lib/auth-client";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || (process.env.NODE_ENV === "development" ? "http://127.0.0.1:8600" : "");
 
@@ -71,6 +71,10 @@ type StatusPayload = {
     role?: string;
     invite_code?: string;
     credits?: number;
+    membership_plan?: string | null;
+    membership_status?: string | null;
+    membership_expires_at?: string | null;
+    membership_active?: boolean;
     referral_count?: number;
     created_at?: string;
   };
@@ -97,6 +101,10 @@ export default function MarketDayReportPage() {
         role: payload.user.role as "user" | "admin",
         invite_code: payload.user.invite_code,
         credits: payload.user.credits || 0,
+        membership_plan: payload.user.membership_plan || "",
+        membership_status: payload.user.membership_status || "",
+        membership_expires_at: payload.user.membership_expires_at || "",
+        membership_active: Boolean(payload.user.membership_active),
         referral_count: payload.user.referral_count || 0,
         created_at: payload.user.created_at || "",
       });
@@ -117,8 +125,7 @@ export default function MarketDayReportPage() {
       const payload = (await response.json()) as StatusPayload & { ok?: boolean };
       if (!response.ok) throw new Error(payload.error || "报告已展示，但扣除使用次数失败");
       syncUser(payload);
-      const credits = typeof payload.user?.credits === "number" ? `剩余 ${payload.user.credits} 次。` : "";
-      setBillingMessage(`报告已成功展示，已扣除 1 次使用机会。${credits}`);
+      setBillingMessage(`报告已成功展示。${usageBillingText(payload.user)}`);
     } catch (error) {
       ackStartedRef.current = false;
       setBillingMessage(error instanceof Error ? error.message : "报告已展示，但扣除使用次数失败");
@@ -145,8 +152,7 @@ export default function MarketDayReportPage() {
         setReportEnvelope(payload.report);
         if (payload.billing_status === "charged") {
           syncUser(payload);
-          const credits = typeof payload.user?.credits === "number" ? `剩余 ${payload.user.credits} 次。` : "";
-          setBillingMessage(`报告已成功展示，已扣除 1 次使用机会。${credits}`);
+          setBillingMessage(`报告已成功展示。${usageBillingText(payload.user)}`);
         } else {
           void acknowledgeVisibleReport();
         }

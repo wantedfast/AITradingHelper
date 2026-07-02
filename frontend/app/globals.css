@@ -897,6 +897,56 @@
   cursor: pointer;
 }
 
+.admin-notice-form {
+  display: grid;
+  gap: 12px;
+}
+
+.admin-notice-form input,
+.admin-notice-form textarea {
+  width: 100%;
+  border: 1px solid rgba(244, 240, 232, 0.12);
+  border-radius: 12px;
+  color: var(--text);
+  background: rgba(0, 0, 0, 0.22);
+  font: inherit;
+  outline: none;
+}
+
+.admin-notice-form input {
+  min-height: 44px;
+  padding: 0 14px;
+}
+
+.admin-notice-form textarea {
+  min-height: 132px;
+  padding: 12px 14px;
+  resize: vertical;
+  line-height: 1.6;
+}
+
+.admin-notice-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.admin-notice-actions button {
+  min-height: 40px;
+  padding: 0 14px;
+  border: 1px solid rgba(245, 199, 107, 0.35);
+  border-radius: 10px;
+  color: #090807;
+  background: linear-gradient(135deg, #ffeaa0, #d4a82f);
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.admin-notice-actions button:last-child {
+  color: rgba(244, 240, 232, 0.78);
+  background: rgba(255, 255, 255, 0.05);
+}
+
 .admin-list-item header {
   display: flex;
   justify-content: space-between;
@@ -1086,6 +1136,16 @@
   text-align: center;
 }
 
+.billing-qr-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.billing-qr-row .billing-qr {
+  min-height: 230px;
+}
+
 .billing-qr img {
   width: min(240px, 100%);
   aspect-ratio: 1;
@@ -1111,6 +1171,43 @@
 .billing-order b {
   color: #f4f0e8;
   overflow-wrap: anywhere;
+}
+
+.billing-payment-form {
+  display: grid;
+  gap: 10px;
+}
+
+.billing-payment-form label {
+  display: grid;
+  gap: 6px;
+}
+
+.billing-payment-form label span {
+  color: #aeb6b1;
+  font-size: 13px;
+}
+
+.billing-payment-form input,
+.billing-payment-form select {
+  width: 100%;
+  border: 1px solid rgba(244, 240, 232, 0.12);
+  border-radius: 8px;
+  padding: 11px 12px;
+  color: #f4f0e8;
+  background: rgba(255, 255, 255, 0.045);
+  font: inherit;
+  outline: none;
+}
+
+.billing-inline-message {
+  border: 1px solid rgba(245, 199, 107, 0.22);
+  border-radius: 8px;
+  padding: 10px 12px;
+  color: #fde68a;
+  background: rgba(245, 199, 107, 0.08);
+  font-size: 14px;
+  line-height: 1.6;
 }
 
 .billing-primary,
@@ -1156,6 +1253,10 @@
   .account-shell,
   .admin-grid,
   .billing-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .billing-qr-row {
     grid-template-columns: 1fr;
   }
 
@@ -8733,6 +8834,24 @@ button.radar-core,
     inset 0 1px 0 rgba(255, 255, 255, 0.07);
 }
 
+.update-notice-modal {
+  position: relative;
+  width: min(680px, 100%);
+  max-height: min(680px, calc(100dvh - 48px));
+  overflow: auto;
+  padding: clamp(24px, 3vw, 38px);
+  border: 1px solid rgba(242, 207, 103, 0.3);
+  border-radius: 22px;
+  color: var(--terminal-text);
+  background:
+    radial-gradient(circle at 8% 0%, rgba(242, 207, 103, 0.16), transparent 30%),
+    radial-gradient(circle at 84% 10%, rgba(111, 213, 223, 0.12), transparent 32%),
+    linear-gradient(180deg, rgba(14, 20, 21, 0.98), rgba(4, 7, 8, 0.98));
+  box-shadow:
+    0 34px 100px rgba(0, 0, 0, 0.58),
+    inset 0 1px 0 rgba(255, 255, 255, 0.07);
+}
+
 .product-guide-close {
   position: absolute;
   top: 18px;
@@ -8770,6 +8889,68 @@ button.radar-core,
   font-size: clamp(32px, 3.5vw, 52px);
   line-height: 1.08;
   text-wrap: balance;
+}
+
+.update-notice-modal h2 {
+  max-width: 560px;
+  margin: 22px 0 10px;
+  color: var(--terminal-text);
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: clamp(30px, 3.2vw, 46px);
+  line-height: 1.08;
+  text-wrap: balance;
+}
+
+.update-notice-modal > p {
+  margin: 0 0 22px;
+  color: rgba(242, 238, 224, 0.62);
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.update-notice-list {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.update-notice-list li {
+  position: relative;
+  padding: 14px 16px 14px 42px;
+  border: 1px solid rgba(111, 213, 223, 0.14);
+  border-radius: 14px;
+  color: rgba(242, 238, 224, 0.86);
+  background: rgba(1, 5, 6, 0.34);
+  line-height: 1.65;
+}
+
+.update-notice-list li::before {
+  content: "";
+  position: absolute;
+  top: 23px;
+  left: 18px;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--terminal-gold);
+  box-shadow: 0 0 18px rgba(242, 207, 103, 0.5);
+}
+
+.update-notice-confirm {
+  min-height: 44px;
+  margin-top: 24px;
+  padding: 0 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(242, 207, 103, 0.44);
+  border-radius: 12px;
+  color: #130f07;
+  background: linear-gradient(135deg, #fff0b2, #f2cf67 58%, #b99034);
+  font-weight: 950;
+  cursor: pointer;
 }
 
 .product-guide-modal > p {
@@ -12180,7 +12361,7 @@ button.radar-core,
 }
 
 .auction-grid--primary {
-  grid-template-columns: minmax(560px, 1.08fr) minmax(360px, 0.72fr);
+  grid-template-columns: minmax(360px, 0.78fr) minmax(560px, 1.08fr);
 }
 
 .auction-grid--lower {
@@ -12402,6 +12583,11 @@ button.radar-core,
   background: rgba(255, 255, 255, 0.045);
 }
 
+.auction-metric-tile[data-tone="hot"] {
+  border-color: rgba(248, 113, 113, 0.36);
+  background: rgba(248, 113, 113, 0.1);
+}
+
 .auction-metric-tile span,
 .auction-v2-item span,
 .auction-data-box span,
@@ -12416,6 +12602,11 @@ button.radar-core,
   margin-top: 5px;
   color: #fbfbef;
   overflow-wrap: anywhere;
+}
+
+.auction-metric-tile[data-tone="hot"] span,
+.auction-metric-tile[data-tone="hot"] b {
+  color: #fecaca;
 }
 
 .auction-anchor-list,

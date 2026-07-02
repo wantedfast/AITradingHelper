@@ -8,6 +8,10 @@ export type UserProfile = {
   role: "user" | "admin";
   invite_code: string;
   credits: number;
+  membership_plan?: string | null;
+  membership_status?: string | null;
+  membership_expires_at?: string | null;
+  membership_active?: boolean;
   referral_count: number;
   created_at: string;
 };
@@ -19,7 +23,7 @@ export type AuthResult = {
 
 const TOKEN_KEY = "ai_trade_token";
 const USER_KEY = "ai_trade_user";
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "";
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE || (process.env.NODE_ENV === "development" ? "http://127.0.0.1:8600" : "");
 
 export function getAuthToken() {
   if (typeof window === "undefined") return "";
@@ -56,6 +60,37 @@ export function clearAuth() {
   window.localStorage.removeItem(TOKEN_KEY);
   window.localStorage.removeItem(USER_KEY);
   window.dispatchEvent(new CustomEvent("ai-trade-auth", { detail: null }));
+}
+
+export function hasActiveMembership(user: Partial<UserProfile> | null | undefined) {
+  return Boolean(user?.membership_active || user?.membership_status === "active");
+}
+
+export function membershipExpiryText(user: Partial<UserProfile> | null | undefined) {
+  return user?.membership_expires_at ? user.membership_expires_at.slice(0, 10) : "";
+}
+
+export function userAccessLabel(user: Partial<UserProfile> | null | undefined) {
+  if (!user) return "";
+  if (user.role === "admin") return "管理员";
+  if (hasActiveMembership(user)) return "会员无限";
+  return `${user.credits} 次`;
+}
+
+export function userBalanceText(user: Partial<UserProfile> | null | undefined) {
+  if (!user) return "";
+  if (user.role === "admin") return "管理员免扣次数";
+  if (hasActiveMembership(user)) {
+    const expires = membershipExpiryText(user);
+    return expires ? `会员无限使用，至 ${expires}` : "会员期内无限使用";
+  }
+  return `${user.credits} 次`;
+}
+
+export function usageBillingText(user: Partial<UserProfile> | null | undefined) {
+  if (!user) return "";
+  if (hasActiveMembership(user)) return "会员期内本次免扣，剩余次数不变。";
+  return typeof user.credits === "number" ? `剩余 ${user.credits} 次。` : "";
 }
 
 export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {

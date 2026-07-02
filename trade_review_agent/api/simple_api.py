@@ -6,6 +6,7 @@ import os
 import re
 import socket
 import threading
+import time
 import traceback
 import csv
 import base64
@@ -23,8 +24,11 @@ import requests
 from trade_review_agent.auth_system import (
     AuthError,
     admin_dashboard,
+    confirm_membership_order,
     consume_feature_credit,
     consume_feature_credit_once,
+    create_membership_order,
+    create_update_notice,
     credit_packages,
     create_order,
     ensure_feature_credit_available,
@@ -33,19 +37,31 @@ from trade_review_agent.auth_system import (
     get_current_user,
     grant_user_credits,
     init_auth_db,
+    latest_published_update_notice,
+    list_update_notices,
     login_password_user,
     logout_user,
     mark_order_paid_by_order_no,
     mark_order_paid,
+    membership_plans,
+    publish_update_notice,
     register_password_user,
     require_admin,
     require_user,
+    reject_membership_order,
     review_feedback,
     send_email_code,
+    submit_membership_payment,
     submit_feedback,
+    unpublish_update_notice,
+    update_update_notice,
 )
 from trade_review_agent.watch.alerts import AlertPlan, evaluate_plans, event_dedupe_key, load_plans, save_plans
-from trade_review_agent.auction_strength.top1_performance import auction_top1_performance_payload
+from trade_review_agent.auction_strength.top1_performance import (
+    auction_top1_next_refresh_at,
+    auction_top1_performance_payload,
+    refresh_top1_performance,
+)
 from trade_review_agent.ocr.ai_trade_parser import TradeParsingError
 from trade_review_agent.common.config import load_env
 from trade_review_agent.ocr.ocr_trades import trade_file_to_trade_csv
@@ -120,8 +136,17 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             if path == "/api/admin/dashboard":
                 self._admin_dashboard()
                 return
+            if path == "/api/update-notices/latest":
+                self._latest_update_notice()
+                return
+            if path == "/api/admin/update-notices":
+                self._admin_update_notices()
+                return
             if path == "/api/pay/packages":
                 self._pay_packages()
+                return
+            if path == "/api/pay/membership/plans":
+                self._membership_plans()
                 return
             if path.startswith("/api/orders/"):
                 self._get_order(path)
@@ -200,6 +225,12 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             if path == "/api/pay/jinshuju/checkout":
                 self._jinshuju_checkout()
                 return
+            if path == "/api/pay/membership/orders":
+                self._create_membership_order()
+                return
+            if path.startswith("/api/pay/membership/orders/"):
+                self._submit_membership_payment(path)
+                return
             if path == "/api/pay/alipay/notify":
                 self._alipay_notify()
                 return
@@ -210,10 +241,13 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                 self._admin_review_feedback(path)
                 return
             if path.startswith("/api/admin/orders/"):
-                self._admin_mark_order(path)
+                self._admin_order_action(path)
                 return
             if path.startswith("/api/admin/users/"):
                 self._admin_grant_user_credits(path)
+                return
+            if path == "/api/admin/update-notices" or path.startswith("/api/admin/update-notices/"):
+                self._admin_update_notice_action(path)
                 return
             if path == "/api/reports":
                 self._create_reports()
@@ -480,6 +514,19 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             return
         user = self._require_user()
         billing_trade_date = trade_date or str(reports[0].get("trade_date") or "").strip()
+        if not _is_today_trade_date(billing_trade_date):
+            self._json(
+                {
+                    "latest": reports[0],
+                    "reports": reports,
+                    "count": len(reports),
+                    "total": total,
+                    "billing_status": "free_history",
+                    "billing_trade_date": billing_trade_date,
+                    "user": user,
+                }
+            )
+            return
         current_user = ensure_feature_credit_available(
             AUTH_DB,
             user_id=int(user["id"]),
@@ -506,6 +553,9 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
         reports = _recent_auction_strength_reports(AUCTION_STRENGTH_PATH, limit=1, trade_date=trade_date)
         if not reports:
             self._json({"error": "所选日期暂无竞价分析，暂不扣次数"}, status=409)
+            return
+        if not _is_today_trade_date(trade_date):
+            self._json({"ok": True, "billing_status": "free_history", "billing_trade_date": trade_date, "user": user})
             return
         updated_user = consume_feature_credit_once(
             AUTH_DB,
@@ -629,6 +679,40 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
     def _pay_packages(self) -> None:
         self._json({"packages": credit_packages()})
 
+    def _membership_plans(self) -> None:
+        self._json({"plans": membership_plans()})
+
+    def _create_membership_order(self) -> None:
+        user = self._require_user()
+        payload = self._read_json_body()
+        order = create_membership_order(
+            AUTH_DB,
+            user_id=int(user["id"]),
+            plan_id=str(payload.get("plan_id") or "monthly_membership"),
+        )
+        refreshed = get_current_user(AUTH_DB, self._bearer_token())
+        self._json({"order": order, "user": refreshed, "plans": membership_plans()})
+
+    def _submit_membership_payment(self, path: str) -> None:
+        user = self._require_user()
+        parts = path.split("/")
+        if len(parts) != 7 or parts[6] != "submit":
+            self._json({"error": "not found"}, status=404)
+            return
+        payload = self._read_json_body()
+        order = submit_membership_payment(
+            AUTH_DB,
+            order_id=int(parts[5]),
+            user_id=int(user["id"]),
+            payment_method=str(payload.get("payment_method") or ""),
+            payer_name=str(payload.get("payer_name") or ""),
+            payer_paid_at=str(payload.get("payer_paid_at") or ""),
+            submitted_amount_cents=int(payload.get("submitted_amount_cents") or 0),
+            payer_note=str(payload.get("payer_note") or ""),
+        )
+        refreshed = get_current_user(AUTH_DB, self._bearer_token())
+        self._json({"order": order, "user": refreshed})
+
     def _alipay_precreate(self) -> None:
         user = self._require_user()
         payload = self._read_json_body()
@@ -737,6 +821,51 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                 days = int(value)
         self._json(admin_dashboard(AUTH_DB, days=days))
 
+    def _latest_update_notice(self) -> None:
+        self._json({"notice": latest_published_update_notice(AUTH_DB)})
+
+    def _admin_update_notices(self) -> None:
+        self._require_admin()
+        self._json({"notices": list_update_notices(AUTH_DB)})
+
+    def _admin_update_notice_action(self, path: str) -> None:
+        admin = self._require_admin()
+        parts = path.split("/")
+        if len(parts) == 4:
+            payload = self._read_json_body()
+            items = _notice_items_from_payload(payload)
+            notice = create_update_notice(
+                AUTH_DB,
+                title=str(payload.get("title") or ""),
+                version=str(payload.get("version") or ""),
+                items=items,
+                admin_id=int(admin["id"]),
+                status=str(payload.get("status") or "draft"),
+            )
+            self._json({"notice": notice}, status=201)
+            return
+        if len(parts) not in {5, 6}:
+            self._json({"error": "not found"}, status=404)
+            return
+        notice_id = int(parts[4])
+        if len(parts) == 5:
+            payload = self._read_json_body()
+            notice = update_update_notice(
+                AUTH_DB,
+                notice_id=notice_id,
+                title=str(payload.get("title") or ""),
+                version=str(payload.get("version") or ""),
+                items=_notice_items_from_payload(payload),
+            )
+        elif parts[5] == "publish":
+            notice = publish_update_notice(AUTH_DB, notice_id=notice_id)
+        elif parts[5] == "unpublish":
+            notice = unpublish_update_notice(AUTH_DB, notice_id=notice_id)
+        else:
+            self._json({"error": "not found"}, status=404)
+            return
+        self._json({"notice": notice})
+
     def _admin_review_feedback(self, path: str) -> None:
         self._require_admin()
         parts = path.split("/")
@@ -752,13 +881,35 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
         )
         self._json({"feedback": result})
 
-    def _admin_mark_order(self, path: str) -> None:
+    def _admin_order_action(self, path: str) -> None:
         self._require_admin()
         parts = path.split("/")
-        if len(parts) != 6 or parts[5] != "paid":
+        if len(parts) != 6:
             self._json({"error": "not found"}, status=404)
             return
-        result = mark_order_paid(AUTH_DB, order_id=int(parts[4]))
+        if parts[5] == "paid":
+            result = mark_order_paid(AUTH_DB, order_id=int(parts[4]))
+        elif parts[5] == "confirm-membership":
+            admin = self._require_admin()
+            payload = self._read_json_body()
+            result = confirm_membership_order(
+                AUTH_DB,
+                order_id=int(parts[4]),
+                admin_id=int(admin["id"]),
+                admin_note=str(payload.get("admin_note") or ""),
+            )
+        elif parts[5] == "reject":
+            admin = self._require_admin()
+            payload = self._read_json_body()
+            result = reject_membership_order(
+                AUTH_DB,
+                order_id=int(parts[4]),
+                admin_id=int(admin["id"]),
+                admin_note=str(payload.get("admin_note") or ""),
+            )
+        else:
+            self._json({"error": "not found"}, status=404)
+            return
         self._json({"order": result})
 
     def _admin_grant_user_credits(self, path: str) -> None:
@@ -2650,6 +2801,10 @@ def _auction_strength_report_count(path: Path, *, trade_date: str = "") -> int:
     return total
 
 
+def _is_today_trade_date(trade_date: str) -> bool:
+    return str(trade_date or "").strip() == datetime.now(CN_TZ).date().isoformat()
+
+
 def _auction_strength_public_report(report: dict) -> dict:
     summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
     conclusion = report.get("global_conclusion") if isinstance(report.get("global_conclusion"), dict) else {}
@@ -2971,6 +3126,14 @@ def _audio_url(path: object) -> str:
     return f"/api/watch/audio/{filename}" if filename else ""
 
 
+def _notice_items_from_payload(payload: dict) -> list[str]:
+    raw_items = payload.get("items")
+    if isinstance(raw_items, list):
+        return [str(item) for item in raw_items]
+    text = str(payload.get("items_text") or payload.get("content") or "")
+    return [line.strip() for line in text.splitlines() if line.strip()]
+
+
 def _optional_float(value: object) -> float | None:
     if value in {None, ""}:
         return None
@@ -3018,6 +3181,48 @@ def _assert_port_available(host: str, port: int) -> None:
         probe.close()
 
 
+def _run_auction_top1_refresh_once() -> None:
+    appended = refresh_top1_performance(
+        auction_reports_path=AUCTION_STRENGTH_PATH,
+        performance_path=AUCTION_TOP1_PERFORMANCE_PATH,
+        cache_db=CACHE_DB,
+    )
+    _write_api_event(
+        "auction_top1_performance_refresh",
+        {
+            "appended_count": len(appended),
+            "auction_reports_path": str(AUCTION_STRENGTH_PATH),
+            "performance_path": str(AUCTION_TOP1_PERFORMANCE_PATH),
+        },
+    )
+
+
+def _auction_top1_refresh_clock() -> None:
+    while True:
+        next_run = auction_top1_next_refresh_at(datetime.now(CN_TZ))
+        seconds = max((next_run - datetime.now(CN_TZ)).total_seconds(), 1)
+        time.sleep(seconds)
+        try:
+            _run_auction_top1_refresh_once()
+        except Exception as exc:
+            _write_api_error(
+                request_id="auction-top1-clock",
+                method="SCHEDULER",
+                path="/api/auction-strength/performance",
+                run_id="",
+                stage="daily_auction_top1_refresh",
+                exc=exc,
+                recovered=True,
+            )
+
+
+def _start_auction_top1_refresh_clock() -> None:
+    if os.getenv("DISABLE_AUCTION_TOP1_CLOCK", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return
+    thread = threading.Thread(target=_auction_top1_refresh_clock, name="auction-top1-refresh-clock", daemon=True)
+    thread.start()
+
+
 def run(host: str = "0.0.0.0", port: int = 8600) -> None:
     load_env(BASE_DIR / ".env")
     _assert_port_available(host, port)
@@ -3025,6 +3230,7 @@ def run(host: str = "0.0.0.0", port: int = 8600) -> None:
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     WATCH_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+    _start_auction_top1_refresh_clock()
     server = SingleInstanceThreadingHTTPServer((host, port), TradeReviewHandler)
     print(f"Trade Review API listening on http://{host}:{port}", flush=True)
     server.serve_forever()

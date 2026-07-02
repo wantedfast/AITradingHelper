@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="360" height="360" viewBox="0 0 360 360" role="img" aria-label="微信收款码占位">
+  <rect width="360" height="360" fill="#ffffff"/>
+  <rect x="24" y="24" width="312" height="312" fill="#f7fff8" stroke="#22c55e" stroke-width="8"/>
+  <text x="180" y="146" text-anchor="middle" font-family="Arial, Microsoft YaHei, sans-serif" font-size="34" font-weight="700" fill="#16a34a">微信</text>
+  <text x="180" y="194" text-anchor="middle" font-family="Arial, Microsoft YaHei, sans-serif" font-size="22" fill="#1f2937">收款码占位</text>
+  <text x="180" y="232" text-anchor="middle" font-family="Arial, Microsoft YaHei, sans-serif" font-size="16" fill="#6b7280">上线前替换为真实二维码</text>
+</svg>
