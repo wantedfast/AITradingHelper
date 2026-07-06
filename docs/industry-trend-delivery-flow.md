@@ -3,7 +3,7 @@
 Date: 2026-07-06
 Branch: `产业选股`
 
-This document backfills the harness workflow for the industry trend MVP after implementation, so future agents can review and continue the work without reconstructing intent from the diff.
+This document records the harness workflow for the industry trend MVP and the review fix loop that followed it.
 
 ## PRD
 
@@ -26,9 +26,11 @@ An A-share retail or semi-professional trader who wants to identify:
 2. User starts AITradingHelper.
 3. User opens `/industry-trend`.
 4. User enters an industry chain or stock and selects `auto`, `chain`, or `stock`.
-5. Frontend calls `POST /api/industry-trend`.
-6. Backend wraps the input into a `$stock-reverse-engineering` prompt and posts it to Stock Analyze.
-7. Frontend displays the full returned analysis and lets the user copy it.
+5. Frontend calls `POST /api/industry-trend` to create a background job.
+6. Backend checks available credits, writes a status record, wraps the input into a `$stock-reverse-engineering` prompt, and posts it to Stock Analyze in a background thread.
+7. Frontend polls `status_url`.
+8. Backend charges one credit only after successful generation.
+9. Frontend displays the full returned analysis and lets the user copy it.
 
 ### Acceptance Criteria
 
@@ -38,15 +40,16 @@ An A-share retail or semi-professional trader who wants to identify:
 - Backend defaults to `http://127.0.0.1:8750/api/codex`.
 - Backend supports `STOCK_ANALYZE_API_URL`, `STOCK_ANALYZE_TIMEOUT_SECONDS`, and `STOCK_ANALYZE_TOKEN`.
 - Stock Analyze connection, HTTP, JSON, and empty-answer failures become clear API errors.
+- Successful generation consumes one usage credit; failed generation does not.
+- The browser does not hold a multi-minute request open while Stock Analyze runs.
 - Returned text is displayed without injecting raw HTML.
-- README explains the required local Stock Analyze startup command.
 
 ### Non-Goals
 
 - Do not start Stock Analyze as a child process inside AITradingHelper.
 - Do not vendor Stock Analyze or the stock skill into AITradingHelper.
 - Do not stream partial output in the MVP.
-- Do not persist generated industry trend reports in the MVP.
+- Do not build a report history page in the MVP.
 
 ## Task Slices
 
@@ -59,34 +62,42 @@ An A-share retail or semi-professional trader who wants to identify:
 2. API route
    - Add `POST /api/industry-trend`.
    - Require auth.
-   - Read JSON payload.
-   - Return Stock Analyze result or standardized API error.
+   - Check available credits before enqueue.
+   - Return `202` with `run_id/status_url`.
 
-3. Frontend route
+3. Background generation
+   - Persist status under `outputs/industry_trend_reports/`.
+   - Run Stock Analyze outside the request thread.
+   - Charge one credit only after successful generation.
+   - Persist clear error status without charging on failure.
+
+4. Frontend route
    - Add `/industry-trend`.
    - Add input form, type toggle, examples, loading state, error state, and result rendering.
+   - Poll status until done or error.
    - Add copy-result action.
 
-4. Navigation and docs
+5. Navigation and docs
    - Add home and sidebar entries.
    - Add `.env.example` knobs.
    - Update README.
    - Add project agent guidance and this delivery record.
 
-5. Verification and review
+6. Verification and review
    - Compile Python changed files.
    - Mock Stock Analyze client call.
    - Review billing, long-running requests, frontend verification, and output rendering risks.
+   - Fix review findings and rerun verification.
 
 ## Role Review
 
 ### Product Reviewer
 
-The MVP satisfies the requested local bridge behavior. The unresolved product decision is billing: current implementation requires login but does not consume usage credits.
+The MVP satisfies the requested local bridge behavior. Billing is explicit: successful industry trend generation consumes one usage credit, while failed generation is not charged.
 
 ### Backend Reviewer
 
-The bridge is small and testable. The API error mapping is consistent with local-service failures. The biggest backend tradeoff is the synchronous 620-second request window.
+The bridge is small and testable. Generation now runs as a background task with a status URL, avoiding a multi-minute foreground request.
 
 ### Frontend Reviewer
 
@@ -94,7 +105,7 @@ The page follows existing visual language and avoids unsafe HTML rendering. The 
 
 ### QA Reviewer
 
-Python compile and mocked client verification passed. Full pytest and frontend build/lint were not available in the current workspace and must be run before merge on a dependency-complete machine.
+Python compile, targeted pytest, mocked client verification, mocked background task verification, and frontend production build passed.
 
 ## Verification Matrix
 
@@ -102,14 +113,14 @@ Python compile and mocked client verification passed. Full pytest and frontend b
 | --- | --- | --- |
 | Python compile | Passed | `python -m py_compile ...` |
 | Stock Analyze client mock | Passed | Verified default endpoint and prompt payload |
+| Background task mock | Passed | Verified done status, answer persistence, and charge-on-success billing status |
 | `git diff --check` | Passed | No whitespace/conflict-marker errors |
-| Pytest | Blocked | Current Python environment lacks `pytest` |
-| Frontend lint/build | Blocked | No `frontend/node_modules`, no system `npm`, bundled Node lacks TypeScript |
+| Pytest | Passed | `python -m pytest tests\test_industry_trend_stock_analyze.py` |
+| Frontend build | Passed | `npm run build` with vendored Node/npm on this machine |
 
 ## Merge Gate
 
-Before merging into `develop`, resolve or explicitly accept:
+Before merging into `develop`, resolve or explicitly accept any product follow-ups:
 
-- Billing policy for industry trend usage.
-- Whether synchronous generation is acceptable for the first release.
-- Frontend build/lint result on a machine with dependencies installed.
+- Dedicated history page for generated industry trend reports.
+- Manual Stock Analyze startup versus future managed service health.

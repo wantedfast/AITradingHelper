@@ -101,6 +101,8 @@ cd C:\path\to\Stock-Analyze
 http://127.0.0.1:3000/industry-trend
 ```
 
+提交后会创建后台任务，页面自动轮询结果。成功生成后扣除 1 次使用机会；Stock Analyze 失败或返回空结果不会扣次数。
+
 后端默认调用：
 
 ```text

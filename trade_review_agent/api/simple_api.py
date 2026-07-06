@@ -80,6 +80,7 @@ BASE_DIR = Path(__file__).resolve().parents[2]
 UPLOAD_DIR = BASE_DIR / "work" / "api_uploads"
 REPORT_DIR = BASE_DIR / "outputs" / "api_reports"
 MARKET_DAY_REPORT_DIR = BASE_DIR / "outputs" / "market_day_reports"
+INDUSTRY_TREND_REPORT_DIR = BASE_DIR / "outputs" / "industry_trend_reports"
 CACHE_DB = BASE_DIR / "work" / "real_trade_review_cache.sqlite"
 ALERT_PLANS = BASE_DIR / "work" / "alert_plans.json"
 VOICE_SETTINGS_PATH = BASE_DIR / "work" / "watch_voice_settings.json"
@@ -98,6 +99,8 @@ REPORT_STATUS_NAME = "report_status.json"
 RESEARCH_PRESENTER_NAME = "research_presenter_data.json"
 RESEARCH_DEBUG_NAME = "research_debug_data.json"
 MARKET_DAY_REPORT_NAME = "market_day_report.json"
+INDUSTRY_TREND_REPORT_NAME = "industry_trend_report.json"
+INDUSTRY_TREND_FEATURE = "industry_trend"
 
 
 def normalize_research_model_tier(value: object = None) -> str:
@@ -169,6 +172,9 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                 return
             if path.startswith("/api/market-day/reports/"):
                 self._serve_market_day_report(path)
+                return
+            if path.startswith("/api/industry-trend/reports/"):
+                self._serve_industry_trend_report(path)
                 return
             if path.startswith("/api/reports/"):
                 self._serve_report(path)
@@ -401,13 +407,47 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
         self._json(response, status=202)
 
     def _create_industry_trend_report(self) -> None:
-        self._require_user()
+        user = self._require_user()
         payload = self._read_json_body()
         query = str(payload.get("query") or payload.get("subject") or "").strip()
         input_type = str(payload.get("input_type") or payload.get("inputType") or "auto").strip()
+        if not query:
+            raise ValueError("请输入产业链或个股")
+        run_id = f"{datetime.now(CN_TZ).strftime('%Y%m%d_%H%M%S')}_{uuid4().hex[:6]}"
+        run_dir = INDUSTRY_TREND_REPORT_DIR / run_id
+        current_user = ensure_feature_credit_available(
+            AUTH_DB,
+            user_id=int(user["id"]),
+            feature=INDUSTRY_TREND_FEATURE,
+            ip=self._client_ip(),
+            related_id=run_id,
+        )
+        request_id = getattr(self, "_request_id", "") or uuid4().hex
         self._set_stage("industry_trend")
-        result = run_industry_trend_analysis(IndustryTrendRequest(query=query, input_type=input_type))
-        self._json(result)
+        status_payload = _industry_trend_status_payload(run_id, status="queued", stage="queued", request_id=request_id)
+        status_payload.update(
+            {
+                "query": query,
+                "input_type": input_type,
+                "user_id": int(user["id"]),
+                "billing_status": "pending_generation",
+                "estimated_seconds": 360,
+                "poll_interval_ms": 3000,
+            }
+        )
+        _write_industry_trend_status_payload(run_dir, status_payload)
+        _start_industry_trend_generation_task(
+            run_id=run_id,
+            run_dir=run_dir,
+            query=query,
+            input_type=input_type,
+            request_id=request_id,
+            user_id=int(user["id"]),
+            ip=self._client_ip(),
+        )
+        response = dict(status_payload)
+        response["user"] = current_user
+        self._json(response, status=202)
 
     def _ack_market_day_report(self, path: str) -> None:
         parts = path.split("/")
@@ -1301,6 +1341,50 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             return
         self._json(payload)
 
+    def _serve_industry_trend_report(self, path: str) -> None:
+        parts = path.split("/")
+        if len(parts) != 6:
+            self._json({"error": "not found"}, status=404)
+            return
+        run_id = parts[4]
+        filename = Path(unquote(parts[5])).name
+        run_dir = INDUSTRY_TREND_REPORT_DIR / run_id
+        if filename == "status":
+            self._serve_industry_trend_status(run_id, run_dir)
+            return
+        report_path = run_dir / filename
+        if filename != INDUSTRY_TREND_REPORT_NAME or not report_path.exists() or not report_path.is_file():
+            self._json({"error": "industry trend report not found"}, status=404)
+            return
+        user = self._require_user()
+        payload = _read_industry_trend_status_payload(run_dir)
+        if not payload:
+            self._json({"error": "industry trend report not found"}, status=404)
+            return
+        if payload.get("status") != "done":
+            self._json({"error": "industry trend report is not ready"}, status=409)
+            return
+        owner_id = int(payload.get("user_id") or 0)
+        if owner_id and owner_id != int(user["id"]) and user.get("role") != "admin":
+            raise AuthError("只能查看自己生成的产业趋势报告", 403)
+        self._serve_file(report_path)
+
+    def _serve_industry_trend_status(self, run_id: str, run_dir: Path) -> None:
+        user = self._require_user()
+        payload = _read_industry_trend_status_payload(run_dir)
+        if not payload:
+            self._json({"error": "industry trend report not found"}, status=404)
+            return
+        owner_id = int(payload.get("user_id") or 0)
+        if owner_id and owner_id != int(user["id"]) and user.get("role") != "admin":
+            raise AuthError("只能查看自己生成的产业趋势报告", 403)
+        report_path = run_dir / INDUSTRY_TREND_REPORT_NAME
+        if report_path.exists() and payload.get("status") == "done":
+            report = _read_json_file(report_path)
+            if report:
+                payload.update(report)
+        self._json(payload)
+
     def _serve_watch_audio(self, path: str) -> None:
         parts = path.split("/")
         if len(parts) != 5:
@@ -1617,6 +1701,112 @@ def _start_market_day_generation_task(
     thread.start()
 
 
+def _start_industry_trend_generation_task(
+    *,
+    run_id: str,
+    run_dir: Path,
+    query: str,
+    input_type: str,
+    request_id: str,
+    user_id: int,
+    ip: str,
+) -> None:
+    thread = threading.Thread(
+        target=_run_industry_trend_generation_task,
+        kwargs={
+            "run_id": run_id,
+            "run_dir": run_dir,
+            "query": query,
+            "input_type": input_type,
+            "request_id": request_id,
+            "user_id": user_id,
+            "ip": ip,
+        },
+        daemon=True,
+        name=f"industry-trend-{run_id[:8]}",
+    )
+    thread.start()
+
+
+def _run_industry_trend_generation_task(
+    *,
+    run_id: str,
+    run_dir: Path,
+    query: str,
+    input_type: str,
+    request_id: str,
+    user_id: int,
+    ip: str,
+) -> None:
+    stage = "queued"
+    try:
+        stage = "stock_analyze"
+        running = _industry_trend_status_payload(run_id, status="running", stage=stage, request_id=request_id)
+        running.update(
+            {
+                "query": query,
+                "input_type": input_type,
+                "user_id": user_id,
+                "billing_status": "pending_generation",
+                "estimated_seconds": 360,
+                "poll_interval_ms": 3000,
+            }
+        )
+        _write_industry_trend_status_payload(run_dir, running)
+        result = run_industry_trend_analysis(IndustryTrendRequest(query=query, input_type=input_type))
+        result["run_id"] = run_id
+        result["status_url"] = f"/api/industry-trend/reports/{run_id}/status"
+        result["report_url"] = f"/api/industry-trend/reports/{run_id}/{INDUSTRY_TREND_REPORT_NAME}"
+
+        stage = "write_industry_trend_report"
+        writing = dict(running)
+        writing.update({"stage": stage, "status": "running"})
+        _write_industry_trend_status_payload(run_dir, writing)
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / INDUSTRY_TREND_REPORT_NAME).write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        stage = "charge_credit"
+        updated_user = consume_feature_credit_once(
+            AUTH_DB,
+            user_id=user_id,
+            feature=INDUSTRY_TREND_FEATURE,
+            ip=ip,
+            related_id=run_id,
+        )
+        done = _industry_trend_status_payload(run_id, status="done", stage="done", request_id=request_id)
+        done.update(result)
+        done.update(
+            {
+                "user_id": user_id,
+                "billing_status": _industry_trend_billing_status(updated_user),
+                "user": updated_user,
+            }
+        )
+        _write_industry_trend_status_payload(run_dir, done)
+    except Exception as exc:
+        payload = _industry_trend_status_payload(run_id, status="error", stage=stage, request_id=request_id)
+        payload.update(
+            {
+                "query": query,
+                "input_type": input_type,
+                "user_id": user_id,
+                "billing_status": "not_charged",
+            }
+        )
+        payload.update(_api_error_payload(exc, request_id=request_id, run_id=run_id, stage=stage))
+        payload["status"] = "error"
+        _write_industry_trend_status_payload(run_dir, payload)
+        _write_api_error(
+            request_id=request_id,
+            method="BACKGROUND",
+            path=f"/api/industry-trend/reports/{run_id}",
+            run_id=run_id,
+            stage=stage,
+            exc=exc,
+            recovered=False,
+        )
+
+
 def _run_market_day_generation_task(
     *,
     run_id: str,
@@ -1672,8 +1862,31 @@ def _market_day_status_payload(run_id: str, *, status: str, stage: str, request_
     }
 
 
+def _industry_trend_status_payload(run_id: str, *, status: str, stage: str, request_id: str = "") -> dict:
+    return {
+        "run_id": run_id,
+        "status": status,
+        "stage": stage,
+        "status_url": f"/api/industry-trend/reports/{run_id}/status",
+        "report_url": f"/api/industry-trend/reports/{run_id}/{INDUSTRY_TREND_REPORT_NAME}",
+        "request_id": request_id,
+    }
+
+
+def _industry_trend_billing_status(user: dict) -> str:
+    if user.get("role") == "admin":
+        return "admin_free"
+    if user.get("membership_active") or user.get("membership_status") == "active":
+        return "membership_free"
+    return "charged"
+
+
 def _write_market_day_status(run_id: str, run_dir: Path, *, status: str, stage: str, request_id: str = "") -> None:
     _write_market_day_status_payload(run_dir, _market_day_status_payload(run_id, status=status, stage=stage, request_id=request_id))
+
+
+def _write_industry_trend_status(run_id: str, run_dir: Path, *, status: str, stage: str, request_id: str = "") -> None:
+    _write_industry_trend_status_payload(run_dir, _industry_trend_status_payload(run_id, status=status, stage=stage, request_id=request_id))
 
 
 def _write_market_day_status_payload(run_dir: Path, payload: dict) -> None:
@@ -1681,7 +1894,23 @@ def _write_market_day_status_payload(run_dir: Path, payload: dict) -> None:
     (run_dir / REPORT_STATUS_NAME).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _write_industry_trend_status_payload(run_dir: Path, payload: dict) -> None:
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / REPORT_STATUS_NAME).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def _read_market_day_status_payload(run_dir: Path) -> dict | None:
+    status_path = run_dir / REPORT_STATUS_NAME
+    if not status_path.exists():
+        return None
+    try:
+        data = json.loads(status_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _read_industry_trend_status_payload(run_dir: Path) -> dict | None:
     status_path = run_dir / REPORT_STATUS_NAME
     if not status_path.exists():
         return None

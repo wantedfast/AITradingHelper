@@ -3,7 +3,7 @@
 import { FormEvent, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowRight, ClipboardCopy, GitBranch, Loader2, Network, Sparkles } from "lucide-react";
-import { getAuthToken } from "@/lib/auth-client";
+import { getAuthToken, storeUser, type UserProfile } from "@/lib/auth-client";
 import { MainSidebar } from "@/components/main-sidebar";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || (process.env.NODE_ENV === "development" ? "http://127.0.0.1:8600" : "");
@@ -11,12 +11,20 @@ const API_BASE = process.env.NEXT_PUBLIC_API_BASE || (process.env.NODE_ENV === "
 type InputType = "auto" | "chain" | "stock";
 
 type IndustryTrendPayload = {
+  run_id?: string;
+  status?: "queued" | "running" | "done" | "error";
+  stage?: string;
+  status_url?: string;
   query?: string;
   input_type?: InputType;
   answer?: string;
   source?: string;
   endpoint?: string;
   elapsed_seconds?: number;
+  estimated_seconds?: number;
+  poll_interval_ms?: number;
+  billing_status?: string;
+  user?: UserProfile;
   error?: string;
   detail?: string;
 };
@@ -30,6 +38,7 @@ export default function IndustryTrendPage() {
   const [loading, setLoading] = useState(false);
   const [errorText, setErrorText] = useState("");
   const [result, setResult] = useState<IndustryTrendPayload | null>(null);
+  const [job, setJob] = useState<IndustryTrendPayload | null>(null);
   const [copied, setCopied] = useState(false);
 
   const resultLines = useMemo(() => splitAnswer(result?.answer || ""), [result?.answer]);
@@ -47,6 +56,7 @@ export default function IndustryTrendPage() {
     setLoading(true);
     setErrorText("");
     setResult(null);
+    setJob(null);
     try {
       const response = await fetch(`${API_BASE}/api/industry-trend`, {
         method: "POST",
@@ -60,7 +70,11 @@ export default function IndustryTrendPage() {
       const text = await response.text();
       const payload = text ? (JSON.parse(text) as IndustryTrendPayload) : {};
       if (!response.ok) throw new Error(payload.error || payload.detail || "产业趋势分析失败");
-      setResult(payload);
+      setJob(payload);
+      const donePayload = payload.status === "done" ? payload : await pollIndustryTrend(payload, token);
+      if (donePayload.user) storeUser(donePayload.user);
+      setResult(donePayload);
+      setJob(donePayload);
     } catch (error) {
       setErrorText(error instanceof Error ? error.message : "产业趋势分析失败");
     } finally {
@@ -147,13 +161,13 @@ export default function IndustryTrendPage() {
             {loading ? (
               <div className="generation-progress" role="status" aria-live="polite">
                 <div className="generation-progress-head">
-                  <b>产业链分析生成中</b>
-                  <span>Stock Analyze</span>
+                  <b>{job?.status === "queued" ? "产业链分析排队中" : "产业链分析生成中"}</b>
+                  <span>{job?.stage || "Stock Analyze"}</span>
                 </div>
                 <div className="generation-progress-track" aria-hidden="true">
-                  <i style={{ width: "64%" }} />
+                  <i style={{ width: job?.status === "queued" ? "28%" : "64%" }} />
                 </div>
-                <p>长报告通常需要 2-6 分钟。页面会在完整结果返回后展示。</p>
+                <p>后台任务正在运行，页面会自动轮询完整结果；成功生成后扣除 1 次使用机会。</p>
               </div>
             ) : null}
 
@@ -180,7 +194,7 @@ export default function IndustryTrendPage() {
               <div>
                 <span className="card-label">{result.source || "stock-analyze"}</span>
                 <h2>{result.query || query}</h2>
-                <p>耗时 {result.elapsed_seconds ?? "-"} 秒 · 类型 {result.input_type || inputType}</p>
+                <p>耗时 {result.elapsed_seconds ?? "-"} 秒 · 类型 {result.input_type || inputType} · {billingText(result.billing_status)}</p>
               </div>
               <button type="button" onClick={copyResult}>
                 <ClipboardCopy />
@@ -205,6 +219,36 @@ export default function IndustryTrendPage() {
 
 function splitAnswer(answer: string) {
   return answer.replace(/\r\n/g, "\n").split("\n");
+}
+
+async function pollIndustryTrend(initial: IndustryTrendPayload, token: string) {
+  if (!initial.status_url) return initial;
+  const interval = Math.max(1500, Math.min(8000, Number(initial.poll_interval_ms || 3000)));
+  for (let attempt = 0; attempt < 180; attempt += 1) {
+    await delay(interval);
+    const response = await fetch(`${API_BASE}${initial.status_url}`, {
+      headers: { Authorization: `Bearer ${token}` },
+      cache: "no-store",
+    });
+    const text = await response.text();
+    const payload = text ? (JSON.parse(text) as IndustryTrendPayload) : {};
+    if (!response.ok) throw new Error(payload.error || payload.detail || "产业趋势任务查询失败");
+    if (payload.status === "done") return payload;
+    if (payload.status === "error") throw new Error(payload.error || payload.detail || "产业趋势分析失败");
+  }
+  throw new Error("产业趋势分析仍在生成，请稍后重试。");
+}
+
+function delay(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function billingText(status?: string) {
+  if (status === "charged") return "已扣 1 次";
+  if (status === "membership_free") return "会员免扣";
+  if (status === "admin_free") return "管理员免扣";
+  if (status === "not_charged") return "未扣次数";
+  return "生成成功";
 }
 
 function renderLine(line: string, index: number) {
