@@ -44,7 +44,11 @@ type AnalyzeState = {
 
 type AnswerBlock =
   | { type: "line"; line: string }
-  | { type: "table"; headers: string[]; rows: string[][] };
+  | { type: "heading"; depth: 1 | 2 | 3; text: string; id: string }
+  | { type: "table"; headers: string[]; rows: string[][] }
+  | { type: "bomTree"; nodes: string[] };
+
+type TocItem = Extract<AnswerBlock, { type: "heading" }>;
 
 const examples = ["华海清科", "AI服务器液冷产业链", "亨通光电", "HBM先进封装设备", "低空经济"];
 
@@ -65,6 +69,8 @@ export default function IndustryTrendPage() {
   const [copied, setCopied] = useState(false);
 
   const resultBlocks = useMemo(() => splitAnswer(result?.answer || ""), [result?.answer]);
+  const tocItems = useMemo(() => collectTocItems(resultBlocks), [resultBlocks]);
+  const currentSubject = result?.query || state.target;
   const isLoading = state.status === "loading";
   const activeMode = modeOptions.find((item) => item.value === mode) || modeOptions[0];
 
@@ -280,8 +286,9 @@ export default function IndustryTrendPage() {
                 {copied ? "已复制" : "复制结果"}
               </button>
             </div>
+            {tocItems.length ? renderReportToc(tocItems) : null}
             <article className="industry-markdown">
-              {resultBlocks.map((block, index) => renderBlock(block, index))}
+              {resultBlocks.map((block, index) => renderBlock(block, index, currentSubject))}
             </article>
           </section>
         ) : null}
@@ -409,8 +416,16 @@ function formatGeneratedAt(value?: string) {
 function splitAnswer(answer: string): AnswerBlock[] {
   const lines = answer.replace(/\r\n/g, "\n").split("\n");
   const blocks: AnswerBlock[] = [];
+  let sectionIsBom = false;
 
   for (let index = 0; index < lines.length; index += 1) {
+    const heading = parseHeading(lines[index], blocks.length);
+    if (heading) {
+      sectionIsBom = isBomHeading(heading.text);
+      blocks.push(heading);
+      continue;
+    }
+
     if (isMarkdownTableStart(lines, index)) {
       const tableLines: string[] = [];
       while (index < lines.length && isMarkdownTableLine(lines[index])) {
@@ -419,6 +434,12 @@ function splitAnswer(answer: string): AnswerBlock[] {
       }
       index -= 1;
       blocks.push(parseMarkdownTable(tableLines));
+      continue;
+    }
+
+    const bomNodes = sectionIsBom ? parseBomNodes(lines[index]) : [];
+    if (bomNodes.length >= 2) {
+      blocks.push({ type: "bomTree", nodes: bomNodes });
       continue;
     }
 
@@ -458,22 +479,62 @@ function billingText(status?: string) {
   return "生成成功";
 }
 
-function renderBlock(block: AnswerBlock, index: number) {
+function collectTocItems(blocks: AnswerBlock[]) {
+  return blocks.filter((block): block is TocItem => block.type === "heading" && block.depth >= 2 && block.depth <= 3);
+}
+
+function renderReportToc(items: TocItem[]) {
+  return (
+    <nav className="industry-report-toc" aria-label="报告目录">
+      <span>报告目录</span>
+      <div>
+        {items.map((item) => (
+          <a data-depth={item.depth} href={`#${item.id}`} key={item.id}>
+            {item.text}
+          </a>
+        ))}
+      </div>
+    </nav>
+  );
+}
+
+function renderBlock(block: AnswerBlock, index: number, currentSubject: string) {
+  if (block.type === "heading") return renderHeading(block, index);
   if (block.type === "table") return renderTable(block, index);
+  if (block.type === "bomTree") return renderBomTree(block, index, currentSubject);
   return renderLine(block.line, index);
+}
+
+function renderHeading(block: TocItem, index: number) {
+  if (block.depth === 3) return <h4 id={block.id} key={index}>{block.text}</h4>;
+  if (block.depth === 2) return <h3 id={block.id} key={index}>{block.text}</h3>;
+  return <h2 id={block.id} key={index}>{block.text}</h2>;
 }
 
 function renderLine(line: string, index: number) {
   const trimmed = line.trim();
   if (!trimmed) return <br key={index} />;
-  if (trimmed.startsWith("### ")) return <h4 key={index}>{trimmed.slice(4)}</h4>;
-  if (trimmed.startsWith("## ")) return <h3 key={index}>{trimmed.slice(3)}</h3>;
-  if (trimmed.startsWith("# ")) return <h2 key={index}>{trimmed.slice(2)}</h2>;
   if (/^\*\*.*\*\*$/.test(trimmed)) return <h3 key={index}>{trimmed.replace(/\*\*/g, "")}</h3>;
   if (/^\d+\.\s/.test(trimmed)) return <p className="number-line" key={index}>{trimmed}</p>;
   if (trimmed.startsWith("- ")) return <p className="bullet-line" key={index}>{trimmed.slice(2)}</p>;
   if (trimmed.startsWith("|")) return <pre key={index}>{trimmed}</pre>;
   return <p key={index}>{trimmed}</p>;
+}
+
+function renderBomTree(tree: Extract<AnswerBlock, { type: "bomTree" }>, index: number, currentSubject: string) {
+  return (
+    <div className="industry-bom-tree" key={index}>
+      {tree.nodes.map((node, nodeIndex) => {
+        const isCurrent = isCurrentBomNode(node, currentSubject) || nodeIndex === tree.nodes.length - 1;
+        return (
+          <div className={`industry-bom-node${isCurrent ? " is-current" : ""}`} key={`${index}-bom-${nodeIndex}`}>
+            <span>{bomNodeLabel(nodeIndex, tree.nodes.length)}</span>
+            <b>{cleanMarkdownCell(node)}</b>
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 function renderTable(table: Extract<AnswerBlock, { type: "table" }>, index: number) {
@@ -503,6 +564,52 @@ function renderTable(table: Extract<AnswerBlock, { type: "table" }>, index: numb
 
 function isMarkdownTableStart(lines: string[], index: number) {
   return isMarkdownTableLine(lines[index]) && isMarkdownSeparatorLine(lines[index + 1] || "");
+}
+
+function parseHeading(line: string, index: number): Extract<AnswerBlock, { type: "heading" }> | null {
+  const match = /^(#{1,3})\s+(.+)$/.exec(line.trim());
+  if (!match) return null;
+  const depth = match[1].length as 1 | 2 | 3;
+  const text = cleanMarkdownCell(match[2]);
+  return { type: "heading", depth, text, id: `industry-section-${index}-${slugifyHeading(text)}` };
+}
+
+function slugifyHeading(value: string) {
+  const slug = value
+    .toLowerCase()
+    .replace(/[^a-z0-9\u4e00-\u9fa5]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug || "section";
+}
+
+function isBomHeading(value: string) {
+  return /完整\s*BOM|BOM|产业链位置|产业链拆解/i.test(value);
+}
+
+function parseBomNodes(line: string) {
+  const normalized = line
+    .trim()
+    .replace(/^[-*]\s+/, "")
+    .replace(/^\d+\.\s+/, "")
+    .replace(/^`+|`+$/g, "");
+  if (!/(->|→|=>|＞|>)/.test(normalized)) return [];
+  return normalized
+    .split(/\s*(?:->|→|=>|＞|>)\s*/g)
+    .map((part) => cleanMarkdownCell(part))
+    .filter(Boolean);
+}
+
+function bomNodeLabel(index: number, total: number) {
+  if (index === 0) return "终端需求";
+  if (index === total - 1) return "公司位置";
+  if (index === 1) return "产品/系统";
+  return "部件/材料";
+}
+
+function isCurrentBomNode(node: string, currentSubject: string) {
+  const subject = currentSubject.trim();
+  if (!subject) return false;
+  return node.includes(subject) || subject.includes(node);
 }
 
 function isMarkdownTableLine(line: string) {
