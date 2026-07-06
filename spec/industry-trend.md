@@ -1,89 +1,124 @@
-# 产业趋势模块
+# Local Stock Analyze 页面改版
 
 ## 目标
 
-在 AITradingHelper 中新增“产业趋势”功能。用户输入产业链或个股，后端调用本地 Stock Analyze 服务，把产业链分析结果返回到网页端。
+将产业趋势页面从“大 Prompt 输入框 + 直接展示完整报告”改成“单个产业链/个股的搜索式分析入口”。
+
+用户每次只输入一个分析对象，点击开始分析后等待本地 Stock Analyze 生成报告。生成完成后，页面先显示“报告生成成功”卡片，用户点击“查看报告”后才展开报告详情。
 
 ## 用户流程
 
-1. 用户先启动 Stock Analyze：
+1. 用户启动本地 Stock Analyze：
 
 ```powershell
 .\start.ps1 -StockSkill -Port 8750
 ```
 
-2. 用户启动 AITradingHelper。
-3. 用户打开 `/industry-trend`。
-4. 用户输入产业链或个股，例如 `华海清科` 或 `AI服务器液冷产业链`。
-5. 前端调用 `POST /api/industry-trend` 创建后台任务。
-6. 后端检查用户次数，写入 `run_id/status_url`，后台把请求包装成 stock-reverse-engineering prompt 并发送到 `STOCK_ANALYZE_API_URL`。
-7. 前端轮询 `status_url`。
-8. 任务成功后后端扣除 1 次使用机会，前端展示 Stock Analyze 返回的完整正文；任务失败不扣次数。
+2. 用户打开 `/industry-trend`。
+3. 用户输入一个产业链或个股，例如 `华海清科`。
+4. 用户选择分析模式：`自动识别` / `产业链` / `个股`。
+5. 用户点击 `开始分析`。
+6. 页面进入 `loading`，后端创建后台任务并调用 Stock Analyze。
+7. 任务成功后页面进入 `success`，只显示成功卡片和 `查看报告` 按钮。
+8. 用户点击 `查看报告` 后，页面展开报告正文。
+9. 任务失败时页面进入 `error`，显示失败原因和 `重新生成` 按钮。
 
-## API
+## 前端状态机
 
-```http
-POST /api/industry-trend
-Content-Type: application/json
-Authorization: Bearer <token>
+```ts
+type AnalyzeStatus = "idle" | "loading" | "success" | "error";
+type AnalyzeMode = "auto" | "industry_chain" | "stock";
 ```
 
-```json
-{
-  "query": "华海清科",
-  "input_type": "stock"
-}
+状态流转：
+
+- `idle -> loading`：点击开始分析且输入校验通过。
+- `loading -> success`：后端状态轮询返回 `done`。
+- `loading -> error`：后端状态轮询返回 `error` 或请求失败。
+- `error -> loading`：点击重新生成。
+- `success/error -> idle`：用户修改输入内容或点击示例标签。
+
+## 输入规则
+
+- 输入框为单行搜索式入口，不再使用大 textarea。
+- 每次只允许输入一个分析对象。
+- 空输入提示：`请输入一个分析对象`。
+- 多对象输入提示：`当前仅支持每次分析一个对象，请删除多余内容`。
+- 过长输入提示：`分析对象过长，请只输入一个产业链或个股`。
+- 前端最大长度：100 字符。
+- 明显多对象符号包括：换行、英文逗号、中文逗号、顿号、分号。
+
+## 模式映射
+
+UI 模式：
+
+- 自动识别
+- 产业链
+- 个股
+
+前端状态值：
+
+- `auto`
+- `industry_chain`
+- `stock`
+
+后端兼容字段：
+
+- `auto -> input_type=auto`
+- `industry_chain -> input_type=chain`
+- `stock -> input_type=stock`
+
+## 成功卡片
+
+成功后不直接展示完整报告正文。成功卡片必须包含：
+
+- 报告生成成功
+- 分析对象
+- 分析类型
+- 生成时间
+- 扣费/免扣状态
+- 查看报告按钮
+
+点击 `查看报告` 后才展开当前报告正文。
+
+## 错误卡片
+
+失败后显示：
+
+- 报告生成失败
+- 失败原因
+- 重新生成按钮
+
+如果后端没有返回具体错误，默认提示：
+
+```text
+请求失败，请检查本地 Stock Analyze 服务是否启动。
 ```
 
-返回：
+## 示例标签
 
-```json
-{
-  "run_id": "20260706_143000_abcdef",
-  "status": "queued",
-  "stage": "queued",
-  "status_url": "/api/industry-trend/reports/20260706_143000_abcdef/status",
-  "query": "华海清科",
-  "input_type": "stock",
-  "billing_status": "pending_generation"
-}
-```
+保留示例：
 
-状态接口：
+- 华海清科
+- AI服务器液冷产业链
+- 亨通光电
+- HBM先进封装设备
+- 低空经济
 
-```http
-GET /api/industry-trend/reports/<run_id>/status
-Authorization: Bearer <token>
-```
-
-成功状态包含：
-
-```json
-{
-  "status": "done",
-  "billing_status": "charged",
-  "answer": "...",
-  "user": {
-    "credits": 4
-  }
-}
-```
-
-失败状态包含 `status=error` 和 `billing_status=not_charged`。
+点击示例只填充输入框，不自动提交，不改变当前模式。
 
 ## 验收标准
 
-- 侧边栏和首页能进入 `/industry-trend`。
-- 页面能输入产业链或个股，并选择 `auto` / `chain` / `stock`。
-- 未登录用户跳转登录。
-- 后端默认调用 `http://127.0.0.1:8750/api/codex`。
-- 可通过 `STOCK_ANALYZE_API_URL`、`STOCK_ANALYZE_TIMEOUT_SECONDS` 和 `STOCK_ANALYZE_TOKEN` 覆盖。
-- Stock Analyze 不可用时返回清晰错误。
-- 前端通过状态接口轮询结果，不挂起一个长请求等待完整报告。
-- 成功生成后扣除 1 次使用机会；失败不扣次数。
-
-## 非目标
-
-- 不在本模块内启动 Stock Analyze 子进程。
-- 不在本模块内复制 stock-reverse-engineering skill。
-- 当前版本不是流式返回，完整结果生成后一次性展示。
+- 输入框高度明显小于原 textarea。
+- 输入框 placeholder 明确提示只输入一个产业链或个股。
+- 默认模式是自动识别。
+- 三个模式以紧凑 segmented control 展示。
+- 点击示例标签只填充输入框，不自动提交。
+- 空输入、多对象输入、过长输入有明确错误提示。
+- 点击开始分析后进入 loading，且按钮禁用。
+- loading 期间输入、模式、示例禁用，避免状态混乱。
+- 成功后显示成功卡片和查看报告按钮。
+- 成功后不直接展示完整报告正文。
+- 点击查看报告后才展开报告详情。
+- 失败后显示错误原因和重新生成按钮。
+- 修改输入内容后清空上一轮结果并回到 idle。

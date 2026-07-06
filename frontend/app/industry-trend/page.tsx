@@ -2,13 +2,16 @@
 
 import { FormEvent, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowRight, ClipboardCopy, GitBranch, Loader2, Network, Sparkles } from "lucide-react";
+import { AlertCircle, ArrowRight, CheckCircle2, ClipboardCopy, FileText, GitBranch, Loader2, Network, RotateCcw, Search, Sparkles } from "lucide-react";
 import { getAuthToken, storeUser, type UserProfile } from "@/lib/auth-client";
 import { MainSidebar } from "@/components/main-sidebar";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || (process.env.NODE_ENV === "development" ? "http://127.0.0.1:8600" : "");
+const MAX_TARGET_LENGTH = 100;
 
-type InputType = "auto" | "chain" | "stock";
+type AnalyzeStatus = "idle" | "loading" | "success" | "error";
+type AnalyzeMode = "auto" | "industry_chain" | "stock";
+type DetectedType = "stock" | "industry_chain" | "unknown";
 
 type IndustryTrendPayload = {
   run_id?: string;
@@ -16,7 +19,7 @@ type IndustryTrendPayload = {
   stage?: string;
   status_url?: string;
   query?: string;
-  input_type?: InputType;
+  input_type?: "auto" | "chain" | "stock";
   answer?: string;
   source?: string;
   endpoint?: string;
@@ -29,34 +32,61 @@ type IndustryTrendPayload = {
   detail?: string;
 };
 
+type AnalyzeState = {
+  status: AnalyzeStatus;
+  target: string;
+  mode: AnalyzeMode;
+  detectedType?: DetectedType;
+  reportId?: string;
+  generatedAt?: string;
+  errorMessage?: string;
+};
+
 const examples = ["华海清科", "AI服务器液冷产业链", "亨通光电", "HBM先进封装设备", "低空经济"];
+
+const modeOptions: Array<{ value: AnalyzeMode; label: string; hint: string }> = [
+  { value: "auto", label: "自动识别", hint: "系统判断输入对象是产业链还是个股" },
+  { value: "industry_chain", label: "产业链", hint: "分析主题、赛道或细分方向" },
+  { value: "stock", label: "个股", hint: "分析某一家上市公司" },
+];
 
 export default function IndustryTrendPage() {
   const router = useRouter();
-  const [query, setQuery] = useState("");
-  const [inputType, setInputType] = useState<InputType>("auto");
-  const [loading, setLoading] = useState(false);
-  const [errorText, setErrorText] = useState("");
+  const [target, setTarget] = useState("");
+  const [mode, setMode] = useState<AnalyzeMode>("auto");
+  const [state, setState] = useState<AnalyzeState>({ status: "idle", target: "", mode: "auto" });
   const [result, setResult] = useState<IndustryTrendPayload | null>(null);
   const [job, setJob] = useState<IndustryTrendPayload | null>(null);
+  const [showReport, setShowReport] = useState(false);
   const [copied, setCopied] = useState(false);
 
   const resultLines = useMemo(() => splitAnswer(result?.answer || ""), [result?.answer]);
+  const isLoading = state.status === "loading";
+  const activeMode = modeOptions.find((item) => item.value === mode) || modeOptions[0];
 
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const trimmed = query.trim();
-    if (!trimmed || loading) return;
+  async function submit(event?: FormEvent<HTMLFormElement>) {
+    event?.preventDefault();
+    if (isLoading) return;
+    const validation = validateTarget(target);
+    if (validation) {
+      setState({ status: "error", target, mode, errorMessage: validation });
+      setResult(null);
+      setJob(null);
+      setShowReport(false);
+      return;
+    }
     const token = getAuthToken();
     if (!token) {
       router.push("/auth?redirect=/industry-trend");
       return;
     }
 
-    setLoading(true);
-    setErrorText("");
+    const trimmed = target.trim();
+    setState({ status: "loading", target: trimmed, mode });
     setResult(null);
     setJob(null);
+    setShowReport(false);
+    setCopied(false);
     try {
       const response = await fetch(`${API_BASE}/api/industry-trend`, {
         method: "POST",
@@ -64,22 +94,64 @@ export default function IndustryTrendPage() {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ query: trimmed, input_type: inputType }),
+        body: JSON.stringify({ query: trimmed, input_type: modeToApiInput(mode) }),
         cache: "no-store",
       });
       const text = await response.text();
       const payload = text ? (JSON.parse(text) as IndustryTrendPayload) : {};
-      if (!response.ok) throw new Error(payload.error || payload.detail || "产业趋势分析失败");
+      if (!response.ok) throw new Error(payload.error || payload.detail || "请求失败，请检查本地 Stock Analyze 服务是否启动。");
       setJob(payload);
       const donePayload = payload.status === "done" ? payload : await pollIndustryTrend(payload, token);
       if (donePayload.user) storeUser(donePayload.user);
       setResult(donePayload);
       setJob(donePayload);
+      setState({
+        status: "success",
+        target: donePayload.query || trimmed,
+        mode,
+        detectedType: detectedTypeFromPayload(donePayload, mode),
+        reportId: donePayload.run_id,
+        generatedAt: new Date().toISOString(),
+      });
     } catch (error) {
-      setErrorText(error instanceof Error ? error.message : "产业趋势分析失败");
-    } finally {
-      setLoading(false);
+      setState({
+        status: "error",
+        target: trimmed,
+        mode,
+        errorMessage: error instanceof Error ? error.message : "请求失败，请检查本地 Stock Analyze 服务是否启动。",
+      });
     }
+  }
+
+  function updateTarget(value: string) {
+    setTarget(value);
+    if (state.status === "success" || state.status === "error") {
+      setState({ status: "idle", target: value, mode });
+      setResult(null);
+      setJob(null);
+      setShowReport(false);
+      setCopied(false);
+    }
+  }
+
+  function updateMode(value: AnalyzeMode) {
+    setMode(value);
+    if (state.status === "success" || state.status === "error") {
+      setState({ status: "idle", target, mode: value });
+      setResult(null);
+      setJob(null);
+      setShowReport(false);
+      setCopied(false);
+    }
+  }
+
+  function applyExample(value: string) {
+    setTarget(value);
+    setState({ status: "idle", target: value, mode });
+    setResult(null);
+    setJob(null);
+    setShowReport(false);
+    setCopied(false);
   }
 
   async function copyResult() {
@@ -89,18 +161,26 @@ export default function IndustryTrendPage() {
     window.setTimeout(() => setCopied(false), 2000);
   }
 
+  function viewReport() {
+    if (!state.reportId && !result?.answer) {
+      setState({ status: "error", target, mode, errorMessage: "未找到报告，请重新生成" });
+      return;
+    }
+    setShowReport(true);
+  }
+
   return (
     <main className="review-workbench-page industry-trend-page">
       <MainSidebar
         activeKey="industry-trend"
-        note="先在本地启动 Stock Analyze：.\\start.ps1 -StockSkill -Port 8750，再输入产业链或个股。"
+        note="先在本地启动 Stock Analyze：.\\start.ps1 -StockSkill -Port 8750，再输入一个产业链或个股。"
       />
 
       <section className="review-workbench-main">
         <header className="review-workbench-topbar">
           <div className="review-topbar-title">
             <span className="topbar-icon"><GitBranch /></span>
-            <b>产业趋势</b>
+            <b>Local Stock Analyze</b>
             <i>INDUSTRY</i>
           </div>
           <div className="review-workbench-actions">
@@ -112,71 +192,72 @@ export default function IndustryTrendPage() {
           <div className="review-hero-copy">
             <p className="review-kicker">LOCAL STOCK ANALYZE</p>
             <h1>输入产业链或个股，拆出利润流向和核心资产。</h1>
-            <p>后端会调用本地 Stock Analyze 服务，使用 stock-reverse-engineering skill 输出产业链位置、瓶颈节点、三高评分和候选公司定位。</p>
+            <p>后端调用本地 Stock Analyze 服务，结合 stock-reverse-engineering skill，输出产业链位置、瓶颈节点、三高评分和候选公司定位。</p>
           </div>
 
-          <form className="research-panel industry-trend-form" onSubmit={submit}>
-            <label>
+          <form className="research-panel industry-trend-form industry-analyze-card" onSubmit={submit}>
+            <label className="industry-target-field">
               <span>分析对象</span>
-              <textarea
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder="例如：华海清科、AI服务器液冷产业链、HBM先进封装设备"
-                rows={5}
-                disabled={loading}
-              />
+              <div className="industry-search-box">
+                <Search />
+                <input
+                  value={target}
+                  onChange={(event) => updateTarget(event.target.value)}
+                  placeholder="请输入一个产业链或个股，例如：华海清科 / HBM先进封装设备"
+                  maxLength={MAX_TARGET_LENGTH}
+                  disabled={isLoading}
+                />
+              </div>
             </label>
 
-            <div className="industry-type-toggle" aria-label="输入类型">
-              {[
-                ["auto", "自动识别"],
-                ["chain", "产业链"],
-                ["stock", "个股"],
-              ].map(([value, label]) => (
-                <button
-                  className={inputType === value ? "active" : ""}
-                  type="button"
-                  key={value}
-                  onClick={() => setInputType(value as InputType)}
-                  disabled={loading}
-                >
-                  {label}
-                </button>
-              ))}
+            <div className="industry-field-group">
+              <div className="industry-section-title">
+                <span>分析模式</span>
+                <em>{activeMode.hint}</em>
+              </div>
+              <div className="industry-type-toggle" aria-label="分析模式">
+                {modeOptions.map((item) => (
+                  <button
+                    className={mode === item.value ? "active" : ""}
+                    type="button"
+                    key={item.value}
+                    onClick={() => updateMode(item.value)}
+                    disabled={isLoading}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
             </div>
 
-            <div className="industry-example-row">
-              {examples.map((item) => (
-                <button type="button" key={item} onClick={() => setQuery(item)} disabled={loading}>
-                  {item}
-                </button>
-              ))}
+            <div className="industry-field-group">
+              <div className="industry-section-title">
+                <span>常用示例</span>
+                <em>点击只会填入输入框，不会自动提交</em>
+              </div>
+              <div className="industry-example-row">
+                {examples.map((item) => (
+                  <button type="button" key={item} onClick={() => applyExample(item)} disabled={isLoading}>
+                    {item}
+                  </button>
+                ))}
+              </div>
             </div>
 
-            <button className="primary-gold-action" type="submit" disabled={loading || !query.trim()}>
-              {loading ? <Loader2 className="spin-icon" /> : <Sparkles />}
-              {loading ? "正在调用 Stock Analyze" : "生成产业趋势分析"}
-            </button>
-
-            {loading ? (
-              <div className="generation-progress" role="status" aria-live="polite">
-                <div className="generation-progress-head">
-                  <b>{job?.status === "queued" ? "产业链分析排队中" : "产业链分析生成中"}</b>
-                  <span>{job?.stage || "Stock Analyze"}</span>
-                </div>
-                <div className="generation-progress-track" aria-hidden="true">
-                  <i style={{ width: job?.status === "queued" ? "28%" : "64%" }} />
-                </div>
-                <p>后台任务正在运行，页面会自动轮询完整结果；成功生成后扣除 1 次使用机会。</p>
-              </div>
+            {state.status !== "success" ? (
+              <button className="primary-gold-action" type="submit" disabled={isLoading}>
+                {isLoading ? <Loader2 className="spin-icon" /> : <Sparkles />}
+                {buttonText(state.status)}
+              </button>
             ) : null}
 
-            {errorText ? (
-              <div className="upload-error">
-                <b>生成失败</b>
-                <span>{errorText}</span>
-              </div>
-            ) : null}
+            <StatusPanel
+              state={state}
+              job={job}
+              result={result}
+              onRetry={() => submit()}
+              onViewReport={viewReport}
+            />
           </form>
         </section>
 
@@ -188,13 +269,13 @@ export default function IndustryTrendPage() {
           </div>
         </section>
 
-        {result ? (
+        {showReport && result ? (
           <section className="research-panel industry-result-panel">
             <div className="industry-result-head">
               <div>
                 <span className="card-label">{result.source || "stock-analyze"}</span>
-                <h2>{result.query || query}</h2>
-                <p>耗时 {result.elapsed_seconds ?? "-"} 秒 · 类型 {result.input_type || inputType} · {billingText(result.billing_status)}</p>
+                <h2>{result.query || state.target}</h2>
+                <p>耗时 {result.elapsed_seconds ?? "-"} 秒 · 类型 {displayType(state.detectedType, state.mode)} · {billingText(result.billing_status)}</p>
               </div>
               <button type="button" onClick={copyResult}>
                 <ClipboardCopy />
@@ -208,13 +289,129 @@ export default function IndustryTrendPage() {
         ) : (
           <section className="research-panel industry-empty-panel">
             <ArrowRight />
-            <b>等待输入产业链或个股</b>
+            <b>{state.status === "success" ? "报告已生成，点击成功卡片中的查看报告。" : "等待输入一个产业链或个股"}</b>
             <span>适合分析：AI服务器、液冷、光模块、先进封装、华海清科、亨通光电等。</span>
           </section>
         )}
       </section>
     </main>
   );
+}
+
+function StatusPanel({
+  state,
+  job,
+  result,
+  onRetry,
+  onViewReport,
+}: {
+  state: AnalyzeState;
+  job: IndustryTrendPayload | null;
+  result: IndustryTrendPayload | null;
+  onRetry: () => void;
+  onViewReport: () => void;
+}) {
+  if (state.status === "idle") {
+    return (
+      <div className="industry-status-card industry-status-idle">
+        <FileText />
+        <span>输入一个产业链或个股，开始生成本地分析报告。</span>
+      </div>
+    );
+  }
+  if (state.status === "loading") {
+    return (
+      <div className="industry-status-card industry-status-loading" role="status" aria-live="polite">
+        <Loader2 className="spin-icon" />
+        <div>
+          <b>正在生成分析报告...</b>
+          <span>分析对象：{state.target}</span>
+          <span>分析模式：{displayMode(state.mode)}</span>
+          <p>正在调用本地 Stock Analyze 服务，请稍候。{job?.stage ? `当前阶段：${job.stage}` : ""}</p>
+        </div>
+      </div>
+    );
+  }
+  if (state.status === "success") {
+    return (
+      <div className="industry-status-card industry-status-success">
+        <CheckCircle2 />
+        <div>
+          <b>报告生成成功</b>
+          <span>分析对象：{state.target}</span>
+          <span>分析类型：{displayType(state.detectedType, state.mode)}</span>
+          <span>生成时间：{formatGeneratedAt(state.generatedAt)}</span>
+          <span>{billingText(result?.billing_status)}</span>
+          <button type="button" onClick={onViewReport}>
+            <FileText />
+            查看报告
+          </button>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="industry-status-card industry-status-error">
+      <AlertCircle />
+      <div>
+        <b>报告生成失败</b>
+        <span>失败原因：{state.errorMessage || "请求失败，请检查本地 Stock Analyze 服务是否启动。"}</span>
+        <button type="button" onClick={onRetry}>
+          <RotateCcw />
+          重新生成
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function validateTarget(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return "请输入一个分析对象";
+  if (trimmed.length > MAX_TARGET_LENGTH) return "分析对象过长，请只输入一个产业链或个股";
+  if (/[\n\r,，、;；]/.test(trimmed)) return "当前仅支持每次分析一个对象，请删除多余内容";
+  return "";
+}
+
+function modeToApiInput(value: AnalyzeMode) {
+  if (value === "industry_chain") return "chain";
+  return value;
+}
+
+function detectedTypeFromPayload(payload: IndustryTrendPayload, fallback: AnalyzeMode): DetectedType {
+  if (payload.input_type === "stock") return "stock";
+  if (payload.input_type === "chain") return "industry_chain";
+  if (fallback === "stock") return "stock";
+  if (fallback === "industry_chain") return "industry_chain";
+  return "unknown";
+}
+
+function displayType(type: DetectedType | undefined, fallback: AnalyzeMode) {
+  const value = type || detectedTypeFromPayload({}, fallback);
+  if (value === "stock") return "个股";
+  if (value === "industry_chain") return "产业链";
+  if (fallback === "auto") return "自动识别";
+  return "未识别";
+}
+
+function displayMode(value: AnalyzeMode) {
+  if (value === "stock") return "个股";
+  if (value === "industry_chain") return "产业链";
+  return "自动识别";
+}
+
+function buttonText(status: AnalyzeStatus) {
+  if (status === "loading") return "正在生成中...";
+  if (status === "error") return "重新生成";
+  return "开始分析";
+}
+
+function formatGeneratedAt(value?: string) {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value.slice(0, 16).replace("T", " ");
+  const pad = (part: number) => String(part).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
 function splitAnswer(answer: string) {
@@ -236,7 +433,7 @@ async function pollIndustryTrend(initial: IndustryTrendPayload, token: string) {
     if (payload.status === "done") return payload;
     if (payload.status === "error") throw new Error(payload.error || payload.detail || "产业趋势分析失败");
   }
-  throw new Error("产业趋势分析仍在生成，请稍后重试。");
+  throw new Error("生成超时，请稍后重试。");
 }
 
 function delay(ms: number) {
