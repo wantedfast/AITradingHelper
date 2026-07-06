@@ -2,9 +2,9 @@
 
 import Link from "next/link";
 import type { ReactNode } from "react";
-import { BarChart3, FileUp, Info, TrendingUp, Trophy } from "lucide-react";
+import { BarChart3, FileUp, GitBranch, Info, TrendingUp, Trophy } from "lucide-react";
 
-type MainSidebarKey = "review" | "watch" | "market-day" | "auction-strength";
+type MainSidebarKey = "review" | "watch" | "market-day" | "industry-trend" | "auction-strength";
 
 type MainSidebarProps = {
   activeKey: MainSidebarKey;
@@ -20,6 +20,7 @@ const navItems: Array<{
   { key: "review", href: "/review", label: "AI复盘", icon: FileUp },
   { key: "watch", href: "/watch", label: "AI盯盘", icon: BarChart3 },
   { key: "market-day", href: "/market-day", label: "AI当日行情", icon: TrendingUp },
+  { key: "industry-trend", href: "/industry-trend", label: "产业趋势", icon: GitBranch },
   { key: "auction-strength", href: "/auction-strength", label: "竞价强者", icon: Trophy },
 ];
 

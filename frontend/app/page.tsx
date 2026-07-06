@@ -3,7 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { FormEvent, useEffect, useState } from "react";
-import { BellRing, ChevronDown, Copy, CreditCard, FileSearch, Gift, Info, LogOut, Megaphone, MessageSquare, ShieldCheck, Sparkles, TrendingUp, Trophy, UserRound, X } from "lucide-react";
+import { BellRing, ChevronDown, Copy, CreditCard, FileSearch, GitBranch, Gift, Info, LogOut, Megaphone, MessageSquare, ShieldCheck, Sparkles, TrendingUp, Trophy, UserRound, X } from "lucide-react";
 import { AuctionStrengthPerformanceTicker, useAuctionStrengthPerformance } from "@/components/auction-strength-performance-ticker";
 import { GoldMagicCube } from "@/components/gold-magic-cube";
 import { HomeMusic } from "@/components/home-music";
@@ -33,6 +33,14 @@ const features = [
     icon: TrendingUp,
     description: "自动梳理当日 A 股行情，识别主线题材、强势梯队与核心个股，帮助你抓住市场真正的方向。",
     points: ["主线识别", "强势个股", "梯队判断", "证据链复盘"],
+  },
+  {
+    href: "/industry-trend",
+    title: "产业趋势",
+    label: "INDUSTRY TREND",
+    icon: GitBranch,
+    description: "输入产业链或个股，调用本地 Stock Analyze，拆解产业利润流向、瓶颈节点和三高选股排序。",
+    points: ["产业链拆解", "瓶颈识别", "三高评分", "个股定位"],
   },
   {
     href: "/auction-strength",
@@ -168,6 +176,7 @@ export default function Page() {
             <Link href="/review">AI 复盘</Link>
             <Link href="/watch">AI 盯盘</Link>
             <Link href="/market-day">AI当日行情</Link>
+            <Link href="/industry-trend">产业趋势</Link>
             <Link href="/auction-strength">竞价强者</Link>
             {hydrated && user?.role === "admin" && <Link href="/admin">管理台</Link>}
             {hydrated && user ? (

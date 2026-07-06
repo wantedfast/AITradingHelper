@@ -86,6 +86,35 @@ Backend health:
 http://127.0.0.1:8600/api/health
 ```
 
+## 产业趋势模块
+
+产业趋势页面会调用本地 Stock Analyze 服务。先在另一个 PowerShell 中启动 Stock Analyze：
+
+```powershell
+cd C:\path\to\Stock-Analyze
+.\start.ps1 -StockSkill -Port 8750
+```
+
+然后启动本项目，打开：
+
+```text
+http://127.0.0.1:3000/industry-trend
+```
+
+后端默认调用：
+
+```text
+http://127.0.0.1:8750/api/codex
+```
+
+可以用环境变量覆盖：
+
+```text
+STOCK_ANALYZE_API_URL=http://127.0.0.1:8750/api/codex
+STOCK_ANALYZE_TIMEOUT_SECONDS=620
+STOCK_ANALYZE_TOKEN=
+```
+
 ## Required Environment
 
 Configure `.env` with the model keys used by OCR and the final WANG agent:

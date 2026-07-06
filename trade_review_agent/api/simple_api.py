@@ -73,6 +73,7 @@ from trade_review_agent.review.simple_wang_report import run_simple_wang_review
 from trade_review_agent.watch.voice_settings import VoiceSettings, load_voice_settings, normalize_voice_settings, save_voice_settings, voice_settings_payload
 from trade_review_agent.watch.watch_agent import build_watch_plan, narrate_alert_event, preview_voice_line
 from trade_review_agent.watch.watch_form_ocr import extract_watch_form_from_image
+from trade_review_agent.industry_trend.stock_analyze_client import IndustryTrendRequest, StockAnalyzeError, run_industry_trend_analysis
 
 
 BASE_DIR = Path(__file__).resolve().parents[2]
@@ -258,6 +259,9 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             if path == "/api/market-day/reports":
                 self._create_market_day_report()
                 return
+            if path == "/api/industry-trend":
+                self._create_industry_trend_report()
+                return
             if path.startswith("/api/market-day/reports/"):
                 self._ack_market_day_report(path)
                 return
@@ -395,6 +399,15 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
         response["billing_status"] = "pending_generation"
         response["estimated_seconds"] = 90
         self._json(response, status=202)
+
+    def _create_industry_trend_report(self) -> None:
+        self._require_user()
+        payload = self._read_json_body()
+        query = str(payload.get("query") or payload.get("subject") or "").strip()
+        input_type = str(payload.get("input_type") or payload.get("inputType") or "auto").strip()
+        self._set_stage("industry_trend")
+        result = run_industry_trend_analysis(IndustryTrendRequest(query=query, input_type=input_type))
+        self._json(result)
 
     def _ack_market_day_report(self, path: str) -> None:
         parts = path.split("/")
@@ -1776,6 +1789,16 @@ def _api_error_payload(exc: Exception, *, request_id: str, run_id: str = "", sta
             "run_id": run_id,
             "stage": stage,
         }
+    if isinstance(exc, StockAnalyzeError):
+        return {
+            "error": str(exc),
+            "detail": _redact_sensitive(str(exc)),
+            "code": "stock_analyze_unavailable",
+            "retryable": True,
+            "request_id": request_id,
+            "run_id": run_id,
+            "stage": stage,
+        }
     return {
         "error": "Internal Server Error",
         "detail": _redact_sensitive(str(exc)),
@@ -1810,6 +1833,8 @@ def _api_error_status(exc: Exception, fallback: int = 500) -> int:
         if exc.status_code and 500 <= exc.status_code <= 599:
             return 503
         return 503 if exc.retryable else 502
+    if isinstance(exc, StockAnalyzeError):
+        return 502
     return fallback
 
 
