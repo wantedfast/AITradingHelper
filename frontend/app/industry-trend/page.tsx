@@ -191,7 +191,10 @@ export default function IndustryTrendPage() {
         <section className="review-workbench-hero industry-trend-hero">
           <div className="review-hero-copy">
             <p className="review-kicker">LOCAL STOCK ANALYZE</p>
-            <h1>输入产业链，AI 用 BOM 拆解价值链，用“三高模型”找龙头；输入个股，AI 反向识别它在产业链中的位置、利润来源和受益逻辑。</h1>
+            <h1 className="industry-hero-title">
+              <span>输入产业链，AI 用 BOM 拆解价值链，用“三高模型”找龙头。</span>
+              <span>输入个股，AI 反向识别它在产业链中的位置、利润来源和受益逻辑。</span>
+            </h1>
           </div>
 
           <form className="research-panel industry-trend-form industry-analyze-card" onSubmit={submit}>
