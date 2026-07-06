@@ -347,6 +347,58 @@
   line-height: 1.55;
 }
 
+.industry-table-wrap {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid rgba(244, 238, 220, 0.13);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.industry-table-wrap table {
+  width: 100%;
+  min-width: 760px;
+  border-collapse: collapse;
+  color: rgba(244, 238, 220, 0.82);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.industry-table-wrap th,
+.industry-table-wrap td {
+  min-width: 150px;
+  padding: 12px 14px;
+  border-right: 1px solid rgba(244, 238, 220, 0.1);
+  border-bottom: 1px solid rgba(244, 238, 220, 0.1);
+  text-align: left;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+
+.industry-table-wrap th:last-child,
+.industry-table-wrap td:last-child {
+  border-right: 0;
+}
+
+.industry-table-wrap tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.industry-table-wrap th {
+  color: #d9f99d;
+  background: rgba(100, 244, 210, 0.08);
+  font-weight: 850;
+}
+
+.industry-table-wrap td {
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.industry-table-wrap tbody tr:nth-child(even) td {
+  background: rgba(255, 255, 255, 0.045);
+}
+
 @media (max-width: 860px) {
   .industry-trend-hero,
   .industry-result-head {
@@ -365,6 +417,10 @@
 
   .industry-type-toggle {
     grid-template-columns: 1fr;
+  }
+
+  .industry-table-wrap table {
+    min-width: 680px;
   }
 }
 

@@ -42,6 +42,10 @@ type AnalyzeState = {
   errorMessage?: string;
 };
 
+type AnswerBlock =
+  | { type: "line"; line: string }
+  | { type: "table"; headers: string[]; rows: string[][] };
+
 const examples = ["华海清科", "AI服务器液冷产业链", "亨通光电", "HBM先进封装设备", "低空经济"];
 
 const modeOptions: Array<{ value: AnalyzeMode; label: string; hint: string }> = [
@@ -60,7 +64,7 @@ export default function IndustryTrendPage() {
   const [showReport, setShowReport] = useState(false);
   const [copied, setCopied] = useState(false);
 
-  const resultLines = useMemo(() => splitAnswer(result?.answer || ""), [result?.answer]);
+  const resultBlocks = useMemo(() => splitAnswer(result?.answer || ""), [result?.answer]);
   const isLoading = state.status === "loading";
   const activeMode = modeOptions.find((item) => item.value === mode) || modeOptions[0];
 
@@ -277,7 +281,7 @@ export default function IndustryTrendPage() {
               </button>
             </div>
             <article className="industry-markdown">
-              {resultLines.map((line, index) => renderLine(line, index))}
+              {resultBlocks.map((block, index) => renderBlock(block, index))}
             </article>
           </section>
         ) : null}
@@ -402,8 +406,26 @@ function formatGeneratedAt(value?: string) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-function splitAnswer(answer: string) {
-  return answer.replace(/\r\n/g, "\n").split("\n");
+function splitAnswer(answer: string): AnswerBlock[] {
+  const lines = answer.replace(/\r\n/g, "\n").split("\n");
+  const blocks: AnswerBlock[] = [];
+
+  for (let index = 0; index < lines.length; index += 1) {
+    if (isMarkdownTableStart(lines, index)) {
+      const tableLines: string[] = [];
+      while (index < lines.length && isMarkdownTableLine(lines[index])) {
+        tableLines.push(lines[index]);
+        index += 1;
+      }
+      index -= 1;
+      blocks.push(parseMarkdownTable(tableLines));
+      continue;
+    }
+
+    blocks.push({ type: "line", line: lines[index] });
+  }
+
+  return blocks;
 }
 
 async function pollIndustryTrend(initial: IndustryTrendPayload, token: string) {
@@ -436,6 +458,11 @@ function billingText(status?: string) {
   return "生成成功";
 }
 
+function renderBlock(block: AnswerBlock, index: number) {
+  if (block.type === "table") return renderTable(block, index);
+  return renderLine(block.line, index);
+}
+
 function renderLine(line: string, index: number) {
   const trimmed = line.trim();
   if (!trimmed) return <br key={index} />;
@@ -447,4 +474,65 @@ function renderLine(line: string, index: number) {
   if (trimmed.startsWith("- ")) return <p className="bullet-line" key={index}>{trimmed.slice(2)}</p>;
   if (trimmed.startsWith("|")) return <pre key={index}>{trimmed}</pre>;
   return <p key={index}>{trimmed}</p>;
+}
+
+function renderTable(table: Extract<AnswerBlock, { type: "table" }>, index: number) {
+  return (
+    <div className="industry-table-wrap" key={index}>
+      <table>
+        <thead>
+          <tr>
+            {table.headers.map((header, headerIndex) => (
+              <th key={`${index}-head-${headerIndex}`}>{cleanMarkdownCell(header)}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {table.rows.map((row, rowIndex) => (
+            <tr key={`${index}-row-${rowIndex}`}>
+              {table.headers.map((_, cellIndex) => (
+                <td key={`${index}-cell-${rowIndex}-${cellIndex}`}>{cleanMarkdownCell(row[cellIndex] || "")}</td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function isMarkdownTableStart(lines: string[], index: number) {
+  return isMarkdownTableLine(lines[index]) && isMarkdownSeparatorLine(lines[index + 1] || "");
+}
+
+function isMarkdownTableLine(line: string) {
+  const trimmed = line.trim();
+  return trimmed.startsWith("|") && trimmed.endsWith("|") && (trimmed.match(/\|/g)?.length || 0) >= 2;
+}
+
+function isMarkdownSeparatorLine(line: string) {
+  if (!isMarkdownTableLine(line)) return false;
+  return splitMarkdownTableRow(line).every((cell) => /^:?-{3,}:?$/.test(cell.trim()));
+}
+
+function parseMarkdownTable(lines: string[]): Extract<AnswerBlock, { type: "table" }> {
+  const headers = splitMarkdownTableRow(lines[0]);
+  const rows = lines
+    .slice(2)
+    .filter((line) => isMarkdownTableLine(line) && !isMarkdownSeparatorLine(line))
+    .map((line) => splitMarkdownTableRow(line));
+
+  return { type: "table", headers, rows };
+}
+
+function splitMarkdownTableRow(line: string) {
+  return line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((cell) => cell.trim());
+}
+
+function cleanMarkdownCell(value: string) {
+  return value
+    .replace(/^`+|`+$/g, "")
+    .replace(/\*\*/g, "")
+    .replace(/\\\|/g, "|")
+    .trim();
 }
