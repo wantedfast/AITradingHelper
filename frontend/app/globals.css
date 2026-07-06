@@ -236,35 +236,6 @@
   color: #f5d77a;
 }
 
-.industry-trend-setup,
-.industry-empty-panel {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-}
-
-.industry-trend-setup svg,
-.industry-empty-panel svg {
-  flex: 0 0 auto;
-  width: 24px;
-  height: 24px;
-  color: #64f4d2;
-}
-
-.industry-trend-setup b,
-.industry-empty-panel b {
-  display: block;
-  color: #fff8df;
-}
-
-.industry-trend-setup span,
-.industry-empty-panel span {
-  display: block;
-  margin-top: 4px;
-  color: rgba(244, 238, 220, 0.66);
-  line-height: 1.6;
-}
-
 .industry-result-panel {
   display: grid;
   gap: 18px;

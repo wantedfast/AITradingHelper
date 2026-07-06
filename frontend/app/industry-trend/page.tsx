@@ -2,7 +2,7 @@
 
 import { FormEvent, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { AlertCircle, ArrowRight, CheckCircle2, ClipboardCopy, FileText, GitBranch, Loader2, Network, RotateCcw, Search, Sparkles } from "lucide-react";
+import { AlertCircle, CheckCircle2, ClipboardCopy, FileText, GitBranch, Loader2, RotateCcw, Search, Sparkles } from "lucide-react";
 import { getAuthToken, storeUser, type UserProfile } from "@/lib/auth-client";
 import { MainSidebar } from "@/components/main-sidebar";
 
@@ -191,8 +191,7 @@ export default function IndustryTrendPage() {
         <section className="review-workbench-hero industry-trend-hero">
           <div className="review-hero-copy">
             <p className="review-kicker">LOCAL STOCK ANALYZE</p>
-            <h1>输入产业链或个股，拆出利润流向和核心资产。</h1>
-            <p>后端调用本地 Stock Analyze 服务，结合 stock-reverse-engineering skill，输出产业链位置、瓶颈节点、三高评分和候选公司定位。</p>
+            <h1>输入产业链，AI 用 BOM 拆解价值链，用“三高模型”找龙头；输入个股，AI 反向识别它在产业链中的位置、利润来源和受益逻辑。</h1>
           </div>
 
           <form className="research-panel industry-trend-form industry-analyze-card" onSubmit={submit}>
@@ -261,14 +260,6 @@ export default function IndustryTrendPage() {
           </form>
         </section>
 
-        <section className="research-panel industry-trend-setup">
-          <Network />
-          <div>
-            <b>本地链路</b>
-            <span>Stock Analyze 默认监听 8750：在另一个 PowerShell 里运行 `.\start.ps1 -StockSkill -Port 8750`。</span>
-          </div>
-        </section>
-
         {showReport && result ? (
           <section className="research-panel industry-result-panel">
             <div className="industry-result-head">
@@ -286,13 +277,7 @@ export default function IndustryTrendPage() {
               {resultLines.map((line, index) => renderLine(line, index))}
             </article>
           </section>
-        ) : (
-          <section className="research-panel industry-empty-panel">
-            <ArrowRight />
-            <b>{state.status === "success" ? "报告已生成，点击成功卡片中的查看报告。" : "等待输入一个产业链或个股"}</b>
-            <span>适合分析：AI服务器、液冷、光模块、先进封装、华海清科、亨通光电等。</span>
-          </section>
-        )}
+        ) : null}
       </section>
     </main>
   );
