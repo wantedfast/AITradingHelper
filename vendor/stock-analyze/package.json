@@ -1,0 +1,16 @@
+{
+  "name": "stock-analyze",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "mock": "set CODEX_MOCK=1&& node server.mjs",
+    "check": "node --check server.mjs && node --check tools/smoke-test.mjs && node --check tools/post-prompt-file.mjs",
+    "smoke": "node tools/smoke-test.mjs",
+    "post": "node tools/post-prompt-file.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

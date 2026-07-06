@@ -1,0 +1,4 @@
+interface:
+  display_name: "Stock Reverse Engineering"
+  short_description: "六角色协同逆推A股资金逻辑、瓶颈、产业链位置和核心资产。"
+  default_prompt: "Use $stock-reverse-engineering to analyze 宏和科技 with the six-agent bottleneck workflow."

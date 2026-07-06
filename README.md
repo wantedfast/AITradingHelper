@@ -70,9 +70,13 @@ trade_review_agent/
 
 ## Local Run
 
+In Codex on a fresh machine, pull this branch and run one command from the repo root:
+
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\start-local.ps1
 ```
+
+If `frontend/node_modules` is missing, the script runs `npm install` automatically. If your Node runtime does not expose npm, install frontend dependencies once from `frontend/` or set `NPM_BIN` to npm.
 
 Frontend:
 
@@ -86,19 +90,42 @@ Backend health:
 http://127.0.0.1:8600/api/health
 ```
 
-## 产业趋势模块
+Vendored Stock Analyze health:
 
-产业趋势页面会调用本地 Stock Analyze 服务。先在另一个 PowerShell 中启动 Stock Analyze：
-
-```powershell
-cd C:\path\to\Stock-Analyze
-.\start.ps1 -StockSkill -Port 8750
+```text
+http://127.0.0.1:8750/healthz
 ```
 
-然后启动本项目，打开：
+Default local admin credentials are created at startup unless `.env` overrides them:
+
+```text
+root / 123456
+```
+
+## 产业趋势模块
+
+产业趋势页面会调用本仓库内置的 Stock Analyze 服务和 vendored skill。运行 `.\start-local.ps1` 会同时启动：
+
+- Frontend: `http://127.0.0.1:3000/`
+- Backend: `http://127.0.0.1:8600/api/health`
+- Stock Analyze: `http://127.0.0.1:8750/healthz`
+
+然后打开：
 
 ```text
 http://127.0.0.1:3000/industry-trend
+```
+
+Stock Analyze 已 vendored 在：
+
+```text
+vendor/stock-analyze
+```
+
+内置的 `stock-reverse-engineering` skill 在：
+
+```text
+vendor/stock-analyze/skills/stock-reverse-engineering
 ```
 
 提交后会创建后台任务，页面自动轮询结果。成功生成后扣除 1 次使用机会；Stock Analyze 失败或返回空结果不会扣次数。

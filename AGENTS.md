@@ -23,6 +23,7 @@ AITradingHelper is a local web app for A-share trade review, watch plans, market
 
 - `trade_review_agent/api/`: HTTP API routes.
 - `trade_review_agent/industry_trend/`: local Stock Analyze integration.
+- `vendor/stock-analyze/`: vendored local Stock Analyze app server and `stock-reverse-engineering` skill used by `/industry-trend`.
 - `trade_review_agent/review/`: report generation agents.
 - `trade_review_agent/watch/`: watch-plan and alert logic.
 - `trade_review_agent/market/`: market data helpers.

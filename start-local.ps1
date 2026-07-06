@@ -6,7 +6,10 @@ $ProjectPython = Join-Path $Root ".venv\Scripts\python.exe"
 $RuntimeRoot = Join-Path $env:USERPROFILE ".cache\codex-runtimes\codex-primary-runtime\dependencies"
 $BundledNode = Join-Path $RuntimeRoot "node\bin\node.exe"
 $BundledPython = Join-Path $RuntimeRoot "python\python.exe"
+$StockAnalyzeRoot = Join-Path $Root "vendor\stock-analyze"
+$StockAnalyzeBase = "http://127.0.0.1:8750"
 $Node = $null
+$Npm = $null
 $Python = $null
 $BackendBase = "http://127.0.0.1:8600"
 
@@ -22,6 +25,19 @@ if (Test-Path $BundledNode) {
 if (-not $Node -or -not (Test-Path $Node)) {
   throw "Node runtime not found. Checked bundled runtime and system node."
 }
+
+function Find-Npm {
+  if ($env:NPM_BIN -and (Test-Path $env:NPM_BIN)) { return $env:NPM_BIN }
+  $nodeDir = Split-Path -Parent $Node
+  foreach ($candidate in @((Join-Path $nodeDir "npm.cmd"), (Join-Path $nodeDir "npm"))) {
+    if (Test-Path $candidate) { return $candidate }
+  }
+  $npmCommand = Get-Command npm -ErrorAction SilentlyContinue
+  if ($npmCommand) { return $npmCommand.Source }
+  return ""
+}
+
+$Npm = Find-Npm
 
 function Test-PythonRuntime {
   param([string]$Candidate)
@@ -107,7 +123,7 @@ function Wait-HttpOk {
   $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
   do {
     if ($Process -and $Process.HasExited) {
-      throw "Backend process exited before health check succeeded. ExitCode=$($Process.ExitCode)"
+      throw "Process exited before health check succeeded. ExitCode=$($Process.ExitCode)"
     }
     try {
       $response = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 2
@@ -122,7 +138,7 @@ function Wait-HttpOk {
   throw "Timed out waiting for backend health check: $Url"
 }
 
-foreach ($port in 3000, 8600) {
+foreach ($port in 3000, 8600, 8750) {
   Stop-PortListeners -Port $port
 }
 
@@ -130,7 +146,18 @@ Start-Sleep -Milliseconds 600
 
 $NextBin = Join-Path $Frontend "node_modules\next\dist\bin\next"
 if (-not (Test-Path $NextBin)) {
-  throw "Next.js binary not found. Check frontend/node_modules: $NextBin"
+  if (-not $Npm) {
+    throw "Next.js binary not found and npm is unavailable. Install frontend dependencies in $Frontend, or set NPM_BIN."
+  }
+  Write-Host "Frontend dependencies missing; running npm install..."
+  & $Npm install --prefix $Frontend
+  if ($LASTEXITCODE -ne 0) {
+    throw "npm install failed with exit code $LASTEXITCODE"
+  }
+}
+
+if (-not (Test-Path $NextBin)) {
+  throw "Next.js binary not found after npm install: $NextBin"
 }
 
 $NextCache = Join-Path $Frontend ".next"
@@ -141,12 +168,34 @@ if ((Test-Path $NextCache) -and ($NextCache -like "$Frontend*")) {
 $EnvPath = Join-Path $Root ".env"
 Import-DotEnv -Path $EnvPath
 
+if (-not $env:ADMIN_PHONE) {
+  $env:ADMIN_PHONE = "root"
+}
+if (-not $env:ADMIN_PASSWORD) {
+  $env:ADMIN_PASSWORD = "123456"
+}
 if (-not $env:NEXT_PUBLIC_API_BASE) {
   $env:NEXT_PUBLIC_API_BASE = $BackendBase
 }
 if (-not $env:INTERNAL_API_BASE) {
   $env:INTERNAL_API_BASE = $BackendBase
 }
+if (-not $env:STOCK_ANALYZE_API_URL) {
+  $env:STOCK_ANALYZE_API_URL = "$StockAnalyzeBase/api/codex"
+}
+
+$StockAnalyzeStart = Join-Path $StockAnalyzeRoot "start.ps1"
+if (-not (Test-Path $StockAnalyzeStart)) {
+  throw "Vendored Stock Analyze was not found: $StockAnalyzeStart"
+}
+
+$StockAnalyzeProcess = Start-Process -FilePath "powershell" `
+  -ArgumentList @("-ExecutionPolicy", "Bypass", "-File", ".\start.ps1", "-StockSkill", "-Port", "8750") `
+  -WorkingDirectory $StockAnalyzeRoot `
+  -WindowStyle Hidden `
+  -PassThru
+
+Wait-HttpOk -Url "$StockAnalyzeBase/healthz" -Process $StockAnalyzeProcess -TimeoutSeconds 60
 
 $BackendProcess = Start-Process -FilePath $Python `
   -ArgumentList @("-m", "trade_review_agent.api.simple_api") `
@@ -163,5 +212,7 @@ Start-Process -FilePath $Node `
 
 Write-Host "Started backend:  $BackendBase/api/health"
 Write-Host "Started frontend: http://127.0.0.1:3000/"
+Write-Host "Started Stock Analyze: $StockAnalyzeBase/healthz"
 Write-Host "Frontend API:     $env:NEXT_PUBLIC_API_BASE"
+Write-Host "Stock Analyze API: $env:STOCK_ANALYZE_API_URL"
 Write-Host "Project: $Root"
