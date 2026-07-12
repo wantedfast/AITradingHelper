@@ -748,7 +748,7 @@ export default function ReviewPage() {
                     {copy.reselect}
                   </button>
                 </div>
-                <p className="generation-time-note">为了更好的复盘质量，报告生成大概需要 2-3 分钟。</p>
+                <p className="generation-time-note">报告生成成功并首次查看时扣除 2 次；生成失败或重复查看不重复扣次。生成大概需要 2-3 分钟。</p>
                 {generating && (
                   <div className="generation-progress" role="status" aria-live="polite">
                     <div className="generation-progress-head">

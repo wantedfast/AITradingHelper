@@ -26,6 +26,13 @@ INITIAL_FREE_CREDITS = 5
 REFERRAL_REWARD_CREDITS = 5
 INVITEE_BONUS_CREDITS = 2
 FEEDBACK_REWARD_CREDITS = 10
+FEATURE_CREDIT_COSTS = {
+    "review_report": 2,
+    "watch_plan": 1,
+    "market_day_report": 1,
+    "ai_research_view": 2,
+    "auction_strength_view": 2,
+}
 SMS_CODE_TTL_MINUTES = 5
 SMS_RESEND_SECONDS = 60
 EMAIL_CODE_TTL_MINUTES = 10
@@ -523,12 +530,13 @@ def consume_feature_credit(db_path: Path, *, user_id: int, feature: str, ip: str
             _record_usage(conn, user_id, feature, 0, "membership_free", ip, related_id)
             return _user_payload(conn, user)
 
+        cost = _feature_credit_cost(feature)
         balance = _credit_balance(conn, user_id)
-        if balance <= 0:
+        if balance < cost:
             _record_usage(conn, user_id, feature, 0, "blocked_no_credits", ip, related_id)
-            raise AuthError("免费次数已用完，请邀请新用户注册登录获取次数，或购买次数后继续使用", 402)
-        _add_credits(conn, user_id, -1, f"use_{feature}", related_id or None)
-        _record_usage(conn, user_id, feature, 1, "charged", ip, related_id)
+            raise AuthError(f"可用次数不足，本功能需要 {cost} 次，请邀请新用户注册登录获取次数，或购买次数后继续使用", 402)
+        _add_credits(conn, user_id, -cost, f"use_{feature}", related_id or None)
+        _record_usage(conn, user_id, feature, cost, "charged", ip, related_id)
         return _user_payload(conn, user)
 
 
@@ -542,10 +550,11 @@ def ensure_feature_credit_available(db_path: Path, *, user_id: int, feature: str
         if _has_active_membership(user):
             return _user_payload(conn, user)
 
+        cost = _feature_credit_cost(feature)
         balance = _credit_balance(conn, user_id)
-        if balance <= 0:
+        if balance < cost:
             _record_usage(conn, user_id, feature, 0, "blocked_no_credits", ip, related_id)
-            raise AuthError("免费次数已用完，请邀请新用户注册登录获取次数，或购买次数后继续使用", 402)
+            raise AuthError(f"可用次数不足，本功能需要 {cost} 次，请邀请新用户注册登录获取次数，或购买次数后继续使用", 402)
         return _user_payload(conn, user)
 
 
@@ -562,12 +571,13 @@ def consume_feature_credit_once(db_path: Path, *, user_id: int, feature: str, ip
             _record_usage(conn, user_id, feature, 0, "membership_free", ip, related_id)
             return _user_payload(conn, user)
 
+        cost = _feature_credit_cost(feature)
         balance = _credit_balance(conn, user_id)
-        if balance <= 0:
+        if balance < cost:
             _record_usage(conn, user_id, feature, 0, "blocked_no_credits", ip, related_id)
-            raise AuthError("免费次数已用完，请邀请新用户注册登录获取次数，或购买次数后继续使用", 402)
-        _add_credits(conn, user_id, -1, f"use_{feature}", related_id or None)
-        _record_usage(conn, user_id, feature, 1, "charged", ip, related_id)
+            raise AuthError(f"可用次数不足，本功能需要 {cost} 次，请邀请新用户注册登录获取次数，或购买次数后继续使用", 402)
+        _add_credits(conn, user_id, -cost, f"use_{feature}", related_id or None)
+        _record_usage(conn, user_id, feature, cost, "charged", ip, related_id)
         return _user_payload(conn, user)
 
 
@@ -1587,6 +1597,10 @@ def _ip_registered_user(conn: sqlite3.Connection, ip: str) -> sqlite3.Row | None
     if not ip:
         return None
     return conn.execute("SELECT * FROM users WHERE role = 'user' AND register_ip = ? LIMIT 1", (ip,)).fetchone()
+
+
+def _feature_credit_cost(feature: str) -> int:
+    return max(1, int(FEATURE_CREDIT_COSTS.get(str(feature or "").strip(), 1)))
 
 
 def _add_credits(conn: sqlite3.Connection, user_id: int, delta: int, reason: str, related_id: str | None) -> None:

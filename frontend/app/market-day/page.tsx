@@ -217,7 +217,7 @@ export default function MarketDayPage() {
             <div>
               <span className="card-label">最新复盘</span>
               <h2>查看最近生成的市场复盘</h2>
-              <p>每日收盘后自动生成；同一交易日重复查看不会重复占用使用次数。</p>
+              <p>每日收盘后自动生成；首次查看扣除 1 次，同一交易日重复查看不重复扣次。</p>
             </div>
             <button type="button" onClick={() => void refreshRecentReports()} disabled={recentLoading}>
               {recentLoading ? <Loader2 className="spin-icon" /> : <RefreshCcw />}

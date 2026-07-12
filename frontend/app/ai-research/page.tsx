@@ -234,7 +234,7 @@ function AiResearchPageContent() {
             <div>
               <span className="card-label">最新研报</span>
               <h2 id="ai-research-list-heading">点击查看完整研究结论</h2>
-              <p className="ai-research-charge-note">首次查看每篇研报扣除 1 次使用机会，同一篇重复查看不重复扣次。</p>
+              <p className="ai-research-charge-note">首次查看每篇研报扣除 2 次使用机会，同一篇重复查看不重复扣次。</p>
             </div>
             <button type="button" onClick={() => void refreshReports()} disabled={loading}>
               {loading ? <Loader2 className="spin-icon" /> : <RefreshCcw />}

@@ -216,9 +216,9 @@ export default function AuctionStrengthPage() {
     });
   }, [selectedReport]);
   const isToday = selectedDate === todayIsoDate();
-  const confirmTitle = isToday ? "查看竞价分析会扣除 1 次使用机会。" : "查看历史竞价分析不扣次数。";
+  const confirmTitle = isToday ? "查看竞价分析会扣除 2 次使用机会。" : "查看历史竞价分析不扣次数。";
   const confirmText = isToday
-    ? "查看所选交易日的竞价分析会扣除 1 次使用机会；同一交易日重复刷新或切换记录不会重复扣。"
+    ? "查看所选交易日的竞价分析会扣除 2 次使用机会；同一交易日重复刷新或切换记录不会重复扣。"
     : "历史日期记录可直接查看，不会扣除使用机会；同一交易日重复刷新或切换记录也不会扣。";
   const confirmButtonText = isToday ? "确认查看并扣次" : "确认查看历史记录";
   const confirmHint = isToday

@@ -887,7 +887,7 @@ function WatchEntryView(props: {
             {props.loadingPlans ? <Loader2 className="spin-icon" /> : <Sparkles className="h-4 w-4" />}
             {props.loadingPlans ? "正在生成明日预案" : "生成明日预案"}
           </button>
-          <p className="watch-entry-hint">通常 10 - 20 秒即可完成分析，生成后会直接展示次日预案。</p>
+          <p className="watch-entry-hint">每次生成扣除 1 次，通常 10 - 20 秒即可完成分析并展示次日预案。</p>
         </section>
       </section>
 
