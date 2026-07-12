@@ -1,12 +1,27 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import Link from "next/link";
+import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { ArrowLeft, BarChart3, FileUp, Loader2, RefreshCcw, ShieldCheck, TrendingUp, Trophy } from "lucide-react";
+import { ArrowLeft, Loader2, RefreshCcw, ShieldCheck, TrendingUp } from "lucide-react";
 import { getAuthToken, storeUser, usageBillingText } from "@/lib/auth-client";
+import { MainSidebar } from "@/components/main-sidebar";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE || (process.env.NODE_ENV === "development" ? "http://127.0.0.1:8600" : "");
+const API_BASE =
+  process.env.NEXT_PUBLIC_API_BASE || (process.env.NODE_ENV === "development" ? "http://127.0.0.1:8600" : "");
+
+type MarketDayUser = {
+  id?: number;
+  phone?: string;
+  role?: string;
+  invite_code?: string;
+  credits?: number;
+  membership_plan?: string | null;
+  membership_status?: string | null;
+  membership_expires_at?: string | null;
+  membership_active?: boolean;
+  referral_count?: number;
+  created_at?: string;
+};
 
 type MarketDayEnvelope = {
   run_id?: string;
@@ -40,7 +55,7 @@ type MarketDayReport = {
     name?: string;
     reason?: string;
     branches?: string[];
-    evidence?: string[];
+    evidence?: EvidenceItem[];
     score?: number;
   };
   strongestStocks?: Array<{
@@ -50,14 +65,24 @@ type MarketDayReport = {
     leaderType?: string;
     theme?: string;
     strengthReason?: string;
-    evidence?: string[];
+    evidence?: EvidenceItem[];
     riskOrDivergence?: string;
     score?: number;
   }>;
-  secondaryLines?: Array<{ name?: string; reason?: string; representativeStocks?: string[]; evidence?: string[] }>;
-  fakeOrWeakLines?: Array<{ name?: string; reason?: string; evidence?: string[] }>;
-  watchPoints?: string[];
+  secondaryLines?: Array<{ name?: string; reason?: string; representativeStocks?: unknown[]; evidence?: EvidenceItem[] }>;
+  fakeOrWeakLines?: Array<{ name?: string; reason?: string; evidence?: EvidenceItem[] }>;
+  watchPoints?: Array<string | WatchPoint>;
   audit?: { missingEvidence?: string[]; sourceWarnings?: string[] };
+};
+
+type EvidenceItem = string | { content?: string; type?: string; sourceIds?: string[] };
+
+type WatchPoint = {
+  object?: string;
+  condition?: string;
+  positiveSignal?: string;
+  negativeSignal?: string;
+  meaning?: string;
 };
 
 type StatusPayload = {
@@ -65,19 +90,15 @@ type StatusPayload = {
   stage?: string;
   billing_status?: "pending_generation" | "ready_to_charge" | "charged";
   report?: MarketDayEnvelope;
-  user?: {
-    id?: number;
-    phone?: string;
-    role?: string;
-    invite_code?: string;
-    credits?: number;
-    membership_plan?: string | null;
-    membership_status?: string | null;
-    membership_expires_at?: string | null;
-    membership_active?: boolean;
-    referral_count?: number;
-    created_at?: string;
-  };
+  user?: MarketDayUser;
+  error?: string;
+  detail?: string;
+};
+
+type AccessPayload = {
+  ok?: boolean;
+  billing_status?: "pending_generation" | "ready_to_charge" | "charged";
+  user?: MarketDayUser;
   error?: string;
   detail?: string;
 };
@@ -86,50 +107,72 @@ export default function MarketDayReportPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
   const runId = decodeURIComponent(params.id);
-  const ackStartedRef = useRef(false);
   const [loading, setLoading] = useState(true);
-  const [status, setStatus] = useState("loading");
+  const [status, setStatus] = useState("authorizing");
   const [errorText, setErrorText] = useState("");
   const [billingMessage, setBillingMessage] = useState("");
   const [reportEnvelope, setReportEnvelope] = useState<MarketDayEnvelope | null>(null);
 
-  function syncUser(payload: StatusPayload) {
-    if (payload.user?.id && payload.user.phone && payload.user.role && payload.user.invite_code) {
-      storeUser({
-        id: payload.user.id,
-        phone: payload.user.phone,
-        role: payload.user.role as "user" | "admin",
-        invite_code: payload.user.invite_code,
-        credits: payload.user.credits || 0,
-        membership_plan: payload.user.membership_plan || "",
-        membership_status: payload.user.membership_status || "",
-        membership_expires_at: payload.user.membership_expires_at || "",
-        membership_active: Boolean(payload.user.membership_active),
-        referral_count: payload.user.referral_count || 0,
-        created_at: payload.user.created_at || "",
-      });
+  function syncUser(user?: MarketDayUser) {
+    if (!user?.id || !user.phone || !user.role || !user.invite_code) return;
+    storeUser({
+      id: user.id,
+      phone: user.phone,
+      role: user.role as "user" | "admin",
+      invite_code: user.invite_code,
+      credits: user.credits || 0,
+      membership_plan: user.membership_plan || "",
+      membership_status: user.membership_status || "",
+      membership_expires_at: user.membership_expires_at || "",
+      membership_active: Boolean(user.membership_active),
+      referral_count: user.referral_count || 0,
+      created_at: user.created_at || "",
+    });
+  }
+
+  async function parseJsonResponse<T>(response: Response): Promise<T> {
+    const text = await response.text();
+    if (!text) return {} as T;
+    try {
+      return JSON.parse(text) as T;
+    } catch {
+      return { error: text } as T;
     }
   }
 
-  async function acknowledgeVisibleReport() {
-    if (ackStartedRef.current) return;
-    ackStartedRef.current = true;
-    const token = getAuthToken();
-    if (!token) return;
-    try {
-      const response = await fetch(`${API_BASE}/api/market-day/reports/${encodeURIComponent(runId)}/ack`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
-        cache: "no-store",
-      });
-      const payload = (await response.json()) as StatusPayload & { ok?: boolean };
-      if (!response.ok) throw new Error(payload.error || "报告已展示，但扣除使用次数失败");
-      syncUser(payload);
-      setBillingMessage(`报告已成功展示。${usageBillingText(payload.user)}`);
-    } catch (error) {
-      ackStartedRef.current = false;
-      setBillingMessage(error instanceof Error ? error.message : "报告已展示，但扣除使用次数失败");
-    }
+  function formatError(payload: { error?: string; detail?: string }, fallback: string) {
+    return [payload.error || fallback, payload.detail && payload.detail !== payload.error ? payload.detail : ""]
+      .filter(Boolean)
+      .join("\n");
+  }
+
+  function buildBillingMessage(user?: MarketDayUser) {
+    const usageText = usageBillingText(user);
+    return usageText ? `报告已确认展示。${usageText}` : "报告已确认展示。";
+  }
+
+  async function acknowledgeReportAccess(token: string) {
+    setStatus("authorizing");
+    const response = await fetch(`${API_BASE}/api/market-day/reports/${encodeURIComponent(runId)}/ack`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      cache: "no-store",
+    });
+    const payload = await parseJsonResponse<AccessPayload>(response);
+    if (!response.ok) throw new Error(formatError(payload, "确认报告访问失败"));
+    syncUser(payload.user);
+    setBillingMessage(buildBillingMessage(payload.user));
+  }
+
+  async function fetchProtectedReport(token: string) {
+    setStatus("loading");
+    const response = await fetch(`${API_BASE}/api/market-day/reports/${encodeURIComponent(runId)}/status`, {
+      headers: { Authorization: `Bearer ${token}` },
+      cache: "no-store",
+    });
+    const payload = await parseJsonResponse<StatusPayload>(response);
+    if (!response.ok) throw new Error(formatError(payload, "读取当日行情报告失败"));
+    return payload;
   }
 
   async function loadReport() {
@@ -138,26 +181,22 @@ export default function MarketDayReportPage() {
       router.push(`/auth?redirect=/market-day/report/${encodeURIComponent(runId)}`);
       return;
     }
+
     setLoading(true);
     setErrorText("");
+
     try {
-      const response = await fetch(`${API_BASE}/api/market-day/reports/${encodeURIComponent(runId)}/status`, {
-        headers: { Authorization: `Bearer ${token}` },
-        cache: "no-store",
-      });
-      const payload = (await response.json()) as StatusPayload;
-      if (!response.ok) throw new Error(payload.error || "读取当日行情报告失败");
+      await acknowledgeReportAccess(token);
+      const payload = await fetchProtectedReport(token);
       setStatus(payload.stage || payload.status || "unknown");
+
       if (payload.status === "done" && payload.report) {
         setReportEnvelope(payload.report);
-        if (payload.billing_status === "charged") {
-          syncUser(payload);
-          setBillingMessage(`报告已成功展示。${usageBillingText(payload.user)}`);
-        } else {
-          void acknowledgeVisibleReport();
-        }
-      } else if (payload.status === "error") {
-        throw new Error([payload.error || "报告生成失败", payload.detail || ""].filter(Boolean).join("\n"));
+        return;
+      }
+
+      if (payload.status === "error") {
+        throw new Error(formatError(payload, "报告生成失败"));
       }
     } catch (error) {
       setErrorText(error instanceof Error ? error.message : "读取当日行情报告失败");
@@ -184,39 +223,15 @@ export default function MarketDayReportPage() {
   const strongestStocks = report?.strongestStocks || [];
 
   return (
-    <main className="review-workbench-page market-day-page market-day-report-surface">
-      <aside className="review-workbench-rail">
-        <Link className="review-workbench-brand" href="/">
-          <span className="brand-mark">盈</span>
-          <span>
-            <b>盈航</b>
-            <small>MARKET REPORT</small>
-          </span>
-        </Link>
-        <nav className="review-workbench-nav" aria-label="核心功能">
-          <Link href="/review">
-            <FileUp />
-            <span><b>AI复盘</b></span>
-          </Link>
-          <Link href="/watch">
-            <BarChart3 />
-            <span><b>AI盯盘</b></span>
-          </Link>
-          <Link className="active" href="/market-day">
-            <TrendingUp />
-            <span><b>AI当日行情</b></span>
-          </Link>
-          <Link href="/auction-strength">
-            <Trophy />
-            <span><b>竞价强者</b></span>
-          </Link>
-        </nav>
-      </aside>
+    <main className="review-workbench-page market-day-page">
+      <MainSidebar activeKey="market-day" />
 
       <section className="review-workbench-main">
         <header className="review-workbench-topbar">
           <div className="review-topbar-title">
-            <span className="topbar-icon"><TrendingUp /></span>
+            <span className="topbar-icon">
+              <TrendingUp />
+            </span>
             <b>AI当日行情报告</b>
             <i>{report?.marketDate || reportEnvelope?.market_date || "REPORT"}</i>
           </div>
@@ -225,7 +240,7 @@ export default function MarketDayReportPage() {
               <ArrowLeft />
               <span>返回</span>
             </button>
-            <button type="button" onClick={() => void loadReport()}>
+            <button type="button" onClick={() => void loadReport()} disabled={loading}>
               {loading ? <Loader2 className="spin-icon" /> : <RefreshCcw />}
               <span>刷新</span>
             </button>
@@ -233,15 +248,15 @@ export default function MarketDayReportPage() {
         </header>
 
         {loading && !report ? (
-          <section className="research-panel market-day-loading-panel">
+          <section className="research-panel market-day-loading-panel" role="status" aria-live="polite">
             <Loader2 className="spin-icon" />
-            <b>正在读取当日行情报告</b>
-            <span>{status}</span>
+            <b>{status === "authorizing" ? "正在确认报告访问权限" : "正在读取当日行情报告"}</b>
+            <span>{status === "authorizing" ? "先确认展示，再读取受保护报告内容" : status}</span>
           </section>
         ) : null}
 
         {errorText ? (
-          <section className="research-panel market-day-loading-panel is-error">
+          <section className="research-panel market-day-loading-panel is-error" role="alert">
             <b>读取失败</b>
             <span>{errorText}</span>
           </section>
@@ -288,7 +303,9 @@ export default function MarketDayReportPage() {
               <h2>{report.mainline?.name || "主线证据不足"}</h2>
               <p>{report.mainline?.reason || "暂无主线判断。"}</p>
               <div className="market-day-chip-row">
-                {(report.mainline?.branches || []).map((branch) => <span key={branch}>{branch}</span>)}
+                {(report.mainline?.branches || []).map((branch) => (
+                  <span key={branch}>{branch}</span>
+                ))}
               </div>
               <EvidenceList items={report.mainline?.evidence} />
             </section>
@@ -305,7 +322,9 @@ export default function MarketDayReportPage() {
                   <article key={`${stock.rank}-${stock.name}`}>
                     <div className="market-day-stock-rank">#{stock.rank || "-"}</div>
                     <div>
-                      <h3>{stock.name || "未命名个股"} <small>{stock.code || ""}</small></h3>
+                      <h3>
+                        {stock.name || "未命名个股"} <small>{stock.code || ""}</small>
+                      </h3>
                       <p>{stock.strengthReason || "强势原因证据不足。"}</p>
                       <div className="market-day-chip-row">
                         <span>{stock.leaderType || "证据不足"}</span>
@@ -323,11 +342,19 @@ export default function MarketDayReportPage() {
             <section className="review-workbench-grid">
               <section className="research-panel">
                 <span className="card-label">次主线</span>
-                <LineList items={report.secondaryLines?.map((item) => `${item.name || "未命名"}：${item.reason || "证据不足"}`)} />
+                <LineList
+                  items={report.secondaryLines?.map(
+                    (item) => `${item.name || "未命名"}：${item.reason || "证据不足"}`,
+                  )}
+                />
               </section>
               <section className="research-panel">
                 <span className="card-label">伪主线 / 弱方向</span>
-                <LineList items={report.fakeOrWeakLines?.map((item) => `${item.name || "未命名"}：${item.reason || "证据不足"}`)} />
+                <LineList
+                  items={report.fakeOrWeakLines?.map(
+                    (item) => `${item.name || "未命名"}：${item.reason || "证据不足"}`,
+                  )}
+                />
               </section>
             </section>
 
@@ -361,18 +388,20 @@ function Metric({ label, value }: { label: string; value?: string }) {
   );
 }
 
-function EvidenceList({ items }: { items?: string[] }) {
-  const lines = (items || []).filter(Boolean).slice(0, 6);
+function EvidenceList({ items }: { items?: EvidenceItem[] }) {
+  const lines = (items || []).map(formatEvidenceItem).filter(Boolean).slice(0, 6);
   if (!lines.length) return null;
   return (
     <ul className="market-day-evidence-list">
-      {lines.map((item) => <li key={item}>{item}</li>)}
+      {lines.map((item) => (
+        <li key={item}>{item}</li>
+      ))}
     </ul>
   );
 }
 
-function LineList({ items, icon = false }: { items?: string[]; icon?: boolean }) {
-  const lines = (items || []).filter(Boolean);
+function LineList({ items, icon = false }: { items?: unknown[]; icon?: boolean }) {
+  const lines = (items || []).map(formatLineItem).filter(Boolean);
   if (!lines.length) return <p className="market-day-empty-text">暂无明确证据。</p>;
   return (
     <ul className="market-day-line-list">
@@ -384,6 +413,28 @@ function LineList({ items, icon = false }: { items?: string[]; icon?: boolean })
       ))}
     </ul>
   );
+}
+
+function formatEvidenceItem(item: EvidenceItem) {
+  if (typeof item === "string") return item.trim();
+  const content = item?.content?.trim() || "";
+  const type = item?.type?.trim() || "";
+  return [type, content].filter(Boolean).join("：");
+}
+
+function formatLineItem(item: unknown) {
+  if (typeof item === "string") return item.trim();
+  if (!item || typeof item !== "object") return "";
+  const point = item as WatchPoint;
+  return [
+    point.object,
+    point.condition ? `条件：${point.condition}` : "",
+    point.positiveSignal ? `正向：${point.positiveSignal}` : "",
+    point.negativeSignal ? `负向：${point.negativeSignal}` : "",
+    point.meaning ? `含义：${point.meaning}` : "",
+  ]
+    .filter(Boolean)
+    .join("；");
 }
 
 function formatScore(value?: number) {

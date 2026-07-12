@@ -3,11 +3,12 @@
 import Image from "next/image";
 import Link from "next/link";
 import { FormEvent, useEffect, useState } from "react";
-import { BellRing, ChevronDown, Copy, CreditCard, FileSearch, Gift, Info, LogOut, Megaphone, MessageSquare, ShieldCheck, Sparkles, TrendingUp, Trophy, UserRound, X } from "lucide-react";
+import { BellRing, ChevronDown, Copy, CreditCard, FileSearch, FileText, Gift, Info, LogOut, Megaphone, MessageSquare, ShieldCheck, Sparkles, TrendingUp, Trophy, UserRound, X } from "lucide-react";
 import { AuctionStrengthPerformanceTicker, useAuctionStrengthPerformance } from "@/components/auction-strength-performance-ticker";
 import { GoldMagicCube } from "@/components/gold-magic-cube";
 import { HomeMusic } from "@/components/home-music";
 import { apiFetch, clearAuth, getStoredUser, inviteUrl, refreshCurrentUser, userAccessLabel, userBalanceText, type UserProfile } from "@/lib/auth-client";
+import { copyTextToClipboard } from "@/lib/clipboard";
 
 const features = [
   {
@@ -33,6 +34,14 @@ const features = [
     icon: TrendingUp,
     description: "自动梳理当日 A 股行情，识别主线题材、强势梯队与核心个股，帮助你抓住市场真正的方向。",
     points: ["主线识别", "强势个股", "梯队判断", "证据链复盘"],
+  },
+  {
+    href: "/ai-research",
+    title: "AI 研报",
+    label: "AI RESEARCH",
+    icon: FileText,
+    description: "接收盘前消息简报 automation 生成的研报，通过 webhook 自动沉淀到前端，方便开盘前复核。",
+    points: ["盘前简报", "Webhook 推送", "来源留痕", "研报归档"],
   },
   {
     href: "/auction-strength",
@@ -104,10 +113,16 @@ export default function Page() {
   async function copyInvite() {
     const url = inviteUrl(user);
     if (!url) return;
-    await navigator.clipboard.writeText(url);
-    setInviteCopied(true);
-    setFeedbackMessage("邀请链接已复制。新用户用该链接注册后，邀请方增加 5 次；被邀请方在注册赠送 5 次基础上，再额外增加 2 次。");
-    window.setTimeout(() => setInviteCopied(false), 2200);
+    const copied = await copyTextToClipboard(url);
+    setInviteCopied(copied);
+    setFeedbackMessage(
+      copied
+        ? "邀请链接已复制。新用户用该链接注册后，邀请方增加 5 次；被邀请方在注册赠送 5 次基础上，再额外增加 2 次。"
+        : "当前浏览器限制了自动复制，请手动选择上方邀请链接复制。",
+    );
+    if (copied) {
+      window.setTimeout(() => setInviteCopied(false), 2200);
+    }
   }
 
   function scrollToFeedback() {
@@ -168,6 +183,7 @@ export default function Page() {
             <Link href="/review">AI 复盘</Link>
             <Link href="/watch">AI 盯盘</Link>
             <Link href="/market-day">AI当日行情</Link>
+            <Link href="/ai-research">AI研报</Link>
             <Link href="/auction-strength">竞价强者</Link>
             {hydrated && user?.role === "admin" && <Link href="/admin">管理台</Link>}
             {hydrated && user ? (

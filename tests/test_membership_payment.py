@@ -9,6 +9,7 @@ from trade_review_agent.auth_system import (
     confirm_membership_order,
     consume_feature_credit_once,
     create_membership_order,
+    has_feature_access,
     init_auth_db,
     submit_membership_payment,
 )
@@ -70,6 +71,62 @@ class MembershipPaymentTest(unittest.TestCase):
                     usage = conn.execute("SELECT status, credits_spent FROM usage_events WHERE user_id = ?", (user_id,)).fetchone()
                 self.assertEqual(usage[0], "membership_free")
                 self.assertEqual(usage[1], 0)
+
+    def test_ai_research_view_charges_once_and_unlocks_report(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "auth.sqlite"
+            user_id = self._create_user(db_path)
+            with closing(sqlite3.connect(db_path)) as conn:
+                with conn:
+                    conn.execute(
+                        "INSERT INTO credit_ledger (user_id, delta, reason, related_id, created_at) VALUES (?, 2, 'test', NULL, ?)",
+                        (user_id, "2026-07-02T10:00:00+08:00"),
+                    )
+
+            self.assertFalse(has_feature_access(db_path, user_id=user_id, feature="ai_research_view", related_id="report-1"))
+            first = consume_feature_credit_once(db_path, user_id=user_id, feature="ai_research_view", related_id="report-1")
+            second = consume_feature_credit_once(db_path, user_id=user_id, feature="ai_research_view", related_id="report-1")
+
+            self.assertTrue(has_feature_access(db_path, user_id=user_id, feature="ai_research_view", related_id="report-1"))
+            self.assertEqual(first["credits"], 1)
+            self.assertEqual(second["credits"], 1)
+
+    def test_market_day_report_access_is_idempotent_and_independent_per_user(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "auth.sqlite"
+            first_user = self._create_user(db_path)
+            with closing(sqlite3.connect(db_path)) as conn:
+                with conn:
+                    second_user = int(
+                        conn.execute(
+                            """
+                            INSERT INTO users (
+                                phone, username, email, email_verified, password_hash,
+                                password_salt, role, status, invite_code, created_at
+                            ) VALUES (?, ?, ?, 1, 'hash', 'salt', 'user', 'active', ?, ?)
+                            """,
+                            ("second@example.com", "seconduser", "second@example.com", "SECOND1", "2026-07-02T10:00:00+08:00"),
+                        ).lastrowid
+                    )
+                    for user_id in (first_user, second_user):
+                        conn.execute(
+                            "INSERT INTO credit_ledger (user_id, delta, reason, related_id, created_at) VALUES (?, 2, 'test', NULL, ?)",
+                            (user_id, "2026-07-02T10:00:00+08:00"),
+                        )
+
+            run_id = "codex-2026-07-10"
+            self.assertFalse(has_feature_access(db_path, user_id=first_user, feature="market_day_report", related_id=run_id))
+            self.assertFalse(has_feature_access(db_path, user_id=second_user, feature="market_day_report", related_id=run_id))
+
+            first_view = consume_feature_credit_once(db_path, user_id=first_user, feature="market_day_report", related_id=run_id)
+            repeated_view = consume_feature_credit_once(db_path, user_id=first_user, feature="market_day_report", related_id=run_id)
+            second_view = consume_feature_credit_once(db_path, user_id=second_user, feature="market_day_report", related_id=run_id)
+
+            self.assertEqual(first_view["credits"], 1)
+            self.assertEqual(repeated_view["credits"], 1)
+            self.assertEqual(second_view["credits"], 1)
+            self.assertTrue(has_feature_access(db_path, user_id=first_user, feature="market_day_report", related_id=run_id))
+            self.assertTrue(has_feature_access(db_path, user_id=second_user, feature="market_day_report", related_id=run_id))
 
 
 if __name__ == "__main__":

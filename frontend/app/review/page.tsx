@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   ArrowRight,
@@ -15,7 +14,6 @@ import {
   FileText,
   FileUp,
   Globe2,
-  Info,
   LineChart,
   Loader2,
   LockKeyhole,
@@ -24,12 +22,11 @@ import {
   ScanLine,
   ShieldCheck,
   Target,
-  TrendingUp,
-  Trophy,
   Upload,
   X,
 } from "lucide-react";
 import { getAuthToken, storeUser } from "@/lib/auth-client";
+import { MainSidebar } from "@/components/main-sidebar";
 
 type ReportPayload = {
   run_id?: string;
@@ -585,37 +582,7 @@ export default function ReviewPage() {
 
   return (
     <main className="review-console-page">
-      <aside className="review-console-rail">
-        <Link className="review-console-brand" href="/">
-          <span className="brand-mark">{"\u76c8"}</span>
-          <span>
-            <b>{"\u76c8\u822a"}</b>
-            <small>REVIEW TERMINAL</small>
-          </span>
-        </Link>
-        <nav className="review-console-nav" aria-label={copy.navLabel}>
-          <Link className="active" href="/review">
-            <FileUp />
-            <span><b>{copy.review}</b></span>
-          </Link>
-          <Link href="/watch">
-            <BarChart3 />
-            <span><b>{copy.watch}</b></span>
-          </Link>
-          <Link href="/market-day">
-            <TrendingUp />
-            <span><b>AI当日行情</b></span>
-          </Link>
-          <Link href="/auction-strength">
-            <Trophy />
-            <span><b>竞价强者</b></span>
-          </Link>
-        </nav>
-        <div className="review-rail-note">
-          <Info />
-          <span>{copy.railNote}</span>
-        </div>
-      </aside>
+      <MainSidebar activeKey="review" note={copy.railNote} />
       <section className="review-console-main">
         <header className="review-console-topbar">
           <div className="review-topbar-title">
