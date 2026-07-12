@@ -33,6 +33,113 @@
   gap: 18px;
 }
 
+.market-day-intro-panel {
+  display: grid;
+  min-width: min(460px, 100%);
+  gap: 18px;
+}
+
+.market-day-intro-grid,
+.market-day-report-meta {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.market-day-intro-grid article,
+.market-day-report-meta span,
+.market-day-report-card {
+  min-width: 0;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.045);
+}
+
+.market-day-intro-grid article {
+  padding: 16px;
+}
+
+.market-day-intro-grid b,
+.market-day-report-meta strong,
+.market-day-report-card h3 {
+  display: block;
+  margin-top: 6px;
+  color: #fff8df;
+}
+
+.market-day-intro-grid b,
+.market-day-report-card h3 {
+  font-size: 24px;
+  line-height: 1.2;
+}
+
+.market-day-intro-grid p,
+.market-day-report-summary,
+.market-day-report-meta b {
+  margin: 8px 0 0;
+  color: rgba(244, 238, 220, 0.72);
+  line-height: 1.65;
+}
+
+.market-day-report-list {
+  display: grid;
+  gap: 12px;
+}
+
+.market-day-report-card {
+  display: grid;
+  gap: 16px;
+  padding: 18px;
+}
+
+.market-day-report-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.market-day-report-card-head span,
+.market-day-intro-grid span {
+  display: block;
+  color: rgba(244, 238, 220, 0.62);
+  font-size: 12px;
+}
+
+.market-day-report-card-head h3,
+.market-day-report-summary {
+  margin: 0;
+}
+
+.market-day-report-card em {
+  flex: 0 0 auto;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(245, 199, 107, 0.13);
+  color: #fde68a;
+  font-style: normal;
+  font-size: 12px;
+}
+
+.market-day-report-meta {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.market-day-report-meta span {
+  display: grid;
+  gap: 4px;
+  padding: 12px 13px;
+}
+
+.market-day-report-meta b {
+  margin: 0;
+  font-size: 12px;
+}
+
+.market-day-open-button {
+  min-width: 128px;
+  justify-self: end;
+}
+
 .market-day-date-card,
 .market-day-score-board {
   display: grid;
@@ -312,20 +419,32 @@
 }
 
 @media (max-width: 860px) {
+  .market-day-intro-grid,
   .market-day-summary-grid,
   .market-day-fact-grid,
   .market-day-audit-grid,
-  .market-day-score-board {
+  .market-day-score-board,
+  .market-day-report-meta {
     grid-template-columns: 1fr;
   }
 
+  .market-day-report-card-head,
   .market-day-stock-list div,
   .market-day-strong-list article {
     grid-template-columns: 1fr;
   }
 
+  .market-day-report-card-head {
+    display: grid;
+  }
+
   .market-day-stock-list strong {
     text-align: left;
+  }
+
+  .market-day-open-button {
+    width: 100%;
+    justify-self: stretch;
   }
 }
 

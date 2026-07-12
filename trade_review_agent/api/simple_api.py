@@ -4,6 +4,7 @@ import json
 import mimetypes
 import os
 import re
+import secrets
 import socket
 import threading
 import time
@@ -267,6 +268,9 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             if path == "/api/market-day/reports":
                 self._create_market_day_report()
                 return
+            if path == "/api/market-day/reports/push":
+                self._receive_market_day_report_push()
+                return
             if path == "/api/ai-research/reports":
                 self._receive_ai_research_report()
                 return
@@ -426,7 +430,7 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
 
         status_payload = _read_market_day_status_payload(run_dir) or _market_day_status_payload(run_id, status="done", stage="done")
         owner_id = int(status_payload.get("user_id") or 0)
-        if owner_id and owner_id != int(user["id"]) and user.get("role") != "admin":
+        if not bool(status_payload.get("ownerless")) and owner_id and owner_id != int(user["id"]) and user.get("role") != "admin":
             raise AuthError("只能确认扣除自己生成的当日行情复盘次数", 403)
 
         updated_user = consume_feature_credit_once(
@@ -436,6 +440,24 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             ip=self._client_ip(),
             related_id=run_id,
         )
+        if bool(status_payload.get("ownerless")):
+            status_payload.update(
+                {
+                    "run_id": run_id,
+                    "status": "done",
+                    "stage": "done",
+                    "status_url": f"/api/market-day/reports/{run_id}/status",
+                    "report_url": f"/api/market-day/reports/{run_id}/{MARKET_DAY_REPORT_NAME}",
+                    "billing_status": "ready_to_charge",
+                }
+            )
+            status_payload.pop("charged_at", None)
+            status_payload.pop("user_id", None)
+            status_payload.pop("user", None)
+            status_payload.pop("report", None)
+            _write_market_day_status_payload(run_dir, status_payload)
+            self._json({"ok": True, "billing_status": "charged", "user": updated_user})
+            return
         status_payload.update(
             {
                 "run_id": run_id,
@@ -452,6 +474,51 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
         status_payload["user"] = updated_user
         _write_market_day_status_payload(run_dir, status_payload)
         self._json({"ok": True, "billing_status": "charged", "user": updated_user})
+
+    def _receive_market_day_report_push(self) -> None:
+        expected = str(os.getenv("MARKET_DAY_WEBHOOK_SECRET") or os.getenv("WEBHOOK_SECRET") or "").strip()
+        provided = self.headers.get("x-market-day-secret", "").strip()
+        _assert_market_day_push_secret(expected=expected, provided=provided)
+
+        report = _market_day_report_from_push_payload(
+            self._read_json_body(),
+            request_id=getattr(self, "_request_id", ""),
+        )
+        run_id = report["run_id"]
+        run_dir = MARKET_DAY_REPORT_DIR / run_id
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / MARKET_DAY_REPORT_NAME).write_text(
+            json.dumps(report, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        status_payload = _market_day_status_payload(
+            run_id,
+            status="done",
+            stage="received",
+            request_id=getattr(self, "_request_id", ""),
+        )
+        status_payload.update(
+            {
+                "market_date": report["market_date"],
+                "source": "codex_push",
+                "ownerless": True,
+                "billing_status": "ready_to_charge",
+                "received_at": report["received_at"],
+            }
+        )
+        _write_market_day_status_payload(run_dir, status_payload)
+        self._json(
+            {
+                "ok": True,
+                "run_id": run_id,
+                "market_date": report["market_date"],
+                "status": "done",
+                "source": "codex_push",
+                "report_url": f"/api/market-day/reports/{run_id}/{MARKET_DAY_REPORT_NAME}",
+            },
+            status=202,
+        )
 
     def _list_market_day_reports(self) -> None:
         self._require_user()
@@ -1324,8 +1391,18 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
         run_id = parts[4]
         filename = Path(unquote(parts[5])).name
         run_dir = MARKET_DAY_REPORT_DIR / run_id
+        user = self._require_user()
+        access = has_feature_access(
+            AUTH_DB,
+            user_id=int(user["id"]),
+            feature="market_day_report",
+            related_id=run_id,
+        )
         if filename == "status":
-            self._serve_market_day_status(run_id, run_dir)
+            self._serve_market_day_status(run_id, run_dir, user=user, access=access)
+            return
+        if not access:
+            self._json({"error": "report access requires view confirmation"}, status=402)
             return
         report_path = run_dir / filename
         if filename != MARKET_DAY_REPORT_NAME or not report_path.exists() or not report_path.is_file():
@@ -1333,10 +1410,13 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             return
         self._serve_file(report_path)
 
-    def _serve_market_day_status(self, run_id: str, run_dir: Path) -> None:
+    def _serve_market_day_status(self, run_id: str, run_dir: Path, *, user: dict, access: bool) -> None:
         report_path = run_dir / MARKET_DAY_REPORT_NAME
         status_path = run_dir / REPORT_STATUS_NAME
         if report_path.exists():
+            if not access:
+                self._json({"error": "report access requires view confirmation"}, status=402)
+                return
             payload = _read_market_day_status_payload(run_dir) or _market_day_status_payload(run_id, status="done", stage="done")
             payload.update(
                 {
@@ -1358,6 +1438,13 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             self._json(_api_error_payload(exc, request_id=getattr(self, "_request_id", ""), run_id=run_id, stage="read_market_day_status"), status=500)
             return
+        owner_id = int(payload.get("user_id") or 0)
+        if not access and owner_id != int(user["id"]):
+            self._json({"error": "report access denied"}, status=403)
+            return
+        if not access:
+            payload.pop("report", None)
+            payload.pop("user", None)
         self._json(payload)
 
     def _serve_ai_research_report(self, path: str) -> None:
@@ -1466,7 +1553,7 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
     def _cors_headers(self) -> None:
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Webhook-Secret, X-Jinshuju-Secret, X-Auction-Strength-Secret")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Webhook-Secret, X-Jinshuju-Secret, X-Auction-Strength-Secret, X-Market-Day-Secret")
 
     def _begin_request(self) -> None:
         self._request_id = uuid4().hex
@@ -2781,6 +2868,43 @@ def _recent_ai_research_report_summaries(*, limit: int = 30) -> list[dict]:
     return items[:limit]
 
 
+def _market_day_report_from_push_payload(payload: dict, *, request_id: str) -> dict:
+    if not isinstance(payload, dict):
+        raise ValueError("market day report payload must be a JSON object")
+
+    raw_run_id = str(payload.get("run_id") or "").strip()
+    if not raw_run_id or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,95}", raw_run_id):
+        raise ValueError("run_id is required and must use only letters, numbers, dot, underscore, or hyphen")
+
+    raw_market_date = str(payload.get("market_date") or "").strip()
+    if not raw_market_date:
+        raise ValueError("market_date is required")
+    market_date = normalize_market_date(raw_market_date)
+
+    body = payload.get("report")
+    if not isinstance(body, dict) or not body:
+        raise ValueError("report is required and must be a non-empty JSON object")
+
+    received_at = datetime.now(CN_TZ).strftime("%Y-%m-%d %H:%M:%S")
+    return {
+        "run_id": raw_run_id,
+        "request_id": request_id,
+        "received_at": received_at,
+        "market_date": market_date,
+        "source": "codex_push",
+        "report": body,
+    }
+
+
+def _assert_market_day_push_secret(*, expected: str, provided: str) -> None:
+    expected = str(expected or "").strip()
+    if not expected:
+        raise AuthError("market day report push unavailable", status=503)
+    provided = str(provided or "").strip()
+    if not provided or not secrets.compare_digest(provided, expected):
+        raise AuthError("market day report push secret mismatch", status=401)
+
+
 def _ai_research_report_from_payload(*, payload: dict, headers: dict[str, str], source_ip: str, request_id: str) -> dict:
     if not isinstance(payload, dict):
         raise ValueError("AI research payload must be a JSON object")
@@ -3269,7 +3393,7 @@ def _webhook_public_event(event: dict) -> dict:
 
 
 def _safe_webhook_headers(headers: dict[str, str]) -> dict[str, str]:
-    blocked = {"authorization", "cookie", "x-webhook-secret", "x-ai-research-secret"}
+    blocked = {"authorization", "cookie", "x-webhook-secret", "x-ai-research-secret", "x-market-day-secret"}
     return {
         key: value
         for key, value in headers.items()
