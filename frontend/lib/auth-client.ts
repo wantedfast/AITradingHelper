@@ -93,6 +93,7 @@ export function userBalanceText(user: AccessUser | null | undefined) {
 
 export function usageBillingText(user: AccessUser | null | undefined) {
   if (!user) return "";
+  if (user.role === "admin") return "管理员免扣次数。";
   if (hasActiveMembership(user)) return "会员期内本次免扣，剩余次数不变。";
   return typeof user.credits === "number" ? `剩余 ${user.credits} 次。` : "";
 }

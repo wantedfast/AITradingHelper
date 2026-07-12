@@ -77,6 +77,80 @@ class WebhookApiTest(unittest.TestCase):
         self.assertEqual(events[0]["title"], "second")
         self.assertEqual(events[0]["request_id"], "req-2")
 
+    def test_ai_research_payload_maps_to_report(self):
+        report = simple_api._ai_research_report_from_payload(
+            payload={
+                "research_date": "2026-07-13",
+                "title": "A股盘前消息简报：2026-07-13",
+                "summary": "外围风险偏好中性，关注半导体映射。",
+                "markdown": "# A股盘前消息简报：2026-07-13\n\n## 1. 盘前结论\n- 主看：半导体。",
+                "sources": [{"title": "Reuters market wrap", "url": "https://example.com"}],
+                "tags": ["盘前", "半导体"],
+            },
+            headers={"x-ai-research-secret": "secret", "user-agent": "unit-test"},
+            source_ip="127.0.0.1",
+            request_id="req-ai",
+        )
+
+        self.assertEqual(report["research_date"], "2026-07-13")
+        self.assertEqual(report["title"], "A股盘前消息简报：2026-07-13")
+        self.assertEqual(report["event_type"], "ai_research.report")
+        self.assertIn("盘前结论", report["markdown"])
+        self.assertEqual(report["sources"][0]["title"], "Reuters market wrap")
+        self.assertIn("盘前", report["tags"])
+        self.assertNotIn("x-ai-research-secret", report["headers"])
+
+    def test_ai_research_payload_keeps_decision_product_fields(self):
+        report = simple_api._ai_research_report_from_payload(
+            payload={
+                "research_date": "2026-07-10",
+                "title": "A股盘前消息简报：2026-07-10",
+                "summary": "主线、验证点、失效点。",
+                "markdown": "# A股盘前消息简报：2026-07-10",
+                "decision_cards": [{"title": "科技成长", "trigger": "09:35成交确认"}],
+                "evidence_table": [{"event": "隔夜美股科技反弹", "confidence": "中"}],
+                "watchlist": [{"name": "科创50", "check_time": "09:35"}],
+                "scenario_plan": [{"scenario": "高开回落", "action": "降低追高"}],
+                "risk_calendar": [{"time": "盘前", "event": "A50"}],
+                "data_gaps": ["缺少板块广度数据"],
+                "institutional_research": [{"institution": "Goldman Sachs", "industry": "semiconductors", "title": "AI hardware outlook"}],
+            },
+            headers={"user-agent": "unit-test"},
+            source_ip="127.0.0.1",
+            request_id="req-ai-product",
+        )
+
+        public = simple_api._ai_research_public_report(report)
+
+        self.assertEqual(public["decision_cards"][0]["title"], "科技成长")
+        self.assertEqual(public["evidence_table"][0]["event"], "隔夜美股科技反弹")
+        self.assertEqual(public["watchlist"][0]["name"], "科创50")
+        self.assertEqual(public["scenario_plan"][0]["scenario"], "高开回落")
+        self.assertEqual(public["risk_calendar"][0]["event"], "A50")
+        self.assertEqual(public["data_gaps"], ["缺少板块广度数据"])
+        self.assertEqual(public["institutional_research"][0]["institution"], "Goldman Sachs")
+
+    def test_recent_ai_research_summaries_read_newest_first(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            first_dir = root / "first"
+            second_dir = root / "second"
+            first_dir.mkdir()
+            second_dir.mkdir()
+            (first_dir / simple_api.AI_RESEARCH_REPORT_NAME).write_text(
+                '{"run_id":"first","title":"first report","summary":"old","research_date":"2026-07-12","received_at":"2026-07-12 08:30:00"}',
+                encoding="utf-8",
+            )
+            (second_dir / simple_api.AI_RESEARCH_REPORT_NAME).write_text(
+                '{"run_id":"second","title":"second report","summary":"new","research_date":"2026-07-13","received_at":"2026-07-13 08:30:00"}',
+                encoding="utf-8",
+            )
+            with patch.object(simple_api, "AI_RESEARCH_REPORT_DIR", root):
+                reports = simple_api._recent_ai_research_report_summaries(limit=2)
+
+        self.assertEqual([item["run_id"] for item in reports], ["second", "first"])
+        self.assertEqual(reports[0]["report_route"], "/ai-research/report/second")
+
     def test_auction_strength_payload_maps_to_frontend_report(self):
         report = simple_api._auction_strength_report_from_payload(
             payload={
