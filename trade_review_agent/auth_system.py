@@ -571,6 +571,14 @@ def consume_feature_credit_once(db_path: Path, *, user_id: int, feature: str, ip
         return _user_payload(conn, user)
 
 
+def has_feature_access(db_path: Path, *, user_id: int, feature: str, related_id: str) -> bool:
+    with _connect(db_path) as conn:
+        user = _fetch_user_by_id(conn, user_id)
+        if user["role"] == "admin" or _has_active_membership(user):
+            return True
+        return bool(related_id and _feature_charge_exists(conn, user_id, feature, related_id))
+
+
 def submit_feedback(
     db_path: Path,
     *,

@@ -4,6 +4,7 @@ import json
 import mimetypes
 import os
 import re
+import secrets
 import socket
 import threading
 import time
@@ -27,6 +28,7 @@ from trade_review_agent.auth_system import (
     confirm_membership_order,
     consume_feature_credit,
     consume_feature_credit_once,
+    has_feature_access,
     create_membership_order,
     create_update_notice,
     credit_packages,
@@ -79,6 +81,7 @@ BASE_DIR = Path(__file__).resolve().parents[2]
 UPLOAD_DIR = BASE_DIR / "work" / "api_uploads"
 REPORT_DIR = BASE_DIR / "outputs" / "api_reports"
 MARKET_DAY_REPORT_DIR = BASE_DIR / "outputs" / "market_day_reports"
+AI_RESEARCH_REPORT_DIR = BASE_DIR / "outputs" / "ai_research_reports"
 CACHE_DB = BASE_DIR / "work" / "real_trade_review_cache.sqlite"
 ALERT_PLANS = BASE_DIR / "work" / "alert_plans.json"
 VOICE_SETTINGS_PATH = BASE_DIR / "work" / "watch_voice_settings.json"
@@ -97,6 +100,7 @@ REPORT_STATUS_NAME = "report_status.json"
 RESEARCH_PRESENTER_NAME = "research_presenter_data.json"
 RESEARCH_DEBUG_NAME = "research_debug_data.json"
 MARKET_DAY_REPORT_NAME = "market_day_report.json"
+AI_RESEARCH_REPORT_NAME = "ai_research_report.json"
 
 
 def normalize_research_model_tier(value: object = None) -> str:
@@ -157,6 +161,9 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             if path == "/api/market-day/reports":
                 self._list_market_day_reports()
                 return
+            if path == "/api/ai-research/reports":
+                self._list_ai_research_reports()
+                return
             if path == "/api/webhooks":
                 self._list_webhooks()
                 return
@@ -168,6 +175,9 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                 return
             if path.startswith("/api/market-day/reports/"):
                 self._serve_market_day_report(path)
+                return
+            if path.startswith("/api/ai-research/reports/"):
+                self._serve_ai_research_report(path)
                 return
             if path.startswith("/api/reports/"):
                 self._serve_report(path)
@@ -257,6 +267,15 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/market-day/reports":
                 self._create_market_day_report()
+                return
+            if path == "/api/market-day/reports/push":
+                self._receive_market_day_report_push()
+                return
+            if path == "/api/ai-research/reports":
+                self._receive_ai_research_report()
+                return
+            if path.startswith("/api/ai-research/reports/"):
+                self._ack_ai_research_report(path)
                 return
             if path.startswith("/api/market-day/reports/"):
                 self._ack_market_day_report(path)
@@ -411,7 +430,7 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
 
         status_payload = _read_market_day_status_payload(run_dir) or _market_day_status_payload(run_id, status="done", stage="done")
         owner_id = int(status_payload.get("user_id") or 0)
-        if owner_id and owner_id != int(user["id"]) and user.get("role") != "admin":
+        if not bool(status_payload.get("ownerless")) and owner_id and owner_id != int(user["id"]) and user.get("role") != "admin":
             raise AuthError("只能确认扣除自己生成的当日行情复盘次数", 403)
 
         updated_user = consume_feature_credit_once(
@@ -421,6 +440,24 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             ip=self._client_ip(),
             related_id=run_id,
         )
+        if bool(status_payload.get("ownerless")):
+            status_payload.update(
+                {
+                    "run_id": run_id,
+                    "status": "done",
+                    "stage": "done",
+                    "status_url": f"/api/market-day/reports/{run_id}/status",
+                    "report_url": f"/api/market-day/reports/{run_id}/{MARKET_DAY_REPORT_NAME}",
+                    "billing_status": "ready_to_charge",
+                }
+            )
+            status_payload.pop("charged_at", None)
+            status_payload.pop("user_id", None)
+            status_payload.pop("user", None)
+            status_payload.pop("report", None)
+            _write_market_day_status_payload(run_dir, status_payload)
+            self._json({"ok": True, "billing_status": "charged", "user": updated_user})
+            return
         status_payload.update(
             {
                 "run_id": run_id,
@@ -438,6 +475,51 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
         _write_market_day_status_payload(run_dir, status_payload)
         self._json({"ok": True, "billing_status": "charged", "user": updated_user})
 
+    def _receive_market_day_report_push(self) -> None:
+        expected = str(os.getenv("MARKET_DAY_WEBHOOK_SECRET") or os.getenv("WEBHOOK_SECRET") or "").strip()
+        provided = self.headers.get("x-market-day-secret", "").strip()
+        _assert_market_day_push_secret(expected=expected, provided=provided)
+
+        report = _market_day_report_from_push_payload(
+            self._read_json_body(),
+            request_id=getattr(self, "_request_id", ""),
+        )
+        run_id = report["run_id"]
+        run_dir = MARKET_DAY_REPORT_DIR / run_id
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / MARKET_DAY_REPORT_NAME).write_text(
+            json.dumps(report, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        status_payload = _market_day_status_payload(
+            run_id,
+            status="done",
+            stage="received",
+            request_id=getattr(self, "_request_id", ""),
+        )
+        status_payload.update(
+            {
+                "market_date": report["market_date"],
+                "source": "codex_push",
+                "ownerless": True,
+                "billing_status": "ready_to_charge",
+                "received_at": report["received_at"],
+            }
+        )
+        _write_market_day_status_payload(run_dir, status_payload)
+        self._json(
+            {
+                "ok": True,
+                "run_id": run_id,
+                "market_date": report["market_date"],
+                "status": "done",
+                "source": "codex_push",
+                "report_url": f"/api/market-day/reports/{run_id}/{MARKET_DAY_REPORT_NAME}",
+            },
+            status=202,
+        )
+
     def _list_market_day_reports(self) -> None:
         self._require_user()
         limit = 30
@@ -450,6 +532,63 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                 except ValueError:
                     limit = 30
         self._json({"reports": _recent_market_day_report_summaries(limit=limit)})
+
+    def _list_ai_research_reports(self) -> None:
+        self._require_user()
+        limit = 30
+        query = urlparse(self.path).query
+        for part in query.split("&"):
+            key, _, value = part.partition("=")
+            if key == "limit":
+                try:
+                    limit = max(1, min(100, int(value)))
+                except ValueError:
+                    limit = 30
+        self._json({"reports": _recent_ai_research_report_summaries(limit=limit)})
+
+    def _ack_ai_research_report(self, path: str) -> None:
+        parts = path.split("/")
+        if len(parts) != 6 or parts[5] != "ack":
+            self._json({"error": "not found"}, status=404)
+            return
+        user = self._require_user()
+        run_id = unquote(parts[4]).strip()
+        run_dir = AI_RESEARCH_REPORT_DIR / run_id
+        report_path = run_dir / AI_RESEARCH_REPORT_NAME
+        if not report_path.exists() or not report_path.is_file():
+            self._json({"error": "研报尚未生成成功，暂不扣次数"}, status=409)
+            return
+        updated_user = consume_feature_credit_once(
+            AUTH_DB,
+            user_id=int(user["id"]),
+            feature="ai_research_view",
+            ip=self._client_ip(),
+            related_id=run_id,
+        )
+        report = _read_json_file(report_path)
+        self._json({"ok": True, "billing_status": "charged", "user": updated_user, "report": report})
+
+    def _receive_ai_research_report(self) -> None:
+        _assert_webhook_secret(
+            expected=os.getenv("AI_RESEARCH_WEBHOOK_SECRET", os.getenv("WEBHOOK_SECRET", "")),
+            header_value=self.headers.get("x-ai-research-secret", "") or self.headers.get("x-webhook-secret", ""),
+            query=urlparse(self.path).query,
+        )
+        payload = self._read_json_body()
+        report = _ai_research_report_from_payload(
+            payload=payload,
+            headers={key.lower(): value for key, value in self.headers.items()},
+            source_ip=self._client_ip(),
+            request_id=getattr(self, "_request_id", ""),
+        )
+        run_id = str(report.get("run_id") or "").strip()
+        run_dir = AI_RESEARCH_REPORT_DIR / run_id
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / AI_RESEARCH_REPORT_NAME).write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        status_payload = _ai_research_status_payload(run_id, status="done", stage="received", request_id=getattr(self, "_request_id", ""))
+        status_payload["report"] = report
+        _write_ai_research_status_payload(run_dir, status_payload)
+        self._json({"ok": True, "report": _ai_research_public_report(report)}, status=202)
 
     def _list_webhooks(self) -> None:
         limit = 30
@@ -1252,8 +1391,18 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
         run_id = parts[4]
         filename = Path(unquote(parts[5])).name
         run_dir = MARKET_DAY_REPORT_DIR / run_id
+        user = self._require_user()
+        access = has_feature_access(
+            AUTH_DB,
+            user_id=int(user["id"]),
+            feature="market_day_report",
+            related_id=run_id,
+        )
         if filename == "status":
-            self._serve_market_day_status(run_id, run_dir)
+            self._serve_market_day_status(run_id, run_dir, user=user, access=access)
+            return
+        if not access:
+            self._json({"error": "report access requires view confirmation"}, status=402)
             return
         report_path = run_dir / filename
         if filename != MARKET_DAY_REPORT_NAME or not report_path.exists() or not report_path.is_file():
@@ -1261,10 +1410,13 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             return
         self._serve_file(report_path)
 
-    def _serve_market_day_status(self, run_id: str, run_dir: Path) -> None:
+    def _serve_market_day_status(self, run_id: str, run_dir: Path, *, user: dict, access: bool) -> None:
         report_path = run_dir / MARKET_DAY_REPORT_NAME
         status_path = run_dir / REPORT_STATUS_NAME
         if report_path.exists():
+            if not access:
+                self._json({"error": "report access requires view confirmation"}, status=402)
+                return
             payload = _read_market_day_status_payload(run_dir) or _market_day_status_payload(run_id, status="done", stage="done")
             payload.update(
                 {
@@ -1285,6 +1437,67 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             payload = json.loads(status_path.read_text(encoding="utf-8"))
         except Exception as exc:
             self._json(_api_error_payload(exc, request_id=getattr(self, "_request_id", ""), run_id=run_id, stage="read_market_day_status"), status=500)
+            return
+        owner_id = int(payload.get("user_id") or 0)
+        if not access and owner_id != int(user["id"]):
+            self._json({"error": "report access denied"}, status=403)
+            return
+        if not access:
+            payload.pop("report", None)
+            payload.pop("user", None)
+        self._json(payload)
+
+    def _serve_ai_research_report(self, path: str) -> None:
+        parts = path.split("/")
+        if len(parts) != 6:
+            self._json({"error": "not found"}, status=404)
+            return
+        self._require_user()
+        run_id = parts[4]
+        filename = Path(unquote(parts[5])).name
+        run_dir = AI_RESEARCH_REPORT_DIR / run_id
+        if filename == "status":
+            self._serve_ai_research_status(run_id, run_dir)
+            return
+        report_path = run_dir / filename
+        if filename != AI_RESEARCH_REPORT_NAME or not report_path.exists() or not report_path.is_file():
+            self._json({"error": "AI research report not found"}, status=404)
+            return
+        self._serve_file(report_path)
+
+    def _serve_ai_research_status(self, run_id: str, run_dir: Path) -> None:
+        user = self._require_user()
+        if not has_feature_access(
+            AUTH_DB,
+            user_id=int(user["id"]),
+            feature="ai_research_view",
+            related_id=run_id,
+        ):
+            self._json({"error": "请点击查看并确认扣除 1 次使用机会"}, status=402)
+            return
+        report_path = run_dir / AI_RESEARCH_REPORT_NAME
+        status_path = run_dir / REPORT_STATUS_NAME
+        if report_path.exists():
+            payload = _read_ai_research_status_payload(run_dir) or _ai_research_status_payload(run_id, status="done", stage="done")
+            payload.update(
+                {
+                    "run_id": run_id,
+                    "status": "done",
+                    "stage": "done",
+                    "status_url": f"/api/ai-research/reports/{run_id}/status",
+                    "report_url": f"/api/ai-research/reports/{run_id}/{AI_RESEARCH_REPORT_NAME}",
+                }
+            )
+            payload["report"] = _read_json_file(report_path)
+            self._json(payload)
+            return
+        if not status_path.exists():
+            self._json(_ai_research_status_payload(run_id, status="queued", stage="queued"))
+            return
+        try:
+            payload = json.loads(status_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            self._json(_api_error_payload(exc, request_id=getattr(self, "_request_id", ""), run_id=run_id, stage="read_ai_research_status"), status=500)
             return
         self._json(payload)
 
@@ -1340,7 +1553,7 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
     def _cors_headers(self) -> None:
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Webhook-Secret, X-Jinshuju-Secret, X-Auction-Strength-Secret")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Webhook-Secret, X-Jinshuju-Secret, X-Auction-Strength-Secret, X-Market-Day-Secret")
 
     def _begin_request(self) -> None:
         self._request_id = uuid4().hex
@@ -1669,6 +1882,33 @@ def _write_market_day_status_payload(run_dir: Path, payload: dict) -> None:
 
 
 def _read_market_day_status_payload(run_dir: Path) -> dict | None:
+    status_path = run_dir / REPORT_STATUS_NAME
+    if not status_path.exists():
+        return None
+    try:
+        data = json.loads(status_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _ai_research_status_payload(run_id: str, *, status: str, stage: str, request_id: str = "") -> dict:
+    return {
+        "run_id": run_id,
+        "status": status,
+        "stage": stage,
+        "status_url": f"/api/ai-research/reports/{run_id}/status",
+        "report_url": f"/api/ai-research/reports/{run_id}/{AI_RESEARCH_REPORT_NAME}",
+        "request_id": request_id,
+    }
+
+
+def _write_ai_research_status_payload(run_dir: Path, payload: dict) -> None:
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / REPORT_STATUS_NAME).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _read_ai_research_status_payload(run_dir: Path) -> dict | None:
     status_path = run_dir / REPORT_STATUS_NAME
     if not status_path.exists():
         return None
@@ -2596,6 +2836,161 @@ def _recent_market_day_report_summaries(*, limit: int = 30) -> list[dict]:
     return items[:limit]
 
 
+def _recent_ai_research_report_summaries(*, limit: int = 30) -> list[dict]:
+    if not AI_RESEARCH_REPORT_DIR.exists():
+        return []
+    items: list[dict] = []
+    for run_dir in AI_RESEARCH_REPORT_DIR.iterdir():
+        if not run_dir.is_dir():
+            continue
+        report_path = run_dir / AI_RESEARCH_REPORT_NAME
+        if not report_path.exists():
+            continue
+        report = _read_json_file(report_path)
+        try:
+            updated_at = datetime.fromtimestamp(run_dir.stat().st_mtime, tz=CN_TZ).strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            updated_at = ""
+        items.append(
+            {
+                "run_id": run_dir.name,
+                "title": str(report.get("title") or "AI研报"),
+                "status": "done",
+                "created_at": str(report.get("received_at") or updated_at),
+                "research_date": str(report.get("research_date") or ""),
+                "summary": str(report.get("summary") or ""),
+                "source": str(report.get("source") or "automation"),
+                "report_route": f"/ai-research/report/{run_dir.name}",
+                "report_url": f"/api/ai-research/reports/{run_dir.name}/{AI_RESEARCH_REPORT_NAME}",
+            }
+        )
+    items.sort(key=lambda item: item.get("created_at") or "", reverse=True)
+    return items[:limit]
+
+
+def _market_day_report_from_push_payload(payload: dict, *, request_id: str) -> dict:
+    if not isinstance(payload, dict):
+        raise ValueError("market day report payload must be a JSON object")
+
+    raw_run_id = str(payload.get("run_id") or "").strip()
+    if not raw_run_id or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,95}", raw_run_id):
+        raise ValueError("run_id is required and must use only letters, numbers, dot, underscore, or hyphen")
+
+    raw_market_date = str(payload.get("market_date") or "").strip()
+    if not raw_market_date:
+        raise ValueError("market_date is required")
+    market_date = normalize_market_date(raw_market_date)
+
+    body = payload.get("report")
+    if not isinstance(body, dict) or not body:
+        raise ValueError("report is required and must be a non-empty JSON object")
+
+    received_at = datetime.now(CN_TZ).strftime("%Y-%m-%d %H:%M:%S")
+    return {
+        "run_id": raw_run_id,
+        "request_id": request_id,
+        "received_at": received_at,
+        "market_date": market_date,
+        "source": "codex_push",
+        "report": body,
+    }
+
+
+def _assert_market_day_push_secret(*, expected: str, provided: str) -> None:
+    expected = str(expected or "").strip()
+    if not expected:
+        raise AuthError("market day report push unavailable", status=503)
+    provided = str(provided or "").strip()
+    if not provided or not secrets.compare_digest(provided, expected):
+        raise AuthError("market day report push secret mismatch", status=401)
+
+
+def _ai_research_report_from_payload(*, payload: dict, headers: dict[str, str], source_ip: str, request_id: str) -> dict:
+    if not isinstance(payload, dict):
+        raise ValueError("AI research payload must be a JSON object")
+    now = datetime.now(CN_TZ)
+    received_at = now.strftime("%Y-%m-%d %H:%M:%S")
+    research_date = _first_text(payload.get("research_date"), payload.get("date"), now.strftime("%Y-%m-%d"))
+    raw_run_id = _first_text(payload.get("run_id"), payload.get("id"))
+    run_id = _safe_run_id(raw_run_id or f"{research_date.replace('-', '')}_{now.strftime('%H%M%S')}_{uuid4().hex[:6]}")
+    title = _first_text(payload.get("title"), payload.get("subject"), f"A股盘前消息简报：{research_date}")
+    if "�" in title:
+        title = f"A股盘前消息简报：{research_date}"
+    markdown = _first_text(payload.get("markdown"), payload.get("content"), payload.get("body"), payload.get("text"))
+    sections = payload.get("sections") if isinstance(payload.get("sections"), list) else []
+    sources = payload.get("sources") if isinstance(payload.get("sources"), list) else []
+    tags = payload.get("tags") if isinstance(payload.get("tags"), list) else []
+    decision_cards = payload.get("decision_cards") if isinstance(payload.get("decision_cards"), list) else []
+    evidence_table = payload.get("evidence_table") if isinstance(payload.get("evidence_table"), list) else []
+    watchlist = payload.get("watchlist") if isinstance(payload.get("watchlist"), list) else []
+    scenario_plan = payload.get("scenario_plan") if isinstance(payload.get("scenario_plan"), list) else []
+    risk_calendar = payload.get("risk_calendar") if isinstance(payload.get("risk_calendar"), list) else []
+    data_gaps = payload.get("data_gaps") if isinstance(payload.get("data_gaps"), list) else []
+    institutional_research = payload.get("institutional_research") if isinstance(payload.get("institutional_research"), list) else []
+    summary = _first_text(payload.get("summary"), payload.get("abstract"), _markdown_summary(markdown), title)
+    return {
+        "run_id": run_id,
+        "request_id": request_id,
+        "received_at": received_at,
+        "source_ip": source_ip,
+        "source": _short_text(_first_text(payload.get("source"), headers.get("x-webhook-source"), "automation"), 80),
+        "event_type": _short_text(_first_text(payload.get("event_type"), payload.get("type"), "ai_research.report"), 80),
+        "research_date": _short_text(research_date, 32),
+        "title": _short_text(title, 160),
+        "summary": _short_text(summary, 500),
+        "markdown": markdown,
+        "sections": sections[:40],
+        "sources": sources[:80],
+        "tags": [str(item)[:40] for item in tags[:20]],
+        "decision_cards": decision_cards[:12],
+        "evidence_table": evidence_table[:30],
+        "watchlist": watchlist[:30],
+        "scenario_plan": scenario_plan[:12],
+        "risk_calendar": risk_calendar[:30],
+        "data_gaps": [str(item)[:300] for item in data_gaps[:30]],
+        "institutional_research": institutional_research[:20],
+        "payload": payload,
+        "headers": _safe_webhook_headers(headers),
+    }
+
+
+def _ai_research_public_report(report: dict) -> dict:
+    return {
+        "run_id": str(report.get("run_id") or ""),
+        "request_id": str(report.get("request_id") or ""),
+        "received_at": str(report.get("received_at") or ""),
+        "source_ip": str(report.get("source_ip") or ""),
+        "source": str(report.get("source") or "automation"),
+        "event_type": str(report.get("event_type") or "ai_research.report"),
+        "research_date": str(report.get("research_date") or ""),
+        "title": str(report.get("title") or "AI研报"),
+        "summary": str(report.get("summary") or ""),
+        "markdown": str(report.get("markdown") or ""),
+        "sections": report.get("sections") if isinstance(report.get("sections"), list) else [],
+        "sources": report.get("sources") if isinstance(report.get("sources"), list) else [],
+        "tags": report.get("tags") if isinstance(report.get("tags"), list) else [],
+        "decision_cards": report.get("decision_cards") if isinstance(report.get("decision_cards"), list) else [],
+        "evidence_table": report.get("evidence_table") if isinstance(report.get("evidence_table"), list) else [],
+        "watchlist": report.get("watchlist") if isinstance(report.get("watchlist"), list) else [],
+        "scenario_plan": report.get("scenario_plan") if isinstance(report.get("scenario_plan"), list) else [],
+        "risk_calendar": report.get("risk_calendar") if isinstance(report.get("risk_calendar"), list) else [],
+        "data_gaps": report.get("data_gaps") if isinstance(report.get("data_gaps"), list) else [],
+        "institutional_research": report.get("institutional_research") if isinstance(report.get("institutional_research"), list) else [],
+    }
+
+
+def _safe_run_id(value: str) -> str:
+    text = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(value or "").strip()).strip(".-")
+    return text[:96] or uuid4().hex
+
+
+def _markdown_summary(markdown: str) -> str:
+    text = re.sub(r"```.*?```", " ", str(markdown or ""), flags=re.S)
+    text = re.sub(r"#+\s*", "", text)
+    text = re.sub(r"[*_>`-]+", " ", text)
+    return _short_text(text, 240)
+
+
 def _auction_strength_report_from_payload(*, payload: dict, source_ip: str, request_id: str) -> dict:
     if not isinstance(payload, dict):
         raise ValueError("auction strength payload must be a JSON object")
@@ -2998,7 +3393,7 @@ def _webhook_public_event(event: dict) -> dict:
 
 
 def _safe_webhook_headers(headers: dict[str, str]) -> dict[str, str]:
-    blocked = {"authorization", "cookie", "x-webhook-secret"}
+    blocked = {"authorization", "cookie", "x-webhook-secret", "x-ai-research-secret", "x-market-day-secret"}
     return {
         key: value
         for key, value in headers.items()
