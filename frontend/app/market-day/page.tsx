@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowRight, Info, Loader2, RefreshCcw, TrendingUp } from "lucide-react";
+import { Activity, ArrowRight, Clock3, Loader2, Network, RefreshCcw, Target, TrendingUp } from "lucide-react";
 import { getAuthToken, storeUser } from "@/lib/auth-client";
 import { MainSidebar } from "@/components/main-sidebar";
 
@@ -111,10 +111,11 @@ export default function MarketDayPage() {
       if (!response.ok) throw new Error(payload.error || "读取报告列表失败");
       setErrorText("");
       setRecentReports((payload.reports || []).filter((item) => Boolean(item.run_id)));
+      if (!silent) showToast("列表已更新");
     } catch (error) {
       const message = error instanceof Error ? error.message : "读取报告列表失败";
       setErrorText(message);
-      if (!silent) showToast(message);
+      if (!silent) showToast("刷新失败，请稍后重试");
     } finally {
       setRecentLoading(false);
     }
@@ -164,10 +165,7 @@ export default function MarketDayPage() {
 
   return (
     <main className="review-workbench-page market-day-page">
-      <MainSidebar
-        activeKey="market-day"
-        note="系统会按交易日自动生成当日行情报告，先判断市场主线，再定位主线中的最强个股。"
-      />
+      <MainSidebar activeKey="market-day" />
 
       <section className="review-workbench-main">
         <header className="review-workbench-topbar">
@@ -176,7 +174,7 @@ export default function MarketDayPage() {
               <TrendingUp />
             </span>
             <b>AI当日行情</b>
-            <i>DAILY</i>
+            <i>DAILY MARKET REVIEW</i>
           </div>
           <div className="review-workbench-actions">
             <button type="button" onClick={() => router.push("/")}>
@@ -189,48 +187,41 @@ export default function MarketDayPage() {
           </div>
         </header>
 
-        <section className="review-workbench-hero market-day-hero">
-          <div className="review-hero-copy">
-            <p className="review-kicker">MARKET MAINLINE AGENT</p>
-            <h1>Codex 每日整理当日行情主线与最强个股</h1>
-            <p>报告由 Codex 完成公开信息研究和结构化整理，系统接收成品后统一发布到报告列表。</p>
+        <section className="market-day-overview">
+          <div className="market-day-overview-copy">
+            <span>A股收盘复盘</span>
+            <h1>每日收盘后，快速看懂市场主线、情绪与强势方向</h1>
+            <p>结合指数表现、市场情绪、题材强度与核心个股反馈，为你提炼当日最重要的市场结构和次日观察方向。</p>
           </div>
-
-          <section className="research-panel market-day-intro-panel">
-            <div className="market-day-intro-grid">
-              <article>
-                <span>生成方式</span>
-                <b>Codex 推送</b>
-                <p>当前页面不调用其他模型，也不在浏览器中发起生成，只展示已经接收完成的报告。</p>
-              </article>
-              <article>
-                <span>报告内容</span>
-                <b>结论更紧凑</b>
-                <p>列表直接给出报告日期、一句话结论和当日主线，进入详情再看完整证据。</p>
-              </article>
-              <article>
-                <span>计费确认</span>
-                <b>后端幂等</b>
-                <p>点击“查看”会先确认展示，再按 run_id 执行同报告幂等扣次。</p>
-              </article>
-            </div>
-
-            <div className="market-day-time-note">
-              <Info />
-              <span>报告打开前会先向后端发送确认请求；同一份报告重复进入仍由后端保证不会重复计费。</span>
-            </div>
-          </section>
+          <div className="market-day-capabilities" aria-label="复盘能力">
+            <article>
+              <Network />
+              <span>市场结构</span>
+              <b>识别主线</b>
+            </article>
+            <article>
+              <Activity />
+              <span>情绪周期</span>
+              <b>判断强弱</b>
+            </article>
+            <article>
+              <Target />
+              <span>决策输出</span>
+              <b>验证方向</b>
+            </article>
+          </div>
         </section>
 
         <section className="research-panel recent-report-panel">
           <div className="recent-report-head">
             <div>
-              <span className="card-label">系统生成报告</span>
-              <h2>最近生成的 AI 当日行情</h2>
+              <span className="card-label">最新复盘</span>
+              <h2>查看最近生成的市场复盘</h2>
+              <p>每日收盘后自动生成；同一交易日重复查看不会重复占用使用次数。</p>
             </div>
             <button type="button" onClick={() => void refreshRecentReports()} disabled={recentLoading}>
               {recentLoading ? <Loader2 className="spin-icon" /> : <RefreshCcw />}
-              刷新
+              <span>{recentLoading ? "刷新中" : "刷新列表"}</span>
             </button>
           </div>
 
@@ -261,29 +252,36 @@ export default function MarketDayPage() {
               {recentReports.map((report) => {
                 const isOpening = openingRunId === report.run_id;
                 const reportDate = formatReportDate(report.market_date || report.created_at || report.run_id);
+                const marketMood = inferMarketMood(report.one_line_conclusion || "");
                 return (
                   <article className="market-day-report-card" key={report.run_id}>
-                    <div className="market-day-report-card-head">
-                      <div>
-                        <span>报告日期</span>
-                        <h3>{reportDate}</h3>
+                    <div className="market-day-report-content">
+                      <div className="market-day-report-card-head">
+                        <h3>A股当日行情复盘 · {reportDate}</h3>
+                        <div className="market-day-report-tags">
+                          <span>{reportDate}</span>
+                          <em>{report.mainline || "主线待补充"}</em>
+                        </div>
                       </div>
-                      <em>{report.mainline || "主线待补充"}</em>
-                    </div>
 
-                    <p className="market-day-report-summary">
-                      {report.one_line_conclusion || "系统已完成当日行情判断，点击查看完整主线与个股证据。"}
-                    </p>
+                      <p className="market-day-report-summary">
+                        {report.one_line_conclusion || "系统已完成当日行情判断，点击查看完整主线与个股证据。"}
+                      </p>
 
-                    <div className="market-day-report-meta">
-                      <span>
-                        <b>主线</b>
-                        <strong>{report.mainline || "待补充"}</strong>
-                      </span>
-                      <span>
-                        <b>生成时间</b>
-                        <strong>{report.created_at || "--"}</strong>
-                      </span>
+                      <div className="market-day-report-meta">
+                        <span>
+                          <Network />
+                          <span><b>市场主线</b><strong>{report.mainline || "待补充"}</strong></span>
+                        </span>
+                        <span>
+                          <Activity />
+                          <span><b>情绪状态</b><strong>{marketMood}</strong></span>
+                        </span>
+                        <span>
+                          <Clock3 />
+                          <span><b>生成时间</b><strong>{formatGeneratedAt(report.created_at || "")}</strong></span>
+                        </span>
+                      </div>
                     </div>
 
                     <button
@@ -293,7 +291,7 @@ export default function MarketDayPage() {
                       disabled={isOpening}
                     >
                       {isOpening ? <Loader2 className="spin-icon" /> : <ArrowRight />}
-                      <span>查看</span>
+                      <span>{isOpening ? "正在打开" : "查看完整复盘"}</span>
                     </button>
                   </article>
                 );
@@ -302,7 +300,14 @@ export default function MarketDayPage() {
           ) : null}
 
           {!recentLoading && !errorText && !recentReports.length ? (
-            <div className="recent-report-empty">{authMissing ? "登录后可查看系统生成的当日行情报告。" : "暂无可查看的当日行情报告。"}</div>
+            <div className="recent-report-empty market-day-empty-state">
+              <b>{authMissing ? "登录后查看市场复盘" : "今日复盘尚未生成"}</b>
+              <span>{authMissing ? "登录后即可查看最近生成的完整市场复盘。" : "报告将在 A 股交易日收盘后生成，请稍后刷新查看。"}</span>
+              <button type="button" onClick={() => void refreshRecentReports()} disabled={recentLoading}>
+                {recentLoading ? <Loader2 className="spin-icon" /> : <RefreshCcw />}
+                <span>{recentLoading ? "刷新中" : "刷新列表"}</span>
+              </button>
+            </div>
           ) : null}
         </section>
       </section>
@@ -315,4 +320,14 @@ export default function MarketDayPage() {
 function formatReportDate(value: string) {
   if (!value) return "--";
   return value.slice(0, 10);
+}
+
+function formatGeneratedAt(value: string) {
+  if (!value) return "--";
+  return value.slice(0, 16);
+}
+
+function inferMarketMood(summary: string) {
+  const moods = ["高位分歧", "退潮", "冰点修复", "强修复", "弱修复", "主升", "加速", "轮动", "混沌"];
+  return moods.find((mood) => summary.includes(mood)) || "详见报告";
 }

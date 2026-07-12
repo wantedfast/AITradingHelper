@@ -21,6 +21,408 @@
   gap: 20px;
 }
 
+/* AI market-day list uses the shared workbench palette and a report-first layout. */
+.market-day-overview {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(420px, 1fr);
+  align-items: center;
+  gap: 40px;
+  padding: 40px 48px;
+  border-block: 1px solid var(--rw-line);
+  background: rgba(10, 20, 19, 0.72);
+}
+
+.market-day-overview-copy {
+  max-width: 820px;
+}
+
+.market-day-overview-copy > span,
+.recent-report-head .card-label {
+  display: block;
+  margin-bottom: 12px;
+  color: var(--rw-cyan);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.market-day-overview-copy h1 {
+  max-width: 760px;
+  margin: 0;
+  color: var(--rw-text);
+  font-family: inherit;
+  font-size: 46px;
+  font-weight: 700;
+  line-height: 1.16;
+  letter-spacing: 0;
+}
+
+.market-day-overview-copy p {
+  max-width: 760px;
+  margin: 18px 0 0;
+  color: var(--rw-muted);
+  font-size: 18px;
+  line-height: 1.75;
+}
+
+.market-day-capabilities {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.market-day-capabilities article {
+  display: grid;
+  min-height: 132px;
+  align-content: center;
+  gap: 8px;
+  padding: 20px;
+  border: 1px solid var(--rw-line);
+  border-radius: 8px;
+  background: rgba(17, 28, 27, 0.92);
+}
+
+.market-day-capabilities svg {
+  width: 20px;
+  height: 20px;
+  margin-bottom: 6px;
+  color: var(--rw-cyan);
+}
+
+.market-day-capabilities span {
+  color: var(--rw-muted);
+  font-size: 14px;
+}
+
+.market-day-capabilities b {
+  color: var(--rw-gold-light);
+  font-size: 22px;
+  line-height: 1.25;
+}
+
+.market-day-page .recent-report-panel {
+  padding: 32px 40px 40px;
+  border-radius: 8px;
+}
+
+.market-day-page .recent-report-head {
+  align-items: end;
+  margin-bottom: 26px;
+}
+
+.market-day-page .recent-report-head h2 {
+  margin: 0;
+  color: var(--rw-text);
+  font-size: 32px;
+  line-height: 1.2;
+}
+
+.market-day-page .recent-report-head p {
+  margin: 10px 0 0;
+  color: var(--rw-muted);
+  font-size: 15px;
+  line-height: 1.6;
+}
+
+.market-day-page .recent-report-head > button,
+.market-day-empty-state button {
+  display: inline-flex;
+  min-width: 148px;
+  height: 50px;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  padding: 0 22px;
+  color: var(--rw-gold-light);
+  border: 1px solid rgba(240, 201, 77, 0.55);
+  border-radius: 8px;
+  background: rgba(240, 201, 77, 0.04);
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.market-day-page .recent-report-head > button:hover,
+.market-day-empty-state button:hover {
+  background: rgba(240, 201, 77, 0.1);
+}
+
+.market-day-page .recent-report-head > button:disabled,
+.market-day-empty-state button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.market-day-page .market-day-report-list {
+  gap: 18px;
+}
+
+.market-day-page .market-day-report-card {
+  display: grid;
+  min-height: 220px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 32px;
+  padding: 26px 28px;
+  border: 1px solid var(--rw-line);
+  border-radius: 8px;
+  background: rgba(13, 23, 22, 0.94);
+  box-shadow: none;
+  transition: border-color 160ms ease, background 160ms ease, transform 160ms ease;
+}
+
+.market-day-page .market-day-report-card:hover {
+  border-color: rgba(240, 201, 77, 0.36);
+  background: rgba(17, 28, 27, 0.98);
+  transform: translateY(-1px);
+}
+
+.market-day-report-content {
+  min-width: 0;
+}
+
+.market-day-page .market-day-report-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.market-day-page .market-day-report-card-head h3 {
+  min-width: 0;
+  margin: 0;
+  color: var(--rw-text);
+  font-family: inherit;
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.market-day-report-tags {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.market-day-report-tags span,
+.market-day-report-tags em {
+  display: inline-flex;
+  min-height: 34px;
+  align-items: center;
+  padding: 6px 12px;
+  border: 1px solid rgba(240, 201, 77, 0.38);
+  border-radius: 999px;
+  color: var(--rw-gold-light);
+  background: rgba(240, 201, 77, 0.08);
+  font-size: 14px;
+  font-style: normal;
+  line-height: 1.2;
+}
+
+.market-day-page .market-day-report-summary {
+  display: -webkit-box;
+  max-width: 960px;
+  margin: 18px 0 24px;
+  overflow: hidden;
+  color: #c6d0cd;
+  font-size: 18px;
+  line-height: 1.65;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.market-day-page .market-day-report-meta {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0;
+}
+
+.market-day-page .market-day-report-meta > span {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 12px;
+  padding: 0 20px;
+  border: 0;
+  border-left: 1px solid var(--rw-line);
+  background: transparent;
+}
+
+.market-day-page .market-day-report-meta > span:first-child {
+  padding-left: 0;
+  border-left: 0;
+}
+
+.market-day-page .market-day-report-meta svg {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  color: var(--rw-cyan);
+}
+
+.market-day-page .market-day-report-meta > span > span {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.market-day-page .market-day-report-meta b {
+  color: var(--rw-muted);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.market-day-page .market-day-report-meta strong {
+  overflow-wrap: anywhere;
+  color: var(--rw-text);
+  font-size: 16px;
+  line-height: 1.4;
+}
+
+.market-day-page .market-day-open-button {
+  width: 190px;
+  height: 54px;
+  justify-content: center;
+  border-radius: 8px;
+  color: #11130f;
+  background: #e9c34c;
+  box-shadow: none;
+  transition: filter 160ms ease, transform 160ms ease;
+}
+
+.market-day-page .market-day-open-button:hover {
+  filter: brightness(1.06);
+  transform: translateY(-1px);
+}
+
+.market-day-page .market-day-open-button:active {
+  transform: translateY(1px);
+}
+
+.market-day-empty-state {
+  display: grid;
+  min-height: 220px;
+  place-items: center;
+  align-content: center;
+  gap: 10px;
+  padding: 32px;
+  border: 1px dashed var(--rw-line);
+  border-radius: 8px;
+  background: rgba(13, 23, 22, 0.55);
+  text-align: center;
+}
+
+.market-day-empty-state b {
+  color: var(--rw-text);
+  font-size: 22px;
+}
+
+.market-day-empty-state span {
+  margin-bottom: 8px;
+  color: var(--rw-muted);
+  font-size: 15px;
+}
+
+@media (max-width: 1180px) {
+  .market-day-overview {
+    grid-template-columns: 1fr;
+  }
+
+  .market-day-page .market-day-report-card {
+    grid-template-columns: 1fr;
+  }
+
+  .market-day-page .market-day-open-button {
+    justify-self: end;
+  }
+}
+
+@media (max-width: 760px) {
+  .market-day-overview {
+    gap: 24px;
+    padding: 28px 16px;
+  }
+
+  .market-day-overview-copy h1 {
+    font-size: 34px;
+  }
+
+  .market-day-overview-copy p {
+    font-size: 16px;
+  }
+
+  .market-day-capabilities {
+    grid-template-columns: 1fr;
+  }
+
+  .market-day-capabilities article {
+    min-height: 108px;
+  }
+
+  .market-day-page .recent-report-panel {
+    padding: 24px 16px;
+  }
+
+  .market-day-page .recent-report-head {
+    align-items: stretch;
+  }
+
+  .market-day-page .recent-report-head > button {
+    width: 100%;
+  }
+
+  .market-day-page .market-day-report-card {
+    min-height: 0;
+    gap: 24px;
+    padding: 22px 18px;
+  }
+
+  .market-day-page .market-day-report-card-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .market-day-page .market-day-report-card-head h3 {
+    font-size: 22px;
+  }
+
+  .market-day-report-tags {
+    flex-wrap: wrap;
+  }
+
+  .market-day-page .market-day-report-meta {
+    grid-template-columns: 1fr;
+    gap: 14px;
+  }
+
+  .market-day-page .market-day-report-meta > span,
+  .market-day-page .market-day-report-meta > span:first-child {
+    padding: 0 0 14px;
+    border: 0;
+    border-bottom: 1px solid var(--rw-line);
+  }
+
+  .market-day-page .market-day-report-meta > span:last-child {
+    padding-bottom: 0;
+    border-bottom: 0;
+  }
+
+  .market-day-page .market-day-open-button {
+    width: 100%;
+  }
+}
+
+.market-day-purpose {
+  padding: 18px 28px 0;
+}
+
+.market-day-purpose p {
+  max-width: 920px;
+  margin: 0;
+  color: var(--rw-muted);
+  font-size: 18px;
+  line-height: 1.7;
+}
+
 .market-day-hero,
 .market-day-report-hero {
   align-items: stretch;
@@ -13743,5 +14145,34 @@ button.radar-core,
 
   .auction-stock-card {
     grid-template-columns: 1fr;
+  }
+}
+
+/* Keep the market-day list resilient to earlier generic report-card rules. */
+.market-day-overview {
+  grid-template-columns: minmax(0, 1.65fr) minmax(360px, 0.9fr);
+  gap: 32px;
+}
+
+.market-day-page .market-day-report-card-head .market-day-report-tags span,
+.market-day-page .market-day-report-card-head .market-day-report-tags em {
+  color: var(--rw-gold-light);
+}
+
+.market-day-page .market-day-report-card > .market-day-open-button {
+  min-width: 190px;
+  width: 190px;
+}
+
+@media (max-width: 1180px) {
+  .market-day-overview {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 760px) {
+  .market-day-page .market-day-report-card > .market-day-open-button {
+    min-width: 0;
+    width: 100%;
   }
 }

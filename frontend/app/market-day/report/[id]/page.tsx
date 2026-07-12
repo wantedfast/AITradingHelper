@@ -223,7 +223,7 @@ export default function MarketDayReportPage() {
   const strongestStocks = report?.strongestStocks || [];
 
   return (
-    <main className="review-workbench-page market-day-page market-day-report-surface">
+    <main className="review-workbench-page market-day-page">
       <MainSidebar activeKey="market-day" />
 
       <section className="review-workbench-main">
