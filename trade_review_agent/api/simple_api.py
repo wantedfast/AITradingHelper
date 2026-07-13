@@ -2908,6 +2908,8 @@ def _assert_market_day_push_secret(*, expected: str, provided: str) -> None:
 def _ai_research_report_from_payload(*, payload: dict, headers: dict[str, str], source_ip: str, request_id: str) -> dict:
     if not isinstance(payload, dict):
         raise ValueError("AI research payload must be a JSON object")
+    if _contains_suspected_encoding_damage(payload):
+        raise ValueError("AI research payload contains suspected character encoding damage")
     now = datetime.now(CN_TZ)
     received_at = now.strftime("%Y-%m-%d %H:%M:%S")
     research_date = _first_text(payload.get("research_date"), payload.get("date"), now.strftime("%Y-%m-%d"))
@@ -2952,6 +2954,16 @@ def _ai_research_report_from_payload(*, payload: dict, headers: dict[str, str], 
         "payload": payload,
         "headers": _safe_webhook_headers(headers),
     }
+
+
+def _contains_suspected_encoding_damage(value: object) -> bool:
+    if isinstance(value, str):
+        return "�" in value or re.search(r"\?{2,}", value) is not None
+    if isinstance(value, dict):
+        return any(_contains_suspected_encoding_damage(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_suspected_encoding_damage(item) for item in value)
+    return False
 
 
 def _ai_research_public_report(report: dict) -> dict:

@@ -100,6 +100,19 @@ class WebhookApiTest(unittest.TestCase):
         self.assertIn("盘前", report["tags"])
         self.assertNotIn("x-ai-research-secret", report["headers"])
 
+    def test_ai_research_payload_rejects_suspected_encoding_damage(self):
+        with self.assertRaisesRegex(ValueError, "character encoding damage"):
+            simple_api._ai_research_report_from_payload(
+                payload={
+                    "research_date": "2026-07-13",
+                    "title": "A???????:2026-07-13",
+                    "markdown": "# ??????",
+                },
+                headers={},
+                source_ip="127.0.0.1",
+                request_id="req-ai-corrupt",
+            )
+
     def test_ai_research_payload_keeps_decision_product_fields(self):
         report = simple_api._ai_research_report_from_payload(
             payload={
