@@ -27,6 +27,7 @@ import {
 } from "lucide-react";
 import { getAuthToken, storeUser } from "@/lib/auth-client";
 import { MainSidebar } from "@/components/main-sidebar";
+import { FinancialDisclaimer } from "@/components/financial-disclaimer";
 
 type ReportPayload = {
   run_id?: string;
@@ -595,6 +596,7 @@ export default function ReviewPage() {
             <button type="button" onClick={() => showToast(copy.noNotice)} aria-label="notice"><BellRing /><span>{"\u901a\u77e5"}</span></button>
           </div>
         </header>
+        <FinancialDisclaimer />
         <section className="review-console-hero">
           <div className="review-hero-copy">
             <p className="review-kicker">AI REVIEW AGENT</p>

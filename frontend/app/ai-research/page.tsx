@@ -4,6 +4,7 @@ import { Suspense, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { FileText, Loader2, RefreshCcw } from "lucide-react";
 import { MainSidebar } from "@/components/main-sidebar";
+import { FinancialDisclaimer } from "@/components/financial-disclaimer";
 import { getAuthToken, storeUser, usageBillingText, type UserProfile } from "@/lib/auth-client";
 import { AiResearchReport, AiResearchSummary, ReportBody, ReportMeta } from "./report-components";
 
@@ -209,6 +210,8 @@ function AiResearchPageContent() {
             </button>
           </div>
         </header>
+
+        <FinancialDisclaimer compact={Boolean(selectedRunId)} />
 
         <section className="research-panel ai-research-shell-head">
           <div className="ai-research-shell-copy">
