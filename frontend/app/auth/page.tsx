@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { FormEvent, Suspense, useEffect, useMemo, useState } from "react";
+import { FormEvent, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowRight,
   KeyRound,
@@ -13,10 +13,29 @@ import {
   Sparkles,
   UserPlus,
   UserRound,
+  X,
 } from "lucide-react";
 import { apiFetch, storeAuth, type AuthResult } from "@/lib/auth-client";
 
 type Mode = "password-login" | "password-register" | "admin";
+
+type AgreementSection = {
+  id: string;
+  title: string;
+  paragraphs: string[];
+  important: boolean;
+};
+
+type RegistrationAgreement = {
+  agreement_type: string;
+  version: string;
+  effective_at: string;
+  title: string;
+  operator_name: string;
+  sections: AgreementSection[];
+  confirmation: string;
+  content_hash: string;
+};
 
 export default function AuthPage() {
   return (
@@ -42,6 +61,14 @@ function AuthContent() {
   const [sendingEmail, setSendingEmail] = useState(false);
   const [emailCountdown, setEmailCountdown] = useState(0);
   const [message, setMessage] = useState("");
+  const [agreement, setAgreement] = useState<RegistrationAgreement | null>(null);
+  const [agreementLoading, setAgreementLoading] = useState(false);
+  const [agreementError, setAgreementError] = useState("");
+  const [agreementAccepted, setAgreementAccepted] = useState(false);
+  const [agreementOpen, setAgreementOpen] = useState(false);
+  const [agreementReadToEnd, setAgreementReadToEnd] = useState(false);
+  const [agreementReload, setAgreementReload] = useState(0);
+  const agreementBodyRef = useRef<HTMLDivElement>(null);
 
   const isRegister = mode === "password-register";
   const title = titleForMode(mode);
@@ -53,6 +80,48 @@ function AuthContent() {
     setInviteCode(inviteFromUrl);
     setMode("password-register");
   }, [inviteFromUrl]);
+
+  useEffect(() => {
+    if (!isRegister) return;
+    const controller = new AbortController();
+    setAgreementLoading(true);
+    setAgreementError("");
+    setAgreement(null);
+    setAgreementAccepted(false);
+    setAgreementOpen(false);
+    setAgreementReadToEnd(false);
+
+    apiFetch<RegistrationAgreement>("/api/legal/registration-agreement", { signal: controller.signal })
+      .then((result) => setAgreement(result))
+      .catch((error) => {
+        if (controller.signal.aborted) return;
+        setAgreementError(error instanceof Error ? error.message : "协议加载失败，请重试");
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setAgreementLoading(false);
+      });
+
+    return () => controller.abort();
+  }, [isRegister, agreementReload]);
+
+  useEffect(() => {
+    if (!agreementOpen) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setAgreementOpen(false);
+    };
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", handleKeyDown);
+    const frame = window.requestAnimationFrame(() => {
+      agreementBodyRef.current?.focus();
+      updateAgreementScrollState(agreementBodyRef.current, setAgreementReadToEnd);
+    });
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("keydown", handleKeyDown);
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [agreementOpen]);
 
   async function sendEmailCode() {
     setSendingEmail(true);
@@ -73,6 +142,10 @@ function AuthContent() {
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (mode === "password-register" && (!agreement || !agreementAccepted)) {
+      setMessage("请先完整阅读并同意用户注册协议与风险揭示书");
+      return;
+    }
     setLoading(true);
     setMessage("");
     try {
@@ -80,7 +153,15 @@ function AuthContent() {
       if (mode === "password-register") {
         result = await apiFetch<AuthResult>("/api/auth/password-register", {
           method: "POST",
-          body: JSON.stringify({ username, email, password, email_code: emailCode, invite_code: inviteCode }),
+          body: JSON.stringify({
+            username,
+            email,
+            password,
+            email_code: emailCode,
+            invite_code: inviteCode,
+            agreement_accepted: true,
+            agreement_version: agreement!.version,
+          }),
         });
       } else {
         result = await apiFetch<AuthResult>("/api/auth/password-login", {
@@ -217,8 +298,48 @@ function AuthContent() {
                 </small>
               </label>
             )}
+            {isRegister && (
+              <div className="account-agreement-consent">
+                {agreementLoading && <p>正在加载用户协议…</p>}
+                {agreementError && (
+                  <div className="account-agreement-load-error" role="alert">
+                    <span>用户协议加载失败，暂时无法注册。</span>
+                    <button type="button" onClick={() => setAgreementReload((value) => value + 1)}>重新加载</button>
+                  </div>
+                )}
+                {agreement && (
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={agreementAccepted}
+                      onChange={(event) => {
+                        if (event.target.checked) {
+                          setAgreementReadToEnd(false);
+                          setAgreementOpen(true);
+                        } else {
+                          setAgreementAccepted(false);
+                        }
+                      }}
+                    />
+                    <span>
+                      我已阅读并同意
+                      <button type="button" onClick={() => {
+                        setAgreementReadToEnd(false);
+                        setAgreementOpen(true);
+                      }}>
+                        《{agreement.title}》
+                      </button>
+                    </span>
+                  </label>
+                )}
+              </div>
+            )}
             {message && <div className="account-error">{message}</div>}
-            <button className="account-submit" type="submit" disabled={loading}>
+            <button
+              className="account-submit"
+              type="submit"
+              disabled={loading || (isRegister && (agreementLoading || !!agreementError || !agreement || !agreementAccepted))}
+            >
               {loading ? "处理中..." : actionLabel}
               {isRegister ? <ArrowRight /> : <LogIn />}
             </button>
@@ -228,6 +349,57 @@ function AuthContent() {
           </div>
         </section>
       </div>
+      {agreementOpen && agreement && (
+        <div className="account-agreement-backdrop" onMouseDown={(event) => {
+          if (event.target === event.currentTarget) setAgreementOpen(false);
+        }}>
+          <section
+            className="account-agreement-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="registration-agreement-title"
+          >
+            <header>
+              <div>
+                <span>注册前必读 · {agreement.operator_name}</span>
+                <h2 id="registration-agreement-title">{agreement.title}</h2>
+                <small>版本 {agreement.version} · 生效日期 {agreement.effective_at}</small>
+              </div>
+              <button type="button" className="account-agreement-close" onClick={() => setAgreementOpen(false)} aria-label="关闭协议">
+                <X />
+              </button>
+            </header>
+            <div
+              className="account-agreement-body"
+              ref={agreementBodyRef}
+              onScroll={(event) => updateAgreementScrollState(event.currentTarget, setAgreementReadToEnd)}
+              tabIndex={0}
+            >
+              {agreement.sections.map((section) => (
+                <article key={section.id} className={section.important ? "important" : ""}>
+                  <h3>{section.title}</h3>
+                  {section.paragraphs.map((paragraph, index) => <p key={`${section.id}-${index}`}>{paragraph}</p>)}
+                </article>
+              ))}
+              <blockquote>{agreement.confirmation}</blockquote>
+            </div>
+            <footer>
+              <span>{agreementReadToEnd ? "已阅读至协议末尾" : "请滚动阅读至协议末尾"}</span>
+              <button
+                type="button"
+                disabled={!agreementReadToEnd}
+                onClick={() => {
+                  setAgreementAccepted(true);
+                  setAgreementOpen(false);
+                  setMessage("");
+                }}
+              >
+                同意并关闭
+              </button>
+            </footer>
+          </section>
+        </div>
+      )}
     </main>
   );
 }
@@ -308,4 +480,9 @@ function startCountdown(seconds: number, setter: (value: number | ((value: numbe
       return value - 1;
     });
   }, 1000);
+}
+
+function updateAgreementScrollState(element: HTMLDivElement | null, setter: (value: boolean) => void) {
+  if (!element) return;
+  setter(element.scrollHeight - element.scrollTop - element.clientHeight <= 8);
 }
