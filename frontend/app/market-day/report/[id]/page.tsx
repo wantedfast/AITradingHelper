@@ -5,6 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import { ArrowLeft, Loader2, RefreshCcw, ShieldCheck, TrendingUp } from "lucide-react";
 import { getAuthToken, storeUser, usageBillingText } from "@/lib/auth-client";
 import { MainSidebar } from "@/components/main-sidebar";
+import { FinancialDisclaimer } from "@/components/financial-disclaimer";
 
 const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE || (process.env.NODE_ENV === "development" ? "http://127.0.0.1:8600" : "");
@@ -246,6 +247,8 @@ export default function MarketDayReportPage() {
             </button>
           </div>
         </header>
+
+        <FinancialDisclaimer compact />
 
         {loading && !report ? (
           <section className="research-panel market-day-loading-panel" role="status" aria-live="polite">

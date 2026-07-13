@@ -14176,3 +14176,85 @@ button.radar-core,
     width: 100%;
   }
 }
+
+/* Shared, in-flow disclosure for every financial feature and report surface. */
+.financial-disclaimer {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 12px;
+  width: 100%;
+  margin: 16px 0 22px;
+  border: 1px solid rgba(245, 199, 107, 0.28);
+  border-radius: 12px;
+  padding: 14px 16px;
+  color: rgba(250, 248, 240, 0.78);
+  background: linear-gradient(135deg, rgba(245, 199, 107, 0.1), rgba(17, 20, 24, 0.78));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.financial-disclaimer svg {
+  width: 22px;
+  height: 22px;
+  color: #f5c76b;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+.financial-disclaimer strong {
+  display: block;
+  margin-bottom: 4px;
+  color: #f8dc9c;
+  font-size: 14px;
+  letter-spacing: 0.04em;
+}
+
+.financial-disclaimer p {
+  margin: 0;
+  color: inherit;
+  font-size: 13px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+
+.financial-disclaimer--compact {
+  margin-block: 12px 18px;
+  padding-block: 11px;
+}
+
+.site-shell > .financial-disclaimer {
+  margin-top: 14px;
+}
+
+.review-page > .financial-disclaimer {
+  width: min(1440px, calc(100% - 48px));
+  margin-inline: auto;
+}
+
+@media (max-width: 640px) {
+  .financial-disclaimer {
+    gap: 10px;
+    margin-block: 12px 16px;
+    padding: 12px;
+    border-radius: 10px;
+  }
+
+  .financial-disclaimer svg {
+    width: 20px;
+    height: 20px;
+  }
+
+  .financial-disclaimer p {
+    font-size: 12px;
+    line-height: 1.6;
+  }
+
+  .review-page > .financial-disclaimer {
+    width: calc(100% - 24px);
+  }
+}

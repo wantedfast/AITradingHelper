@@ -7,6 +7,7 @@ import { BellRing, ChevronDown, Copy, CreditCard, FileSearch, FileText, Gift, In
 import { AuctionStrengthPerformanceTicker, useAuctionStrengthPerformance } from "@/components/auction-strength-performance-ticker";
 import { GoldMagicCube } from "@/components/gold-magic-cube";
 import { HomeMusic } from "@/components/home-music";
+import { FinancialDisclaimer } from "@/components/financial-disclaimer";
 import { apiFetch, clearAuth, getStoredUser, inviteUrl, refreshCurrentUser, userAccessLabel, userBalanceText, type UserProfile } from "@/lib/auth-client";
 import { copyTextToClipboard } from "@/lib/clipboard";
 
@@ -242,6 +243,8 @@ export default function Page() {
             )}
           </nav>
         </header>
+
+        <FinancialDisclaimer />
 
         <section className="hero">
           <div className="hero-copy">
