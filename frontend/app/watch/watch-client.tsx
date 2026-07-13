@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 import { getAuthToken, storeUser, type UserProfile } from "@/lib/auth-client";
 import { MainSidebar } from "@/components/main-sidebar";
+import { FinancialDisclaimer } from "@/components/financial-disclaimer";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || (process.env.NODE_ENV === "development" ? "http://127.0.0.1:8600" : "");
 const SHOW_WATCH_VOICE_TEST = process.env.NODE_ENV === "development";
@@ -659,6 +660,8 @@ export default function WatchClient({ mode }: { mode: Mode }) {
             </button>
           </div>
         </header>
+
+        <FinancialDisclaimer compact={viewMode === "result"} />
 
         {viewMode === "entry" ? (
           <WatchEntryView

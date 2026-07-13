@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Activity, ArrowRight, Clock3, Loader2, Network, RefreshCcw, Target, TrendingUp } from "lucide-react";
 import { getAuthToken, storeUser } from "@/lib/auth-client";
 import { MainSidebar } from "@/components/main-sidebar";
+import { FinancialDisclaimer } from "@/components/financial-disclaimer";
 
 const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE || (process.env.NODE_ENV === "development" ? "http://127.0.0.1:8600" : "");
@@ -186,6 +187,8 @@ export default function MarketDayPage() {
             </button>
           </div>
         </header>
+
+        <FinancialDisclaimer />
 
         <section className="market-day-overview">
           <div className="market-day-overview-copy">

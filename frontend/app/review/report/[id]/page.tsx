@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getAuthToken, storeUser, usageBillingText, type UserProfile } from "@/lib/auth-client";
+import { FinancialDisclaimer } from "@/components/financial-disclaimer";
 
 type ViewKey = "review" | "choice" | "theme" | "logic";
 
@@ -215,6 +216,8 @@ export default function ReviewReportPage({ params }: ReviewReportPageProps) {
           <span>刷新</span>
         </button>
       </header>
+
+      <FinancialDisclaimer compact />
 
       <div className="workspace">
         <aside className="side-nav glass" aria-label="报告视图">
