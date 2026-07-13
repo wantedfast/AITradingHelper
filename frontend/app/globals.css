@@ -1240,6 +1240,262 @@
   font-size: 13px;
 }
 
+.account-agreement-consent {
+  display: grid;
+  gap: 10px;
+  border: 1px solid rgba(245, 215, 122, 0.2);
+  border-radius: 14px;
+  padding: 13px 14px;
+  background: rgba(245, 215, 122, 0.055);
+}
+
+.account-agreement-consent > p {
+  margin: 0;
+  font-size: 13px;
+}
+
+.account-form .account-agreement-consent > label {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  cursor: pointer;
+}
+
+.account-form .account-agreement-consent input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  margin: 2px 0 0;
+  accent-color: var(--gold-light);
+  cursor: pointer;
+}
+
+.account-agreement-consent label > span {
+  color: rgba(244, 240, 232, 0.76);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.55;
+}
+
+.account-agreement-consent label button,
+.account-agreement-load-error button {
+  border: 0;
+  padding: 0;
+  color: var(--gold-light);
+  background: transparent;
+  font: inherit;
+  font-weight: 900;
+  text-align: left;
+  cursor: pointer;
+}
+
+.account-agreement-load-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: #ffd1d1;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.account-agreement-load-error button {
+  flex: 0 0 auto;
+}
+
+.account-agreement-backdrop {
+  position: fixed;
+  z-index: 1000;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.78);
+  backdrop-filter: blur(8px);
+}
+
+.account-agreement-modal {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  width: min(820px, 100%);
+  max-height: min(86vh, 880px);
+  overflow: hidden;
+  border: 1px solid rgba(245, 215, 122, 0.3);
+  border-radius: 22px;
+  color: var(--text);
+  background: #11100d;
+  box-shadow: 0 30px 100px rgba(0, 0, 0, 0.62);
+}
+
+.account-agreement-modal > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 22px 24px 18px;
+  border-bottom: 1px solid rgba(245, 215, 122, 0.16);
+}
+
+.account-agreement-modal header span,
+.account-agreement-modal header small {
+  display: block;
+  color: rgba(244, 240, 232, 0.58);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.account-agreement-modal header span {
+  margin-bottom: 7px;
+  color: var(--gold-light);
+  font-weight: 900;
+  letter-spacing: 0.04em;
+}
+
+.account-agreement-modal h2 {
+  margin: 0 0 6px;
+  color: var(--text);
+  font-size: clamp(20px, 3vw, 27px);
+  line-height: 1.25;
+}
+
+.account-agreement-close {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid rgba(244, 240, 232, 0.14);
+  border-radius: 12px;
+  color: rgba(244, 240, 232, 0.78);
+  background: rgba(255, 255, 255, 0.05);
+  cursor: pointer;
+}
+
+.account-agreement-close svg {
+  width: 19px;
+  height: 19px;
+}
+
+.account-agreement-body {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 22px 24px 36px;
+  outline: none;
+  scrollbar-color: rgba(245, 215, 122, 0.55) rgba(255, 255, 255, 0.04);
+}
+
+.account-agreement-body article {
+  margin-bottom: 24px;
+}
+
+.account-agreement-body article.important {
+  border-left: 3px solid var(--gold-light);
+  border-radius: 0 12px 12px 0;
+  padding: 14px 16px;
+  background: rgba(245, 215, 122, 0.075);
+}
+
+.account-agreement-body h3 {
+  margin: 0 0 10px;
+  color: #f8dc9c;
+  font-size: 17px;
+  line-height: 1.4;
+}
+
+.account-agreement-body p {
+  margin: 8px 0 0;
+  color: rgba(244, 240, 232, 0.76);
+  font-size: 14px;
+  line-height: 1.78;
+  overflow-wrap: anywhere;
+}
+
+.account-agreement-body blockquote {
+  margin: 8px 0 0;
+  border: 1px solid rgba(110, 231, 168, 0.24);
+  border-radius: 14px;
+  padding: 16px;
+  color: rgba(220, 255, 236, 0.88);
+  background: rgba(110, 231, 168, 0.07);
+  font-size: 14px;
+  font-weight: 800;
+  line-height: 1.72;
+}
+
+.account-agreement-modal > footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 16px 24px;
+  border-top: 1px solid rgba(245, 215, 122, 0.16);
+  background: rgba(0, 0, 0, 0.22);
+}
+
+.account-agreement-modal footer span {
+  color: rgba(244, 240, 232, 0.6);
+  font-size: 13px;
+}
+
+.account-agreement-modal footer button {
+  min-width: 142px;
+  min-height: 44px;
+  border: 1px solid rgba(245, 215, 122, 0.42);
+  border-radius: 12px;
+  color: #16120a;
+  background: linear-gradient(135deg, #f5d77a, #c9a646);
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.account-agreement-modal footer button:disabled {
+  color: rgba(244, 240, 232, 0.45);
+  background: rgba(255, 255, 255, 0.06);
+  cursor: not-allowed;
+  opacity: 0.72;
+}
+
+@media (max-width: 640px) {
+  .account-agreement-backdrop {
+    align-items: end;
+    padding: 0;
+  }
+
+  .account-agreement-modal {
+    width: 100%;
+    max-height: 92dvh;
+    border-right: 0;
+    border-bottom: 0;
+    border-left: 0;
+    border-radius: 20px 20px 0 0;
+  }
+
+  .account-agreement-modal > header,
+  .account-agreement-modal > footer {
+    padding: 16px;
+  }
+
+  .account-agreement-body {
+    padding: 18px 16px 28px;
+  }
+
+  .account-agreement-modal > footer {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .account-agreement-modal footer button {
+    width: 100%;
+  }
+
+  .account-agreement-load-error {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+
 .admin-shell {
   width: min(1320px, calc(100% - 40px));
   margin: 0 auto;

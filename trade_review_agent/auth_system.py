@@ -16,6 +16,12 @@ from pathlib import Path
 from typing import Any, Iterator
 from zoneinfo import ZoneInfo
 
+from trade_review_agent.legal_agreements import (
+    REGISTRATION_AGREEMENT_TYPE,
+    REGISTRATION_AGREEMENT_VERSION,
+    registration_agreement_payload,
+)
+
 
 CN_TZ = ZoneInfo("Asia/Shanghai")
 PHONE_RE = re.compile(r"^1[3-9]\d{9}$")
@@ -189,12 +195,27 @@ def init_auth_db(db_path: Path) -> None:
                 created_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS agreement_acceptances (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                agreement_type TEXT NOT NULL,
+                agreement_version TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                accepted_at TEXT NOT NULL,
+                ip TEXT,
+                user_agent TEXT,
+                acceptance_method TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                UNIQUE (user_id, agreement_type, agreement_version)
+            );
+
             CREATE INDEX IF NOT EXISTS idx_usage_created ON usage_events(created_at);
             CREATE INDEX IF NOT EXISTS idx_feedback_status ON feedback(status);
             CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
             CREATE INDEX IF NOT EXISTS idx_update_notices_status ON update_notices(status, published_at);
             CREATE INDEX IF NOT EXISTS idx_sms_codes_phone ON sms_codes(phone, purpose, created_at);
             CREATE INDEX IF NOT EXISTS idx_email_codes_email ON email_codes(email, purpose, created_at);
+            CREATE INDEX IF NOT EXISTS idx_agreement_acceptances_user ON agreement_acceptances(user_id, accepted_at);
             """
         )
         _ensure_user_columns(conn)
@@ -382,7 +403,11 @@ def register_password_user(
     email_code: str,
     invite_code: str = "",
     ip: str = "",
+    user_agent: str = "",
+    agreement_accepted: object = None,
+    agreement_version: object = None,
 ) -> dict[str, Any]:
+    _validate_registration_agreement(agreement_accepted, agreement_version)
     username = normalize_username(username)
     email = normalize_email(email)
     _validate_password(password)
@@ -409,6 +434,25 @@ def register_password_user(
             (placeholder_phone, username, email, password_hash, salt, _new_invite_code(conn), referrer["id"] if referrer else None, ip, now),
         )
         user_id = int(cursor.lastrowid)
+        agreement = registration_agreement_payload()
+        conn.execute(
+            """
+            INSERT INTO agreement_acceptances (
+                user_id, agreement_type, agreement_version, content_hash,
+                accepted_at, ip, user_agent, acceptance_method
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'registration_modal')
+            """,
+            (
+                user_id,
+                REGISTRATION_AGREEMENT_TYPE,
+                REGISTRATION_AGREEMENT_VERSION,
+                agreement["content_hash"],
+                now,
+                (ip or "").strip(),
+                (user_agent or "")[:512],
+            ),
+        )
         _add_credits(conn, user_id, INITIAL_FREE_CREDITS, "initial_free", None)
 
         if referrer:
@@ -1268,6 +1312,13 @@ def normalize_username(username: str) -> str:
     if not USERNAME_RE.match(username):
         raise AuthError("账号名需以字母开头，4-32 位，仅支持字母、数字和下划线", 400)
     return username
+
+
+def _validate_registration_agreement(accepted: object, version: object) -> None:
+    if accepted is not True:
+        raise AuthError("请完整阅读并同意用户注册协议、投资风险揭示书及 AI 服务免责声明", 400)
+    if version != REGISTRATION_AGREEMENT_VERSION:
+        raise AuthError("协议版本已更新，请重新打开协议并阅读确认", 409)
 
 
 def _normalize_sms_purpose(purpose: str) -> str:

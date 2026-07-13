@@ -58,6 +58,7 @@ from trade_review_agent.auth_system import (
     unpublish_update_notice,
     update_update_notice,
 )
+from trade_review_agent.legal_agreements import registration_agreement_payload
 from trade_review_agent.watch.alerts import AlertPlan, evaluate_plans, event_dedupe_key, load_plans, save_plans
 from trade_review_agent.auction_strength.top1_performance import (
     auction_top1_next_refresh_at,
@@ -110,6 +111,12 @@ def normalize_research_model_tier(value: object = None) -> str:
     return "standard"
 
 
+def _audited_client_ip(x_forwarded_for: str, fallback: str = "") -> str:
+    """Use the proxy-appended final hop, not a client-controlled first hop."""
+    hops = [part.strip() for part in (x_forwarded_for or "").split(",") if part.strip()]
+    return hops[-1] if hops else (fallback or "")
+
+
 class SingleInstanceThreadingHTTPServer(ThreadingHTTPServer):
     allow_reuse_address = False
 
@@ -133,6 +140,9 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
         try:
             if path == "/api/health":
                 self._json({"status": "ok"})
+                return
+            if path == "/api/legal/registration-agreement":
+                self._json(registration_agreement_payload(), cache_control="no-store")
                 return
             if path == "/api/auth/me":
                 self._auth_me()
@@ -735,7 +745,10 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             password=str(payload.get("password") or ""),
             email_code=str(payload.get("email_code") or payload.get("code") or ""),
             invite_code=str(payload.get("invite_code") or ""),
-            ip=self._client_ip(),
+            ip=self._registration_client_ip(),
+            user_agent=self.headers.get("user-agent", ""),
+            agreement_accepted=payload.get("agreement_accepted"),
+            agreement_version=payload.get("agreement_version"),
         )
         self._json(result)
 
@@ -1526,12 +1539,14 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
     def _request_path(self) -> str:
         return urlparse(self.path).path
 
-    def _json(self, payload: dict, status: int = 200) -> None:
+    def _json(self, payload: dict, status: int = 200, *, cache_control: str = "") -> None:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self._cors_headers()
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
+        if cache_control:
+            self.send_header("Cache-Control", cache_control)
         self.end_headers()
         try:
             self.wfile.write(data)
@@ -1582,6 +1597,10 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
         if forwarded:
             return forwarded
         return self.client_address[0] if self.client_address else ""
+
+    def _registration_client_ip(self) -> str:
+        fallback = self.client_address[0] if self.client_address else ""
+        return _audited_client_ip(self.headers.get("x-forwarded-for", ""), fallback)
 
     def _send_error(self, exc: Exception, status: int = 500) -> None:
         request_id = getattr(self, "_request_id", uuid4().hex)
