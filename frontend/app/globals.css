@@ -14514,3 +14514,116 @@ button.radar-core,
     width: calc(100% - 24px);
   }
 }
+
+/* Shared dated-report flow for market-day and AI research. */
+.dated-report-page .auction-main {
+  display: grid;
+  align-content: start;
+  gap: 18px;
+}
+
+.dated-report-page .auction-topbar,
+.dated-report-page .financial-disclaimer,
+.dated-report-page .auction-hero {
+  margin: 0;
+}
+
+.dated-report-page .auction-date-picker svg,
+.dated-report-page .auction-kicker svg {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+}
+
+.dated-report-page .auction-date-picker input {
+  min-width: 138px;
+}
+
+.dated-report-hero {
+  align-items: stretch;
+}
+
+.dated-report-hero > div:first-child {
+  align-self: center;
+}
+
+.dated-report-hero .auction-kicker {
+  display: flex;
+}
+
+.dated-report-hero .auction-status-strip article {
+  display: grid;
+  align-content: center;
+  min-height: 92px;
+}
+
+.dated-report-empty {
+  display: flex;
+  min-height: 150px;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: rgba(243, 246, 238, 0.72);
+}
+
+.dated-report-empty svg {
+  width: 22px;
+  height: 22px;
+  color: #f5c76b;
+}
+
+.dated-report-content {
+  display: grid;
+  min-width: 0;
+  gap: 18px;
+}
+
+.dated-report-content .review-workbench-hero,
+.dated-report-content .research-panel,
+.dated-report-content .review-workbench-grid {
+  margin: 0;
+}
+
+.dated-report-page .auction-message {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.dated-report-page .auction-confirm-actions button {
+  max-width: 100%;
+  white-space: normal;
+}
+
+@media (max-width: 640px) {
+  .dated-report-page .auction-main {
+    width: min(100% - 24px, 560px);
+  }
+
+  .dated-report-page .auction-topbar-actions,
+  .dated-report-page .auction-date-picker {
+    width: 100%;
+  }
+
+  .dated-report-page .auction-date-picker input {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .dated-report-page .auction-hero {
+    gap: 20px;
+  }
+
+  .dated-report-page .auction-hero h1 {
+    font-size: clamp(30px, 9vw, 42px);
+    overflow-wrap: anywhere;
+  }
+
+  .dated-report-page .auction-confirm-actions,
+  .dated-report-page .auction-confirm-actions button {
+    width: 100%;
+  }
+
+  .dated-report-content {
+    gap: 14px;
+  }
+}
