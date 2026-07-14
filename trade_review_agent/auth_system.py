@@ -602,8 +602,23 @@ def ensure_feature_credit_available(db_path: Path, *, user_id: int, feature: str
         return _user_payload(conn, user)
 
 
-def consume_feature_credit_once(db_path: Path, *, user_id: int, feature: str, ip: str = "", related_id: str = "") -> dict[str, Any]:
+def consume_feature_credit_once(
+    db_path: Path,
+    *,
+    user_id: int,
+    feature: str,
+    ip: str = "",
+    related_id: str = "",
+    credits: int = 1,
+) -> dict[str, Any]:
+    cost = max(1, int(credits))
     with _connect(db_path) as conn:
+        # Serialize the idempotency check and both accounting writes.  A deferred
+        # SQLite transaction allows two concurrent acknowledgements to observe
+        # the same pre-charge state before either writes, which can double-charge
+        # one report.  BEGIN IMMEDIATE obtains the database write reservation up
+        # front; the second request then re-checks after the first commits.
+        conn.execute("BEGIN IMMEDIATE")
         user = _fetch_user_by_id(conn, user_id)
         if related_id and _feature_charge_exists(conn, user_id, feature, related_id):
             return _user_payload(conn, user)

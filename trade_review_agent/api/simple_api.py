@@ -5,6 +5,7 @@ import mimetypes
 import os
 import re
 import secrets
+import shutil
 import socket
 import threading
 import time
@@ -102,6 +103,8 @@ RESEARCH_PRESENTER_NAME = "research_presenter_data.json"
 RESEARCH_DEBUG_NAME = "research_debug_data.json"
 MARKET_DAY_REPORT_NAME = "market_day_report.json"
 AI_RESEARCH_REPORT_NAME = "ai_research_report.json"
+DATED_REPORT_RETENTION_DAYS = 5
+_dated_report_retention_lock = threading.RLock()
 
 
 def normalize_research_model_tier(value: object = None) -> str:
@@ -438,6 +441,12 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             self._json({"error": "当日行情报告尚未生成，暂不扣次数"}, status=409)
             return
 
+        report = _read_json_file(report_path)
+        report_date = _market_day_report_date(report)
+        if report_date and not _is_today_report_date(report_date):
+            self._json({"ok": True, "billing_status": "free_history", "user": user})
+            return
+
         status_payload = _read_market_day_status_payload(run_dir) or _market_day_status_payload(run_id, status="done", stage="done")
         owner_id = int(status_payload.get("user_id") or 0)
         if not bool(status_payload.get("ownerless")) and owner_id and owner_id != int(user["id"]) and user.get("role") != "admin":
@@ -480,9 +489,10 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                 "user_id": owner_id or int(user["id"]),
             }
         )
-        status_payload["report"] = _read_json_file(report_path)
+        status_payload["report"] = report
         status_payload["user"] = updated_user
         _write_market_day_status_payload(run_dir, status_payload)
+        _prune_market_day_reports()
         self._json({"ok": True, "billing_status": "charged", "user": updated_user})
 
     def _receive_market_day_report_push(self) -> None:
@@ -518,6 +528,7 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             }
         )
         _write_market_day_status_payload(run_dir, status_payload)
+        _prune_market_day_reports()
         self._json(
             {
                 "ok": True,
@@ -531,30 +542,30 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
         )
 
     def _list_market_day_reports(self) -> None:
-        self._require_user()
-        limit = 30
-        query = urlparse(self.path).query
-        for part in query.split("&"):
-            key, _, value = part.partition("=")
-            if key == "limit":
-                try:
-                    limit = max(1, min(100, int(value)))
-                except ValueError:
-                    limit = 30
-        self._json({"reports": _recent_market_day_report_summaries(limit=limit)})
+        user = self._require_user()
+        selected_date = _selected_report_date(self.path)
+        reports = _recent_market_day_report_summaries(limit=1, report_date=selected_date)
+        self._json(_dated_report_list_payload(
+            reports=reports,
+            selected_date=selected_date,
+            available_dates=_available_market_day_dates(),
+            user=user,
+            feature="market_day_report",
+            billing_cost=1,
+        ))
 
     def _list_ai_research_reports(self) -> None:
-        self._require_user()
-        limit = 30
-        query = urlparse(self.path).query
-        for part in query.split("&"):
-            key, _, value = part.partition("=")
-            if key == "limit":
-                try:
-                    limit = max(1, min(100, int(value)))
-                except ValueError:
-                    limit = 30
-        self._json({"reports": _recent_ai_research_report_summaries(limit=limit)})
+        user = self._require_user()
+        selected_date = _selected_report_date(self.path)
+        reports = _recent_ai_research_report_summaries(limit=1, report_date=selected_date)
+        self._json(_dated_report_list_payload(
+            reports=reports,
+            selected_date=selected_date,
+            available_dates=_available_ai_research_dates(),
+            user=user,
+            feature="ai_research_view",
+            billing_cost=2,
+        ))
 
     def _ack_ai_research_report(self, path: str) -> None:
         parts = path.split("/")
@@ -568,14 +579,19 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
         if not report_path.exists() or not report_path.is_file():
             self._json({"error": "研报尚未生成成功，暂不扣次数"}, status=409)
             return
+        report = _read_json_file(report_path)
+        report_date = _ai_research_report_date(report)
+        if report_date and not _is_today_report_date(report_date):
+            self._json({"ok": True, "billing_status": "free_history", "user": user, "report": report})
+            return
         updated_user = consume_feature_credit_once(
             AUTH_DB,
             user_id=int(user["id"]),
             feature="ai_research_view",
             ip=self._client_ip(),
             related_id=run_id,
+            credits=2,
         )
-        report = _read_json_file(report_path)
         self._json({"ok": True, "billing_status": "charged", "user": updated_user, "report": report})
 
     def _receive_ai_research_report(self) -> None:
@@ -598,6 +614,7 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
         status_payload = _ai_research_status_payload(run_id, status="done", stage="received", request_id=getattr(self, "_request_id", ""))
         status_payload["report"] = report
         _write_ai_research_status_payload(run_dir, status_payload)
+        _prune_ai_research_reports()
         self._json({"ok": True, "report": _ai_research_public_report(report)}, status=202)
 
     def _list_webhooks(self) -> None:
@@ -1405,7 +1422,13 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
         filename = Path(unquote(parts[5])).name
         run_dir = MARKET_DAY_REPORT_DIR / run_id
         user = self._require_user()
-        access = has_feature_access(
+        if not run_dir.exists() or not run_dir.is_dir():
+            self._json({"error": "market day report not found"}, status=404)
+            return
+        report_path = run_dir / MARKET_DAY_REPORT_NAME
+        report = _read_json_file(report_path) if report_path.exists() else {}
+        free_history = bool(report) and _is_free_history_date(_market_day_report_date(report))
+        access = free_history or has_feature_access(
             AUTH_DB,
             user_id=int(user["id"]),
             feature="market_day_report",
@@ -1465,12 +1488,26 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
         if len(parts) != 6:
             self._json({"error": "not found"}, status=404)
             return
-        self._require_user()
+        user = self._require_user()
         run_id = parts[4]
         filename = Path(unquote(parts[5])).name
         run_dir = AI_RESEARCH_REPORT_DIR / run_id
+        if not run_dir.exists() or not run_dir.is_dir():
+            self._json({"error": "AI research report not found"}, status=404)
+            return
+        report_path = run_dir / AI_RESEARCH_REPORT_NAME
+        report = _read_json_file(report_path) if report_path.exists() else {}
+        access = (bool(report) and _is_free_history_date(_ai_research_report_date(report))) or has_feature_access(
+            AUTH_DB,
+            user_id=int(user["id"]),
+            feature="ai_research_view",
+            related_id=run_id,
+        )
         if filename == "status":
-            self._serve_ai_research_status(run_id, run_dir)
+            self._serve_ai_research_status(run_id, run_dir, access=access)
+            return
+        if not access:
+            self._json({"error": "report access requires view confirmation"}, status=402)
             return
         report_path = run_dir / filename
         if filename != AI_RESEARCH_REPORT_NAME or not report_path.exists() or not report_path.is_file():
@@ -1478,15 +1515,9 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             return
         self._serve_file(report_path)
 
-    def _serve_ai_research_status(self, run_id: str, run_dir: Path) -> None:
-        user = self._require_user()
-        if not has_feature_access(
-            AUTH_DB,
-            user_id=int(user["id"]),
-            feature="ai_research_view",
-            related_id=run_id,
-        ):
-            self._json({"error": "请点击查看并确认扣除 1 次使用机会"}, status=402)
+    def _serve_ai_research_status(self, run_id: str, run_dir: Path, *, access: bool) -> None:
+        if not access:
+            self._json({"error": "请点击查看并确认扣除 2 次使用机会"}, status=402)
             return
         report_path = run_dir / AI_RESEARCH_REPORT_NAME
         status_path = run_dir / REPORT_STATUS_NAME
@@ -1864,6 +1895,7 @@ def _run_market_day_generation_task(
         done["billing_status"] = "ready_to_charge"
         done["report"] = report
         _write_market_day_status_payload(run_dir, done)
+        _prune_market_day_reports()
     except Exception as exc:
         payload = _market_day_status_payload(run_id, status="error", stage=stage, request_id=request_id)
         payload.update(_api_error_payload(exc, request_id=request_id, run_id=run_id, stage=stage))
@@ -2820,70 +2852,184 @@ def _recent_report_summaries(*, limit: int = 30) -> list[dict]:
     return items[:limit]
 
 
-def _recent_market_day_report_summaries(*, limit: int = 30) -> list[dict]:
-    if not MARKET_DAY_REPORT_DIR.exists():
+def _normalized_report_date(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        return normalize_market_date(text)
+    except (TypeError, ValueError):
+        return ""
+
+
+def _market_day_report_date(report: dict) -> str:
+    body = report.get("report") if isinstance(report.get("report"), dict) else {}
+    return _normalized_report_date(report.get("market_date") or report.get("marketDate") or body.get("marketDate"))
+
+
+def _ai_research_report_date(report: dict) -> str:
+    return _normalized_report_date(report.get("research_date") or report.get("date"))
+
+
+def _is_today_report_date(report_date: str) -> bool:
+    return _normalized_report_date(report_date) == datetime.now(CN_TZ).date().isoformat()
+
+
+def _is_free_history_date(report_date: str) -> bool:
+    normalized = _normalized_report_date(report_date)
+    return bool(normalized) and not _is_today_report_date(normalized)
+
+
+def _selected_report_date(path: str) -> str:
+    values = parse_qs(urlparse(path).query).get("date") or []
+    if not values or not str(values[0]).strip():
+        return datetime.now(CN_TZ).date().isoformat()
+    selected = _normalized_report_date(values[0])
+    if not selected:
+        raise AuthError("invalid date, expected YYYY-MM-DD", 400)
+    return selected
+
+
+def _dated_report_entries(root: Path, filename: str, date_reader) -> list[dict]:
+    if not root.exists():
         return []
-    items: list[dict] = []
-    for run_dir in MARKET_DAY_REPORT_DIR.iterdir():
+    entries: list[dict] = []
+    for run_dir in root.iterdir():
         if not run_dir.is_dir():
             continue
-        report_path = run_dir / MARKET_DAY_REPORT_NAME
-        if not report_path.exists():
+        report_path = run_dir / filename
+        if not report_path.exists() or not report_path.is_file():
             continue
-        report = _read_json_file(report_path)
-        market_date = str(report.get("market_date") or (report.get("report") or {}).get("marketDate") or "")
-        report_body = report.get("report") if isinstance(report.get("report"), dict) else {}
-        mainline = report_body.get("mainline") if isinstance(report_body.get("mainline"), dict) else {}
         try:
-            updated_at = datetime.fromtimestamp(run_dir.stat().st_mtime, tz=CN_TZ).strftime("%Y-%m-%d %H:%M:%S")
+            report = _read_json_file(report_path)
+            report_date = date_reader(report)
+            modified = run_dir.stat().st_mtime
         except Exception:
-            updated_at = ""
+            continue
+        if not report_date:
+            continue
+        entries.append({
+            "run_dir": run_dir,
+            "run_id": run_dir.name,
+            "report": report,
+            "report_date": report_date,
+            "modified": modified,
+            "recency": (str(report.get("received_at") or "").strip(), modified, run_dir.name),
+        })
+    entries.sort(key=lambda item: (item["report_date"], item["recency"]), reverse=True)
+    return entries
+
+
+def _latest_dated_report_entries(root: Path, filename: str, date_reader) -> list[dict]:
+    latest: dict[str, dict] = {}
+    for entry in _dated_report_entries(root, filename, date_reader):
+        latest.setdefault(entry["report_date"], entry)
+    return [latest[key] for key in sorted(latest, reverse=True)[:DATED_REPORT_RETENTION_DAYS]]
+
+
+def _prune_dated_reports(root: Path, filename: str, date_reader) -> list[str]:
+    with _dated_report_retention_lock:
+        root.mkdir(parents=True, exist_ok=True)
+        entries = _dated_report_entries(root, filename, date_reader)
+        latest_by_date: dict[str, dict] = {}
+        for entry in entries:
+            latest_by_date.setdefault(entry["report_date"], entry)
+        kept_dates = sorted(latest_by_date, reverse=True)[:DATED_REPORT_RETENTION_DAYS]
+        keep_dirs = {latest_by_date[report_date]["run_dir"] for report_date in kept_dates}
+        for entry in entries:
+            run_dir = entry["run_dir"]
+            if run_dir not in keep_dirs and run_dir.exists():
+                shutil.rmtree(run_dir)
+        return kept_dates
+
+
+def _prune_market_day_reports() -> list[str]:
+    return _prune_dated_reports(MARKET_DAY_REPORT_DIR, MARKET_DAY_REPORT_NAME, _market_day_report_date)
+
+
+def _prune_ai_research_reports() -> list[str]:
+    return _prune_dated_reports(AI_RESEARCH_REPORT_DIR, AI_RESEARCH_REPORT_NAME, _ai_research_report_date)
+
+
+def _available_market_day_dates() -> list[str]:
+    return [entry["report_date"] for entry in _latest_dated_report_entries(MARKET_DAY_REPORT_DIR, MARKET_DAY_REPORT_NAME, _market_day_report_date)]
+
+
+def _available_ai_research_dates() -> list[str]:
+    return [entry["report_date"] for entry in _latest_dated_report_entries(AI_RESEARCH_REPORT_DIR, AI_RESEARCH_REPORT_NAME, _ai_research_report_date)]
+
+
+def _dated_report_list_payload(
+    *, reports: list[dict], selected_date: str, available_dates: list[str], user: dict, feature: str, billing_cost: int
+) -> dict:
+    status = "no_data"
+    cost = 0
+    if reports:
+        run_id = str(reports[0].get("run_id") or "")
+        if not _is_today_report_date(selected_date):
+            status = "free_history"
+        elif has_feature_access(AUTH_DB, user_id=int(user["id"]), feature=feature, related_id=run_id):
+            status = "charged"
+        else:
+            status = "pending_view"
+            cost = billing_cost
+    return {
+        "selected_date": selected_date,
+        "available_dates": available_dates[:DATED_REPORT_RETENTION_DAYS],
+        "reports": reports[:1],
+        "billing_status": status,
+        "billing_cost": cost,
+        "user": user,
+    }
+
+
+def _recent_market_day_report_summaries(*, limit: int = 30, report_date: str = "") -> list[dict]:
+    items: list[dict] = []
+    for entry in _latest_dated_report_entries(MARKET_DAY_REPORT_DIR, MARKET_DAY_REPORT_NAME, _market_day_report_date):
+        market_date = entry["report_date"]
+        if report_date and market_date != report_date:
+            continue
+        report = entry["report"]
+        report_body = report.get("report") if isinstance(report.get("report"), dict) else report
+        mainline = report_body.get("mainline") if isinstance(report_body.get("mainline"), dict) else {}
+        updated_at = datetime.fromtimestamp(entry["modified"], tz=CN_TZ).strftime("%Y-%m-%d %H:%M:%S")
         items.append(
             {
-                "run_id": run_dir.name,
-                "title": f"{market_date or run_dir.name} AI当日行情",
+                "run_id": entry["run_id"],
+                "title": f"{market_date} AI当日行情",
                 "status": "done",
-                "created_at": updated_at,
+                "created_at": str(report.get("received_at") or updated_at),
                 "market_date": market_date,
                 "mainline": str(mainline.get("name") or ""),
                 "one_line_conclusion": str(report_body.get("oneLineConclusion") or ""),
-                "report_route": f"/market-day/report/{run_dir.name}",
-                "report_url": f"/api/market-day/reports/{run_dir.name}/{MARKET_DAY_REPORT_NAME}",
+                "report_route": f"/market-day/report/{entry['run_id']}",
+                "report_url": f"/api/market-day/reports/{entry['run_id']}/{MARKET_DAY_REPORT_NAME}",
             }
         )
-    items.sort(key=lambda item: item.get("created_at") or "", reverse=True)
     return items[:limit]
 
 
-def _recent_ai_research_report_summaries(*, limit: int = 30) -> list[dict]:
-    if not AI_RESEARCH_REPORT_DIR.exists():
-        return []
+def _recent_ai_research_report_summaries(*, limit: int = 30, report_date: str = "") -> list[dict]:
     items: list[dict] = []
-    for run_dir in AI_RESEARCH_REPORT_DIR.iterdir():
-        if not run_dir.is_dir():
+    for entry in _latest_dated_report_entries(AI_RESEARCH_REPORT_DIR, AI_RESEARCH_REPORT_NAME, _ai_research_report_date):
+        research_date = entry["report_date"]
+        if report_date and research_date != report_date:
             continue
-        report_path = run_dir / AI_RESEARCH_REPORT_NAME
-        if not report_path.exists():
-            continue
-        report = _read_json_file(report_path)
-        try:
-            updated_at = datetime.fromtimestamp(run_dir.stat().st_mtime, tz=CN_TZ).strftime("%Y-%m-%d %H:%M:%S")
-        except Exception:
-            updated_at = ""
+        report = entry["report"]
+        updated_at = datetime.fromtimestamp(entry["modified"], tz=CN_TZ).strftime("%Y-%m-%d %H:%M:%S")
         items.append(
             {
-                "run_id": run_dir.name,
+                "run_id": entry["run_id"],
                 "title": str(report.get("title") or "AI研报"),
                 "status": "done",
                 "created_at": str(report.get("received_at") or updated_at),
-                "research_date": str(report.get("research_date") or ""),
+                "research_date": research_date,
                 "summary": str(report.get("summary") or ""),
                 "source": str(report.get("source") or "automation"),
-                "report_route": f"/ai-research/report/{run_dir.name}",
-                "report_url": f"/api/ai-research/reports/{run_dir.name}/{AI_RESEARCH_REPORT_NAME}",
+                "report_route": f"/ai-research/report/{entry['run_id']}",
+                "report_url": f"/api/ai-research/reports/{entry['run_id']}/{AI_RESEARCH_REPORT_NAME}",
             }
         )
-    items.sort(key=lambda item: item.get("created_at") or "", reverse=True)
     return items[:limit]
 
 
@@ -3655,6 +3801,10 @@ def run(host: str = "0.0.0.0", port: int = 8600) -> None:
     init_auth_db(AUTH_DB)
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    MARKET_DAY_REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    AI_RESEARCH_REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    _prune_market_day_reports()
+    _prune_ai_research_reports()
     WATCH_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
     _start_auction_top1_refresh_clock()
     server = SingleInstanceThreadingHTTPServer((host, port), TradeReviewHandler)
