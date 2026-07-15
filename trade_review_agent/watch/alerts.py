@@ -41,6 +41,7 @@ class AlertPlan:
     voice_line: str = ""
     agent_response_id: str = ""
     enabled: bool = True
+    user_id: int = 0
 
 
 @dataclass

@@ -171,7 +171,12 @@ export default function ReviewReportPage({ params }: ReviewReportPageProps) {
     setPresenter(null);
 
     try {
-      const response = await fetch(presenterUrl, { cache: "no-store" });
+      const token = getAuthToken();
+      if (!token) throw new Error("请先登录后查看报告");
+      const response = await fetch(presenterUrl, {
+        headers: { Authorization: `Bearer ${token}` },
+        cache: "no-store",
+      });
       if (!response.ok) {
         throw new Error(`Presenter 请求失败：${response.status}`);
       }
