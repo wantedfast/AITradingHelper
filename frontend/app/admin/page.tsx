@@ -207,8 +207,8 @@ export default function AdminPage() {
     if (!publishIntent || publishing) return;
     setPublishing(true);
     setMessage("");
-    const requestId = crypto.randomUUID();
     try {
+      const requestId = createPublishRequestId();
       let result: { email_campaign?: EmailCampaign | null } = {};
       if (publishIntent.source === "form") {
         const body = JSON.stringify({
@@ -617,5 +617,11 @@ function todayDateInputValue() {
   const month = String(now.getMonth() + 1).padStart(2, "0");
   const day = String(now.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
+}
+
+function createPublishRequestId() {
+  const randomUuid = globalThis.crypto?.randomUUID;
+  if (typeof randomUuid === "function") return randomUuid.call(globalThis.crypto);
+  return `notice-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 14)}`;
 }
 
