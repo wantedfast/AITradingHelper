@@ -268,6 +268,69 @@ class DatedReportAccessTest(unittest.TestCase):
                 self.assertEqual(after_status, 200)
                 self.assertEqual(after_file, 200)
 
+    def test_list_states_support_automatic_history_and_paid_access_but_new_run_requires_payment(self) -> None:
+        today = datetime.now(simple_api.CN_TZ).date().isoformat()
+        old_date = (datetime.now(simple_api.CN_TZ).date() - timedelta(days=1)).isoformat()
+        cases = (
+            (
+                "/api/market-day/reports",
+                "market_day_report",
+                1,
+                self._write_market_report,
+                "market",
+            ),
+            (
+                "/api/ai-research/reports",
+                "ai_research_view",
+                2,
+                self._write_research_report,
+                "research",
+            ),
+        )
+        expected_balance = 20
+
+        for endpoint, feature, cost, writer, prefix in cases:
+            with self.subTest(endpoint=endpoint):
+                empty_status, empty, _ = self._request(f"{endpoint}?{urlencode({'date': today})}")
+                self.assertEqual(empty_status, 200)
+                self.assertEqual(empty["billing_status"], "no_data")
+                self.assertEqual(empty["billing_cost"], 0)
+                self.assertEqual(empty["reports"], [])
+
+                history_run = f"{prefix}-automatic-history"
+                writer(history_run, old_date, order=10)
+                history_status, history, _ = self._request(f"{endpoint}?{urlencode({'date': old_date})}")
+                self.assertEqual(history_status, 200)
+                self.assertEqual(history["billing_status"], "free_history")
+                self.assertEqual(history["billing_cost"], 0)
+                self.assertEqual(history["reports"][0]["run_id"], history_run)
+
+                first_run = f"{prefix}-automatic-current"
+                writer(first_run, today, order=20)
+                pending_status, pending, _ = self._request(f"{endpoint}?{urlencode({'date': today})}")
+                self.assertEqual(pending_status, 200)
+                self.assertEqual(pending["billing_status"], "pending_view")
+                self.assertEqual(pending["billing_cost"], cost)
+                self.assertEqual(self._balance_and_usage(feature), (expected_balance, []))
+
+                ack_status, _, _ = self._request(f"{endpoint}/{first_run}/ack", method="POST")
+                charged_status, charged, _ = self._request(f"{endpoint}?{urlencode({'date': today})}")
+                self.assertEqual(ack_status, 200)
+                self.assertEqual(charged_status, 200)
+                self.assertEqual(charged["billing_status"], "charged")
+                self.assertEqual(charged["billing_cost"], 0)
+                expected_balance -= cost
+                self.assertEqual(self._balance_and_usage(feature), (expected_balance, [(cost, first_run)]))
+
+                replacement_run = f"{prefix}-automatic-replacement"
+                writer(replacement_run, today, order=30)
+                replacement_status, replacement, _ = self._request(f"{endpoint}?{urlencode({'date': today})}")
+                self.assertEqual(replacement_status, 200)
+                self.assertEqual(replacement["reports"][0]["run_id"], replacement_run)
+                self.assertEqual(replacement["billing_status"], "pending_view")
+                self.assertEqual(replacement["billing_cost"], cost)
+                self.assertEqual(self._balance_and_usage(feature), (expected_balance, [(cost, first_run)]))
+
     def test_ai_research_cost_two_rejects_one_credit_without_partial_charge(self) -> None:
         today = datetime.now(simple_api.CN_TZ).date().isoformat()
         run_id = "research-insufficient"

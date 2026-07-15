@@ -13,44 +13,44 @@ import { copyTextToClipboard } from "@/lib/clipboard";
 
 const features = [
   {
+    href: "/auction-strength",
+    title: "每日 TOP5",
+    label: "DAILY TOP 5",
+    icon: Trophy,
+    description: "每天 9:25 集合竞价结束后，选出当天最值得关注的 5 只强势股，并提示需要回避的方向。",
+    points: ["5 只强势股", "风险方向提示", "开盘观察重点", "同日只扣一次"],
+  },
+  {
     href: "/review",
     title: "AI 复盘",
     label: "TRADE REVIEW",
     icon: FileSearch,
-    description: "上传交割单，自动还原买卖过程，结合个股走势、市场情绪与板块强弱，生成可执行的复盘结论。",
-    points: ["买卖点评分", "交易逻辑拆解", "板块强弱判断", "复盘结论生成"],
+    description: "上传交割单，查看每笔交易哪里做对、哪里需要改，以及下次遇到类似情况怎么处理。",
+    points: ["看清做对的地方", "找到需要改的问题", "整理改进方法", "下次照着执行"],
   },
   {
     href: "/watch",
     title: "AI 盯盘",
     label: "TRADING WATCH",
     icon: BellRing,
-    description: "围绕买入价、仓位和市场环境生成次日交易预案，触发关键条件时提醒执行，减少临盘犹豫。",
-    points: ["次日预案", "执行提醒", "风险条件", "执行记录"],
+    description: "填入持仓和计划，整理明天观察什么、什么情况买卖、什么情况先停手。",
+    points: ["明天观察什么", "什么情况买卖", "什么情况停手", "按计划执行"],
   },
   {
     href: "/market-day",
     title: "AI 当日行情",
     label: "MARKET DAY",
     icon: TrendingUp,
-    description: "自动梳理当日 A 股行情，识别主线题材、强势梯队与核心个股，帮助你抓住市场真正的方向。",
-    points: ["主线识别", "强势个股", "梯队判断", "证据链复盘"],
+    description: "每天 19:00（晚上 7 点）总结市场在炒什么、哪些板块强弱，并给出第二天关注重点。",
+    points: ["市场在炒什么", "板块强弱", "当天行情总结", "明天关注重点"],
   },
   {
     href: "/ai-research",
     title: "AI 研报",
     label: "AI RESEARCH",
     icon: FileText,
-    description: "接收盘前消息简报 automation 生成的研报，通过 webhook 自动沉淀到前端，方便开盘前复核。",
-    points: ["盘前简报", "Webhook 推送", "来源留痕", "研报归档"],
-  },
-  {
-    href: "/auction-strength",
-    title: "竞价强者",
-    label: "AUCTION STRENGTH",
-    icon: Trophy,
-    description: "解析集合竞价后的强弱信号，筛选高关注标的、回避风险方向，并给出开盘前的执行重点。",
-    points: ["竞价强弱", "开盘重点", "风险回避", "题材结论"],
+    description: "每天 08:30（早上 8:30）汇总国内外重要消息，解释 CPI、黄金、原油和海外观点可能怎样影响 A 股。",
+    points: ["国内外重要消息", "解释利好利空", "大宗商品影响", "海外观点影响"],
   },
 ];
 
@@ -201,11 +201,11 @@ export default function Page() {
             <button className="nav-action" type="button" onClick={scrollToFeedback}>
               反馈
             </button>
+            <Link href="/auction-strength">每日 TOP5</Link>
             <Link href="/review">AI 复盘</Link>
             <Link href="/watch">AI 盯盘</Link>
             <Link href="/market-day">AI当日行情</Link>
             <Link href="/ai-research">AI研报</Link>
-            <Link href="/auction-strength">竞价强者</Link>
             {hydrated && user?.role === "admin" && <Link href="/admin">管理台</Link>}
             {hydrated && user ? (
               <div className="home-user-menu">
@@ -298,17 +298,17 @@ export default function Page() {
             <div
               className={`hero-performance-chip${showAuctionTooltip ? " is-tooltip-open" : ""}`}
               tabIndex={0}
-              aria-label="查看最近五个交易日竞价强者 Top1"
+              aria-label="查看最近五个交易日每日 TOP5 第1名"
               onMouseEnter={() => setShowAuctionTooltip(true)}
               onMouseLeave={() => setShowAuctionTooltip(false)}
               onFocus={() => setShowAuctionTooltip(true)}
               onBlur={() => setShowAuctionTooltip(false)}
               onClick={() => setShowAuctionTooltip((value) => !value)}
             >
-              <div className="hero-performance-label">竞价强者选股胜率</div>
+              <div className="hero-performance-label">每日 TOP5 第1名胜率</div>
               <div className="hero-performance-rate">{auctionPerformance.win_rate_text}</div>
               <div className="hero-performance-meta">
-                <span>集合竞价强者 Top1</span>
+                <span>每日 TOP5 第1名</span>
                 <span>
                   持有一天收益 <strong>{auctionPerformance.recent_5_avg_return_text}</strong>
                 </span>
@@ -353,7 +353,7 @@ export default function Page() {
             <div className="hero-performance-label">目前集合竞价选股胜率</div>
             <div className="hero-performance-rate">{auctionPerformance.win_rate_text}</div>
             <div className="hero-performance-meta">
-              <span>集合竞价强者 Top1</span>
+              <span>每日 TOP5 第1名</span>
               <span>
                 持有一天收益 <strong>{auctionPerformance.recent_5_avg_return_text}</strong>
               </span>
@@ -417,18 +417,18 @@ export default function Page() {
 
         <section className="auction-strength-section" aria-labelledby="auction-strength-proof-title">
           <div className="auction-strength-copy">
-            <span className="section-kicker">集合竞价强者</span>
-            <h2 id="auction-strength-proof-title">每天开盘前，先看到最强的那一个。</h2>
+            <span className="section-kicker">每日 TOP5</span>
+            <h2 id="auction-strength-proof-title">每天开盘前，先看最值得关注的 5 只股票。</h2>
             <p>
-              系统在集合竞价结束后，自动识别当日强势个股 Top1，并持续记录买入价格、次日收益和累计胜率。
+              每天 9:25 集合竞价结束后，选出 5 只强势股，并提示需要回避的方向；第1名的历史表现会持续记录。
             </p>
             <div className="auction-strength-points">
-              <span>9:25 后快速定位强势个股</span>
+              <span>9:25 后查看 5 只强势股</span>
               <span>记录买入价格与第二天盈利</span>
               <span>持续沉淀当前个股胜率</span>
             </div>
             <Link className="auction-strength-cta" href="/auction-strength">
-              查看今日强者
+              查看今日 TOP5
             </Link>
           </div>
           <AuctionStrengthPerformanceTicker performance={auctionPerformance} />
@@ -502,9 +502,9 @@ export default function Page() {
               <Info className="h-4 w-4" />
               产品使用说明
             </div>
-            <h2 id="product-guide-title">从复盘到盯盘，把交易动作沉淀成可执行流程。</h2>
+            <h2 id="product-guide-title">五个功能，帮你把每天的交易想清楚。</h2>
             <p>
-              盈航目前围绕两个核心环节工作：先用 AI 复盘拆解交易事实和改进点，再把结论转成次日盯盘预案，提醒你按计划执行。
+              开盘前看每日 TOP5 和 AI 研报，收盘后看 AI 当日行情；自己的交易可以用 AI 复盘检查，再用 AI 盯盘整理明天的计划。
             </p>
             <div className="product-guide-grid">
               {features.map((feature) => {

@@ -6,9 +6,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 from trade_review_agent.auth_system import (
+    AuthError,
     confirm_membership_order,
+    consume_feature_credit,
     consume_feature_credit_once,
     create_membership_order,
+    ensure_feature_credit_available,
     has_feature_access,
     init_auth_db,
     submit_membership_payment,
@@ -88,8 +91,66 @@ class MembershipPaymentTest(unittest.TestCase):
             second = consume_feature_credit_once(db_path, user_id=user_id, feature="ai_research_view", related_id="report-1")
 
             self.assertTrue(has_feature_access(db_path, user_id=user_id, feature="ai_research_view", related_id="report-1"))
-            self.assertEqual(first["credits"], 1)
-            self.assertEqual(second["credits"], 1)
+            self.assertEqual(first["credits"], 0)
+            self.assertEqual(second["credits"], 0)
+
+    def test_feature_credit_costs_match_product_pricing(self):
+        cases = {
+            "review_report": 2,
+            "watch_plan": 1,
+            "market_day_report": 1,
+            "ai_research_view": 2,
+            "auction_strength_view": 2,
+        }
+        for feature, expected_cost in cases.items():
+            with self.subTest(feature=feature), tempfile.TemporaryDirectory() as temp_dir:
+                db_path = Path(temp_dir) / "auth.sqlite"
+                user_id = self._create_user(db_path)
+                with closing(sqlite3.connect(db_path)) as conn:
+                    with conn:
+                        conn.execute(
+                            "INSERT INTO credit_ledger (user_id, delta, reason, related_id, created_at) VALUES (?, 5, 'test', NULL, ?)",
+                            (user_id, "2026-07-02T10:00:00+08:00"),
+                        )
+
+                if feature == "watch_plan":
+                    refreshed = consume_feature_credit(db_path, user_id=user_id, feature=feature, related_id="case-1")
+                else:
+                    refreshed = consume_feature_credit_once(db_path, user_id=user_id, feature=feature, related_id="case-1")
+
+                self.assertEqual(refreshed["credits"], 5 - expected_cost)
+                with closing(sqlite3.connect(db_path)) as conn:
+                    usage = conn.execute(
+                        "SELECT credits_spent FROM usage_events WHERE user_id = ? AND feature = ? AND status = 'charged'",
+                        (user_id, feature),
+                    ).fetchone()
+                self.assertEqual(usage[0], expected_cost)
+
+    def test_two_credit_feature_is_blocked_without_sufficient_balance(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "auth.sqlite"
+            user_id = self._create_user(db_path)
+            with closing(sqlite3.connect(db_path)) as conn:
+                with conn:
+                    conn.execute(
+                        "INSERT INTO credit_ledger (user_id, delta, reason, related_id, created_at) VALUES (?, 1, 'test', NULL, ?)",
+                        (user_id, "2026-07-02T10:00:00+08:00"),
+                    )
+
+            with self.assertRaises(AuthError) as precheck_error:
+                ensure_feature_credit_available(db_path, user_id=user_id, feature="review_report", related_id="report-2")
+            self.assertEqual(precheck_error.exception.status, 402)
+            self.assertIn("需要 2 次", precheck_error.exception.message)
+
+            with self.assertRaises(AuthError) as charge_error:
+                consume_feature_credit_once(db_path, user_id=user_id, feature="ai_research_view", related_id="report-2")
+            self.assertEqual(charge_error.exception.status, 402)
+            with closing(sqlite3.connect(db_path)) as conn:
+                balance = conn.execute(
+                    "SELECT COALESCE(SUM(delta), 0) FROM credit_ledger WHERE user_id = ?",
+                    (user_id,),
+                ).fetchone()[0]
+            self.assertEqual(balance, 1)
 
     def test_market_day_report_access_is_idempotent_and_independent_per_user(self):
         with tempfile.TemporaryDirectory() as temp_dir:

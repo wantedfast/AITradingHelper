@@ -621,7 +621,7 @@ export default function WatchClient({ mode }: { mode: Mode }) {
       <MainSidebar
         activeKey="watch"
         hrefOverrides={{ watch: requestedPlanId ? `/watch?planId=${encodeURIComponent(requestedPlanId)}` : "/watch" }}
-        note="把复盘结论沉淀为盘中预案，用纪律替代临盘情绪。"
+        note="填入持仓和计划，整理明天观察什么、什么情况买卖、什么情况先停手。"
       />
 
       <section className="review-workbench-main">
@@ -890,7 +890,7 @@ function WatchEntryView(props: {
             {props.loadingPlans ? <Loader2 className="spin-icon" /> : <Sparkles className="h-4 w-4" />}
             {props.loadingPlans ? "正在生成明日预案" : "生成明日预案"}
           </button>
-          <p className="watch-entry-hint">通常 10 - 20 秒即可完成分析，生成后会直接展示次日预案。</p>
+          <p className="watch-entry-hint">每次生成扣除 1 次，通常 10 - 20 秒即可完成分析并展示次日预案。</p>
         </section>
       </section>
 
