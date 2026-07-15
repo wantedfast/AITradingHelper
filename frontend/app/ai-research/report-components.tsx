@@ -1,4 +1,6 @@
 import { Building2, CalendarDays, CheckCircle2, Clock3, FileText, ListChecks, Target, TrendingUp } from "lucide-react";
+import { ReportPipeContent } from "@/components/report-pipe-table";
+import { parseMarkdownPipeTables } from "@/lib/markdown-pipe-table";
 
 export type AiResearchSummary = {
   run_id: string;
@@ -176,9 +178,14 @@ export function ReportBody({ report, compact = false }: { report: AiResearchRepo
                 {blocks.map((block, index) => (
                   <article key={`${block.title}-${index}`}>
                     <h3>{block.title}</h3>
-                    <ul>
-                      {block.lines.map((line, lineIndex) => <li key={`${line}-${lineIndex}`}>{line}</li>)}
-                    </ul>
+                    <ReportPipeContent
+                      value={block.lines.join("\n")}
+                      renderText={(lines, segmentIndex) => (
+                        <ul key={`text-${segmentIndex}`}>
+                          {lines.filter(Boolean).map((line, lineIndex) => <li key={`${line}-${lineIndex}`}>{cleanMarkdownLine(line)}</li>)}
+                        </ul>
+                      )}
+                    />
                   </article>
                 ))}
               </div>
@@ -283,7 +290,7 @@ function splitMarkdown(markdown: string) {
       blocks.push({ title: heading[1], lines: [] });
     } else {
       if (!blocks.length) blocks.push({ title: "正文", lines: [] });
-      blocks[blocks.length - 1].lines.push(line.replace(/^[-*]\s+/, ""));
+      blocks[blocks.length - 1].lines.push(line);
     }
   }
   return blocks.filter((block) => block.lines.length);
@@ -291,7 +298,14 @@ function splitMarkdown(markdown: string) {
 
 function findBlockLines(blocks: MarkdownBlock[], keywords: string[]) {
   const found = blocks.find((block) => keywords.some((keyword) => block.title.includes(keyword)));
-  return found?.lines || [];
+  if (!found) return [];
+  return parseMarkdownPipeTables(found.lines)
+    .filter((segment) => segment.type === "text")
+    .flatMap((segment) => segment.type === "text" ? segment.lines.map(cleanMarkdownLine).filter(Boolean) : []);
+}
+
+function cleanMarkdownLine(line: string) {
+  return line.trim().replace(/^[-*]\s+/, "");
 }
 
 function field(item: Record<string, unknown>, ...keys: string[]) {

@@ -51,7 +51,7 @@ export const FALLBACK_AUCTION_PERFORMANCE: AuctionPerformancePayload = {
     { trade_date: "2026-06-16", code: "301176", name: "逸豪新材", buy_price: 78.41, sell_date: "2026-06-17", sell_price: 79.89, return_pct: 1.89, return_text: "+1.89%", result: "win" },
     { trade_date: "2026-06-17", code: "002741", name: "光华科技", buy_price: 38.68, sell_date: "2026-06-18", sell_price: 41.3, return_pct: 6.77, return_text: "+6.77%", result: "win" },
     { trade_date: "2026-06-18", code: "600353", name: "旭光电子", buy_price: 41.5, sell_date: "2026-06-22", sell_price: 46.21, return_pct: 11.35, return_text: "+11.35%", result: "win" },
-    { trade_date: "2026-06-22", code: "600397", name: "江铃装备", buy_price: 21.98, sell_date: "2026-06-23", sell_price: 24.44, return_pct: 11.19, return_text: "+11.19%", result: "win" },
+    { trade_date: "2026-06-22", code: "600397", name: "江钨装备", buy_price: 21.98, sell_date: "2026-06-23", sell_price: 24.44, return_pct: 11.19, return_text: "+11.19%", result: "win" },
     { trade_date: "2026-06-23", code: "600353", name: "旭光电子", buy_price: 48.74, sell_date: "2026-06-24", sell_price: 52.9, return_pct: 8.54, return_text: "+8.54%", result: "win" },
     { trade_date: "2026-06-24", code: "000566", name: "海南海药", buy_price: 4.33, sell_date: "2026-06-25", sell_price: 4.59, return_pct: 6.0, return_text: "+6.00%", result: "win" },
     { trade_date: "2026-06-25", code: "002409", name: "雅克科技", buy_price: 184.0, sell_date: "2026-06-26", sell_price: 188.6, return_pct: 2.5, return_text: "+2.50%", result: "win" },
@@ -95,7 +95,7 @@ export function AuctionStrengthPerformanceTicker({ performance }: { performance:
           <p className="auction-performance-label">目前个股胜率</p>
           <h3>{performance.win_rate_text}</h3>
         </div>
-        <div className="auction-performance-badge">集合竞价强者 Top1</div>
+        <div className="auction-performance-badge">每日 TOP5 第1名历史表现</div>
       </div>
 
       <div className="auction-performance-summary">

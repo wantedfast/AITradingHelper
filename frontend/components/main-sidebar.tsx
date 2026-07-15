@@ -18,11 +18,11 @@ const navItems: Array<{
   label: string;
   icon: typeof FileUp;
 }> = [
+  { key: "auction-strength", href: "/auction-strength", label: "每日 TOP5", icon: Trophy },
   { key: "review", href: "/review", label: "AI复盘", icon: FileUp },
   { key: "watch", href: "/watch", label: "AI盯盘", icon: BarChart3 },
   { key: "market-day", href: "/market-day", label: "AI当日行情", icon: TrendingUp },
   { key: "ai-research", href: "/ai-research", label: "AI研报", icon: FileText },
-  { key: "auction-strength", href: "/auction-strength", label: "竞价强者", icon: Trophy },
 ];
 
 export function MainSidebar({ activeKey, note, hrefOverrides }: MainSidebarProps) {

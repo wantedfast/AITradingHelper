@@ -621,7 +621,7 @@ export default function WatchClient({ mode }: { mode: Mode }) {
       <MainSidebar
         activeKey="watch"
         hrefOverrides={{ watch: requestedPlanId ? `/watch?planId=${encodeURIComponent(requestedPlanId)}` : "/watch" }}
-        note="把复盘结论沉淀为盘中预案，用纪律替代临盘情绪。"
+        note="填入持仓和计划，整理明天观察什么、什么情况买卖、什么情况先停手。"
       />
 
       <section className="review-workbench-main">

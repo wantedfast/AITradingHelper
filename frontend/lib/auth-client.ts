@@ -5,6 +5,8 @@ export type UserProfile = {
   phone: string;
   username?: string | null;
   email?: string | null;
+  email_verified?: boolean;
+  email_binding_required?: boolean;
   update_emails_enabled?: boolean;
   role: "user" | "admin";
   invite_code: string;
@@ -50,6 +52,7 @@ export function storeAuth(result: AuthResult) {
   window.localStorage.setItem(TOKEN_KEY, result.token);
   window.localStorage.setItem(USER_KEY, JSON.stringify(result.user));
   window.dispatchEvent(new CustomEvent("ai-trade-auth", { detail: result.user }));
+  window.dispatchEvent(new CustomEvent("ai-trade-login", { detail: result.user }));
 }
 
 export function storeUser(user: UserProfile | null) {

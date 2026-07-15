@@ -1,12 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { ReactNode } from "react";
 import { BarChart3, CalendarDays, Flame, GitBranch, Loader2, LockKeyhole, RefreshCcw, ShieldAlert, Sparkles, Trophy } from "lucide-react";
 import { getAuthToken, storeUser, usageBillingText, type UserProfile } from "@/lib/auth-client";
 import { MainSidebar } from "@/components/main-sidebar";
 import { FinancialDisclaimer } from "@/components/financial-disclaimer";
+import { canReadDatedReport, shouldShowDatedReportPayment, type BillingStatus } from "@/lib/dated-report-access";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || (process.env.NODE_ENV === "development" ? "http://127.0.0.1:8600" : "");
 
@@ -82,6 +83,7 @@ type AuctionPayload = {
   count?: number;
   total?: number;
   billing_status?: "no_data" | "pending_view" | "charged" | "free_history";
+  billing_cost?: number;
   billing_trade_date?: string;
   user?: UserProfile;
   error?: string;
@@ -169,7 +171,7 @@ function stockTitle(item: { name?: string; code?: string }) {
 
 function globalConclusionText(report: AuctionReport | null) {
   if (!report) return "";
-  const conclusion = report.global_conclusion;
+  const conclusion = report.global_conclusion || ({} as AuctionConclusion);
   const parts = [
     conclusion.strongest_stock_at_925 ? `9:25 最强个股是 ${conclusion.strongest_stock_at_925}` : "",
     conclusion.strongest_theme_cluster ? `最强题材集群是 ${conclusion.strongest_theme_cluster}` : "",
@@ -189,9 +191,9 @@ export default function AuctionStrengthPage() {
   const [selectedDate, setSelectedDate] = useState(todayIsoDate());
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState("");
-  const [confirmed, setConfirmed] = useState(false);
+  const [billingStatus, setBillingStatus] = useState<BillingStatus>("no_data");
+  const [billingCost, setBillingCost] = useState(0);
   const [billingMessage, setBillingMessage] = useState("");
-  const ackedDatesRef = useRef<Set<string>>(new Set());
 
   const selectedReport = useMemo(() => {
     if (!reports.length) return latest;
@@ -204,7 +206,7 @@ export default function AuctionStrengthPage() {
       (theme.emotion_anchors || []).map((anchor) => ({ ...anchor, theme: anchor.theme || theme.theme })),
     ) || [];
     const allAnchors = [
-      ...(selectedReport?.global_conclusion.limit_open_emotion_anchors || []),
+      ...(selectedReport?.global_conclusion?.limit_open_emotion_anchors || []),
       ...themeAnchors,
       ...(selectedReport?.emotion_anchors || []),
     ];
@@ -217,14 +219,7 @@ export default function AuctionStrengthPage() {
     });
   }, [selectedReport]);
   const isToday = selectedDate === todayIsoDate();
-  const confirmTitle = isToday ? "查看竞价分析会扣除 2 次使用机会。" : "查看历史竞价分析不扣次数。";
-  const confirmText = isToday
-    ? "查看所选交易日的竞价分析会扣除 2 次使用机会；同一交易日重复刷新或切换记录不会重复扣。"
-    : "历史日期记录可直接查看，不会扣除使用机会；同一交易日重复刷新或切换记录也不会扣。";
-  const confirmButtonText = isToday ? "确认查看并扣次" : "确认查看历史记录";
-  const confirmHint = isToday
-    ? "如果所选日期暂无数据，或数据读取失败，不会扣次数。"
-    : "历史日期仅读取已生成记录，不会触发扣次确认。";
+  const hasAccess = canReadDatedReport(billingStatus);
   const themeGate = selectedReport?.theme_gate_result;
   const admittedThemes = themeGate?.admitted_themes || [];
   const excludedThemes = themeGate?.excluded_themes || [];
@@ -232,30 +227,24 @@ export default function AuctionStrengthPage() {
 
   function handleDateChange(value: string) {
     setSelectedDate(value);
-    setConfirmed(false);
     setLatest(null);
     setReports([]);
     setSelectedId("");
     setMessage("");
     setBillingMessage("");
+    setBillingStatus("no_data");
+    setBillingCost(0);
   }
 
-  function confirmView() {
+  async function confirmView() {
     const token = getAuthToken();
     if (!token) {
       router.push(`/auth?redirect=/auction-strength`);
       return;
     }
-    setConfirmed(true);
     setMessage("");
     setBillingMessage("");
-  }
-
-  const acknowledgeVisibleReport = useCallback(async (tradeDate: string) => {
-    const token = getAuthToken();
-    const key = tradeDate || selectedDate;
-    if (!token || !key || key !== todayIsoDate() || ackedDatesRef.current.has(key)) return;
-    ackedDatesRef.current.add(key);
+    setLoading(true);
     try {
       const response = await fetch(`${API_BASE}/api/auction-strength/ack`, {
         method: "POST",
@@ -263,20 +252,22 @@ export default function AuctionStrengthPage() {
           Authorization: `Bearer ${token}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ trade_date: key }),
+        body: JSON.stringify({ trade_date: selectedDate }),
         cache: "no-store",
       });
       const payload = (await response.json()) as AuctionAckPayload;
-      if (!response.ok) throw new Error(payload.error || "竞价分析已展示，但扣除使用次数失败");
+      if (!response.ok) throw new Error(payload.error || "确认每日 TOP5 访问失败");
       if (payload.user) {
         storeUser(payload.user);
-        setBillingMessage(`竞价分析已展示。${usageBillingText(payload.user)}`);
+        setBillingMessage(`每日 TOP5 已确认展示。${usageBillingText(payload.user)}`);
       }
+      await loadReports(true);
     } catch (error) {
-      ackedDatesRef.current.delete(key);
-      setBillingMessage(error instanceof Error ? error.message : "竞价分析已展示，但扣除使用次数失败");
+      setBillingMessage(error instanceof Error ? error.message : "确认每日 TOP5 访问失败");
+    } finally {
+      setLoading(false);
     }
-  }, [selectedDate]);
+  }
 
   const loadReports = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
@@ -297,6 +288,9 @@ export default function AuctionStrengthPage() {
       if (!response.ok) throw new Error(payload.error || `读取失败：HTTP ${response.status}`);
       const nextReports = payload.reports || [];
       const nextLatest = payload.latest || nextReports[0] || null;
+      setBillingStatus(payload.billing_status || "no_data");
+      setBillingCost(payload.billing_cost || 0);
+      if (payload.user) storeUser(payload.user);
       setReports(nextReports);
       setLatest(nextLatest);
       setSelectedId((current) => {
@@ -304,72 +298,61 @@ export default function AuctionStrengthPage() {
         return nextLatest?.id || nextReports[0]?.id || "";
       });
       if (!silent) {
-        setMessage(nextLatest ? "已刷新竞价强者数据。" : "当前日期暂无竞价强者数据。");
+        setMessage(nextLatest ? "已刷新每日 TOP5 数据。" : "当前日期暂无每日 TOP5 数据。");
       }
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "读取竞价强者数据失败");
+      setMessage(error instanceof Error ? error.message : "读取每日 TOP5 数据失败");
     } finally {
       setLoading(false);
     }
   }, [router, selectedDate]);
 
   useEffect(() => {
-    if (!confirmed) {
-      setLoading(false);
-      return;
-    }
     loadReports();
-  }, [confirmed, loadReports]);
+  }, [loadReports]);
 
   useEffect(() => {
-    if (!confirmed || !isToday) return;
+    if (!isToday) return;
     const timer = window.setInterval(() => loadReports(true), 10000);
     return () => window.clearInterval(timer);
-  }, [confirmed, isToday, loadReports]);
-
-  useEffect(() => {
-    if (!confirmed || !selectedReport) return;
-    void acknowledgeVisibleReport(selectedReport.trade_date || selectedDate);
-  }, [acknowledgeVisibleReport, confirmed, selectedDate, selectedReport]);
+  }, [isToday, loadReports]);
 
   return (
     <main className="review-workbench-page auction-page">
       <MainSidebar
         activeKey="auction-strength"
-        note="09:25 竞价强弱映射，确认查看后展示强势标的、回避标的和全局结论。"
+        note="每天 9:25 集合竞价结束后，选出 5 只强势股，并提示需要回避的方向。"
       />
 
       <section className="review-workbench-main auction-main">
         <header className="auction-topbar">
           <div>
-            <span>AUCTION STRENGTH</span>
-            <b>竞价强者数据看板</b>
+            <span>DAILY TOP 5</span>
+            <b>每日 TOP5</b>
           </div>
           <div className="auction-topbar-actions">
             <label className="auction-date-picker">
               <CalendarDays className="h-4 w-4" />
               <input type="date" value={selectedDate} onChange={(event) => handleDateChange(event.target.value)} />
             </label>
-            {confirmed ? (
-              <button type="button" onClick={() => loadReports()} disabled={loading}>
+            <button type="button" onClick={() => loadReports()} disabled={loading}>
                 {loading ? <Loader2 className="spin-icon" /> : <RefreshCcw className="h-4 w-4" />}
                 <span>刷新数据</span>
-              </button>
-            ) : null}
+            </button>
           </div>
         </header>
 
-        <FinancialDisclaimer compact={confirmed} />
+        <FinancialDisclaimer compact={hasAccess} />
 
         <section className="auction-hero">
           <div>
             <p className="auction-kicker">
               <Flame className="h-4 w-4" />
-              {selectedReport?.trade_date || selectedDate || "等待数据"} · {confirmed ? selectedReport?.analysis_time || "09:25 集合竞价后" : "确认后查看"}
+              {selectedDate || "等待数据"} · {hasAccess ? selectedReport?.analysis_time || "09:25 集合竞价后" : billingStatus === "pending_view" ? "确认后查看" : "等待数据"}
             </p>
-            <h1>{confirmed ? selectedReport?.summary.one_sentence || "当前日期暂无竞价强者数据。" : confirmTitle}</h1>
+            <h1>{hasAccess ? selectedReport?.summary.one_sentence || "当前日期暂无每日 TOP5 数据。" : billingStatus === "pending_view" ? `查看今天的每日 TOP5 将扣除 ${billingCost} 次使用机会` : "当前日期暂无每日 TOP5 数据"}</h1>
             <span className="auction-buy-note">建议以买限价格买入，优先选择开盘方向向上个股</span>
-            <p>{confirmed ? selectedReport?.global_conclusion.one_sentence_for_930 || "当日数据进入后，页面会自动刷新并展示 9:30 前执行重点。" : "确认查看后才会加载 Top5 强势标的、回避标的和全局结论；没有数据或读取失败不会扣次数。"}</p>
+            <p>{hasAccess ? selectedReport?.global_conclusion.one_sentence_for_930 || "当日数据进入后，页面会自动刷新并展示 9:30 前执行重点。" : billingStatus === "pending_view" ? "同一交易日只扣一次；今天已经付费后再切回来会直接显示。" : "没有数据不会扣除使用次数，可以稍后刷新或选择其他日期。"}</p>
           </div>
           <div className="auction-status-strip">
             <article>
@@ -382,22 +365,22 @@ export default function AuctionStrengthPage() {
             </article>
             <article>
               <span>刷新状态</span>
-              <b>{confirmed ? isToday ? "当日自动刷新" : "历史手动刷新" : "待确认查看"}</b>
+              <b>{isToday ? "当日自动刷新" : "历史手动刷新"}</b>
             </article>
           </div>
         </section>
 
-        {!confirmed ? (
+        {shouldShowDatedReportPayment(billingStatus, Boolean(selectedReport)) ? (
           <section className="auction-panel auction-confirm-panel">
-            <PanelHead icon={<LockKeyhole className="h-5 w-5" />} title="确认查看竞价分析" text={confirmText} />
+            <PanelHead icon={<LockKeyhole className="h-5 w-5" />} title="确认查看每日 TOP5" text={`今天的数据尚未付费，确认后扣除 ${billingCost} 次使用机会。`} />
             <div className="auction-confirm-actions">
-              <button type="button" onClick={confirmView}>
-                {confirmButtonText}
+              <button type="button" onClick={confirmView} disabled={loading}>
+                确认查看并扣除 {billingCost} 次
               </button>
-              <span>{confirmHint}</span>
+              <span>所选日期无数据或读取失败时不会扣除使用次数。</span>
             </div>
           </section>
-        ) : (
+        ) : hasAccess ? (
           <>
             {billingMessage ? <p className="auction-message">{billingMessage}</p> : null}
             <section className="auction-grid auction-grid--primary">
@@ -536,7 +519,7 @@ export default function AuctionStrengthPage() {
               </section>
             </section>
           </>
-        )}
+        ) : !loading && billingStatus === "no_data" ? <section className="auction-panel auction-empty"><b>暂无数据</b><span>所选日期暂无每日 TOP5，请稍后刷新或选择其他日期。</span></section> : null}
       </section>
     </main>
   );

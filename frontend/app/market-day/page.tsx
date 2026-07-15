@@ -7,10 +7,9 @@ import { MainSidebar } from "@/components/main-sidebar";
 import { FinancialDisclaimer } from "@/components/financial-disclaimer";
 import { MarketDayReportView, type MarketDayEnvelope } from "@/components/market-day-report-view";
 import { getAuthToken, storeUser, usageBillingText, type UserProfile } from "@/lib/auth-client";
+import { canReadDatedReport, shouldShowDatedReportPayment, type BillingStatus } from "@/lib/dated-report-access";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || (process.env.NODE_ENV === "development" ? "http://127.0.0.1:8600" : "");
-
-type BillingStatus = "no_data" | "pending_view" | "charged" | "free_history";
 
 type MarketDaySummary = {
   run_id: string;
@@ -50,14 +49,13 @@ export default function MarketDayPage() {
   const router = useRouter();
   const [selectedDate, setSelectedDate] = useState(todayIsoDate());
   const [availableDates, setAvailableDates] = useState<string[]>([]);
-  const [confirmed, setConfirmed] = useState(false);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
   const [summary, setSummary] = useState<MarketDaySummary | null>(null);
   const [reportEnvelope, setReportEnvelope] = useState<MarketDayEnvelope | null>(null);
   const [billingMessage, setBillingMessage] = useState("");
   const [billingStatus, setBillingStatus] = useState<BillingStatus>("no_data");
-  const activeRunIdRef = useRef("");
+  const [billingCost, setBillingCost] = useState(0);
   const loadedRunIdRef = useRef("");
   const ackedRunIdsRef = useRef<Set<string>>(new Set());
   const requestRef = useRef(0);
@@ -66,13 +64,12 @@ export default function MarketDayPage() {
 
   function clearSelection(nextMessage = "") {
     requestRef.current += 1;
-    activeRunIdRef.current = "";
     loadedRunIdRef.current = "";
-    setConfirmed(false);
     setSummary(null);
     setReportEnvelope(null);
     setBillingMessage("");
     setBillingStatus("no_data");
+    setBillingCost(0);
     setMessage(nextMessage);
     setLoading(false);
   }
@@ -88,13 +85,20 @@ export default function MarketDayPage() {
       router.push(`/auth?redirect=/market-day`);
       return;
     }
-    setConfirmed(true);
     setMessage("");
     setBillingMessage("");
+    if (!summary?.run_id) return;
+    const requestId = ++requestRef.current;
+    setLoading(true);
+    void loadReport(summary.run_id, token, requestId, true)
+      .catch((error) => setMessage(error instanceof Error ? error.message : "确认报告访问失败"))
+      .finally(() => {
+        if (requestId === requestRef.current) setLoading(false);
+      });
   }
 
-  const loadReport = useCallback(async (runId: string, token: string, requestId: number) => {
-    if (!ackedRunIdsRef.current.has(runId)) {
+  const loadReport = useCallback(async (runId: string, token: string, requestId: number, shouldAcknowledge = false) => {
+    if (shouldAcknowledge && !ackedRunIdsRef.current.has(runId)) {
       ackedRunIdsRef.current.add(runId);
       const ackResponse = await fetch(`${API_BASE}/api/market-day/reports/${encodeURIComponent(runId)}/ack`, {
         method: "POST",
@@ -112,6 +116,7 @@ export default function MarketDayPage() {
         setBillingMessage(`行情报告已确认展示。${usageBillingText(ackPayload.user)}`);
       }
       setBillingStatus(ackPayload.billing_status || "charged");
+      setBillingCost(0);
     }
 
     const response = await fetch(`${API_BASE}/api/market-day/reports/${encodeURIComponent(runId)}/status`, {
@@ -126,7 +131,6 @@ export default function MarketDayPage() {
       setMessage(`报告正在生成（${payload.stage || payload.status || "处理中"}），稍后将自动刷新。`);
       return;
     }
-    activeRunIdRef.current = runId;
     loadedRunIdRef.current = runId;
     setReportEnvelope(payload.report);
     setMessage("");
@@ -151,29 +155,33 @@ export default function MarketDayPage() {
       if (requestId !== requestRef.current) return;
 
       setAvailableDates(payload.available_dates || []);
-      setBillingStatus(payload.billing_status || "no_data");
+      const nextBillingStatus = payload.billing_status || "no_data";
+      setBillingStatus(nextBillingStatus);
+      setBillingCost(payload.billing_cost || 0);
       if (payload.user) storeUser(payload.user);
       const next = (payload.reports || [])[0] || null;
       if (!next?.run_id) {
         setSummary(null);
         setReportEnvelope(null);
-        activeRunIdRef.current = isToday ? "__no_report__" : "";
         loadedRunIdRef.current = "";
         setMessage("所选日期暂无当日行情报告，不会扣除使用次数。");
         return;
       }
 
-      if (isToday && activeRunIdRef.current && activeRunIdRef.current !== next.run_id) {
-        clearSelection("发现新的当日行情报告，请重新确认后查看；本次刷新未扣费。");
-        return;
-      }
-
       setSummary(next);
-      activeRunIdRef.current = next.run_id;
-      if (loadedRunIdRef.current !== next.run_id) {
-        await loadReport(next.run_id, token, requestId);
-      } else if (!silent) {
-        setMessage("报告已刷新至最新版本。");
+      if (canReadDatedReport(nextBillingStatus)) {
+        if (loadedRunIdRef.current !== next.run_id) {
+          await loadReport(next.run_id, token, requestId);
+        } else if (!silent) {
+          setMessage("报告已刷新至最新版本。");
+        }
+      } else {
+        const replaced = isToday && loadedRunIdRef.current && loadedRunIdRef.current !== next.run_id;
+        setReportEnvelope(null);
+        loadedRunIdRef.current = "";
+        if (replaced || !silent) {
+          setMessage(replaced ? "发现新的当日行情报告，请重新确认后查看；本次刷新未扣费。" : "");
+        }
       }
     } catch (error) {
       if (requestId !== requestRef.current) return;
@@ -184,19 +192,18 @@ export default function MarketDayPage() {
   }, [isToday, loadReport, router, selectedDate]);
 
   useEffect(() => {
-    if (!confirmed) return;
     void loadReports();
-  }, [confirmed, loadReports]);
+  }, [loadReports]);
 
   useEffect(() => {
-    if (!confirmed || !isToday) return;
+    if (!isToday) return;
     const timer = window.setInterval(() => void loadReports(true), 15000);
     return () => window.clearInterval(timer);
-  }, [confirmed, isToday, loadReports]);
+  }, [isToday, loadReports]);
 
   return (
     <main className="review-workbench-page auction-page dated-report-page market-day-page">
-      <MainSidebar activeKey="market-day" note="按日期查看 AI 当日行情；确认后在当前页面展开完整复盘。" />
+      <MainSidebar activeKey="market-day" note="每天 19:00（晚上 7 点）总结市场在炒什么、哪些板块强弱，并给出第二天关注重点。" />
       <section className="review-workbench-main auction-main">
         <header className="auction-topbar">
           <div><span>DAILY MARKET REVIEW</span><b>AI 当日行情</b></div>
@@ -206,34 +213,32 @@ export default function MarketDayPage() {
               <input type="date" value={selectedDate} max={todayIsoDate()} list="market-day-available-dates" onChange={(event) => handleDateChange(event.target.value)} />
               <datalist id="market-day-available-dates">{availableDates.map((date) => <option value={date} key={date} />)}</datalist>
             </label>
-            {confirmed ? (
-              <button type="button" onClick={() => void loadReports()} disabled={loading}>
+            <button type="button" onClick={() => void loadReports()} disabled={loading}>
                 {loading ? <Loader2 className="spin-icon" /> : <RefreshCcw />}<span>刷新报告</span>
-              </button>
-            ) : null}
+            </button>
           </div>
         </header>
 
-        <FinancialDisclaimer compact={confirmed} />
+        <FinancialDisclaimer compact={canReadDatedReport(billingStatus)} />
 
         <section className="auction-hero dated-report-hero">
           <div>
-            <p className="auction-kicker"><TrendingUp />{selectedDate} · {confirmed ? "已确认查看" : "确认后查看"}</p>
-            <h1>{confirmed ? summary?.one_line_conclusion || "等待所选日期的行情报告" : isToday ? "查看今天行情将扣除 1 次使用机会" : "历史行情报告免费查看"}</h1>
-            <p>{confirmed ? summary?.mainline ? `当前主线：${summary.mainline}` : "报告正文将在完成确认后于当前页面展开。" : isToday ? "同一份报告重复刷新不重复扣费；若今天生成了新批次，会先退出正文并要求重新确认。" : "历史日期只读取已生成报告，不扣除使用次数，也不会触发新的报告生成。"}</p>
+            <p className="auction-kicker"><TrendingUp />{selectedDate} · {canReadDatedReport(billingStatus) ? "可以直接查看" : billingStatus === "pending_view" ? "确认后查看" : "等待报告"}</p>
+            <h1>{canReadDatedReport(billingStatus) ? summary?.one_line_conclusion || "等待所选日期的行情报告" : billingStatus === "pending_view" ? `查看今天行情将扣除 ${billingCost} 次使用机会` : "所选日期暂无行情报告"}</h1>
+            <p>{canReadDatedReport(billingStatus) ? summary?.mainline ? `当前主线：${summary.mainline}` : "报告正文已在当前页面展开。" : billingStatus === "pending_view" ? "同一份报告重复刷新不重复扣费；若今天生成了新批次，会重新要求确认。" : "没有数据不会扣除使用次数，可以稍后刷新或选择其他日期。"}</p>
           </div>
           <div className="auction-status-strip">
             <article><span>所选日期</span><b>{selectedDate}</b></article>
-            <article><span>报告状态</span><b>{summary ? "已生成" : confirmed ? "暂无数据" : "待确认"}</b></article>
+            <article><span>报告状态</span><b>{summary ? "已生成" : "暂无数据"}</b></article>
             <article><span>计费状态</span><b>{billingStatusText(billingStatus, isToday)}</b></article>
           </div>
         </section>
 
-        {!confirmed ? (
+        {shouldShowDatedReportPayment(billingStatus, Boolean(summary)) ? (
           <section className="auction-panel auction-confirm-panel">
-            <div className="auction-panel-head"><LockKeyhole /><div><h2>确认查看 AI 当日行情</h2><p>{isToday ? "确认后读取今天最新一份行情报告并扣除 1 次使用机会。" : "确认后免费读取所选历史日期的最新一份行情报告。"}</p></div></div>
+            <div className="auction-panel-head"><LockKeyhole /><div><h2>确认查看 AI 当日行情</h2><p>今天这份行情报告尚未付费，确认后扣除 {billingCost} 次使用机会。</p></div></div>
             <div className="auction-confirm-actions">
-              <button type="button" onClick={confirmView}>{isToday ? "确认查看并扣除 1 次" : "确认免费查看历史报告"}</button>
+              <button type="button" onClick={confirmView} disabled={loading}>确认查看并扣除 {billingCost} 次</button>
               <span>所选日期无数据或读取失败时不会调用确认扣费接口。</span>
             </div>
           </section>
@@ -242,7 +247,7 @@ export default function MarketDayPage() {
             {loading && !reportEnvelope ? <LoadingPanel text="正在读取所选日期的行情报告" /> : null}
             {message ? <p className="auction-message" role="status">{message}</p> : null}
             {billingMessage ? <p className="auction-message" role="status">{billingMessage}</p> : null}
-            {!loading && !summary ? <EmptyPanel text="所选日期暂无行情报告，请稍后刷新或选择其他日期。" /> : null}
+            {!loading && billingStatus === "no_data" ? <EmptyPanel text="所选日期暂无行情报告，请稍后刷新或选择其他日期。" /> : null}
             {reportEnvelope ? <MarketDayReportView envelope={reportEnvelope} /> : null}
           </>
         )}

@@ -1,7 +1,11 @@
 import sqlite3
 import os
+import smtplib
 import tempfile
+import threading
+import time
 import unittest
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from pathlib import Path
@@ -9,6 +13,7 @@ from unittest import mock
 
 from trade_review_agent.auth_system import (
     AuthError,
+    UpdateEmailSMTPSession,
     create_update_notice,
     init_auth_db,
     latest_published_update_notice,
@@ -172,6 +177,127 @@ class UpdateNoticeTest(unittest.TestCase):
             with closing(sqlite3.connect(db_path)) as conn:
                 status = conn.execute("SELECT status FROM update_email_campaigns WHERE id = ?", (campaign_id,)).fetchone()[0]
             self.assertEqual(status, "completed")
+
+    def test_concurrent_workers_claim_each_delivery_once_and_send_in_parallel(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "auth.sqlite"
+            admin_id = self._create_admin(db_path)
+            with closing(sqlite3.connect(db_path)) as conn:
+                with conn:
+                    for index in range(1, 8):
+                        conn.execute(
+                            """
+                            INSERT INTO users (
+                                phone, username, email, email_verified, update_emails_enabled,
+                                password_hash, password_salt, role, status, invite_code, created_at
+                            ) VALUES (?, ?, ?, 1, 1, 'hash', 'salt', 'user', 'active', ?, ?)
+                            """,
+                            (
+                                f"parallel-user-{index}",
+                                f"paralleluser{index}",
+                                f"parallel{index}@example.com",
+                                f"PARALLEL{index}",
+                                "2026-07-15T10:00:00+08:00",
+                            ),
+                        )
+            notice = create_update_notice(
+                db_path, title="Parallel update", version="2026-07-15", items=["One"], admin_id=admin_id
+            )
+            result = publish_update_notice(
+                db_path,
+                notice_id=int(notice["id"]),
+                send_email=True,
+                request_id="parallel-campaign-001",
+                admin_id=admin_id,
+            )
+            campaign_id = int(result["email_campaign"]["id"])
+
+            sent_ids: list[int] = []
+            active = 0
+            max_active = 0
+            send_lock = threading.Lock()
+
+            def sender(delivery: dict) -> None:
+                nonlocal active, max_active
+                with send_lock:
+                    sent_ids.append(int(delivery["id"]))
+                    active += 1
+                    max_active = max(max_active, active)
+                # Keep the send phase open long enough for other workers to overlap.
+                time.sleep(0.08)
+                with send_lock:
+                    active -= 1
+
+            def process_one(_index: int) -> bool:
+                return process_next_update_email(db_path, sender=sender)
+
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                processed = list(pool.map(process_one, range(8)))
+
+            self.assertEqual(processed, [True] * 8)
+            self.assertGreaterEqual(max_active, 2, "queue sends remained serial despite four workers")
+            self.assertEqual(len(sent_ids), 8)
+            self.assertEqual(Counter(sent_ids), Counter(set(sent_ids)), "a delivery was claimed more than once")
+            with closing(sqlite3.connect(db_path)) as conn:
+                rows = conn.execute(
+                    "SELECT id, status, attempt_count FROM update_email_deliveries WHERE campaign_id = ? ORDER BY id",
+                    (campaign_id,),
+                ).fetchall()
+            self.assertEqual(len(rows), 8)
+            self.assertTrue(all(status == "sent" and attempts == 1 for _, status, attempts in rows))
+
+    def test_smtp_session_reuses_connection_and_keeps_one_to_recipient_per_message(self):
+        server = mock.Mock()
+        smtp_env = {
+            "SMTP_HOST": "smtp.example.test",
+            "SMTP_PORT": "465",
+            "SMTP_USER": "mailer@example.test",
+            "SMTP_PASSWORD": "secret",
+            "SMTP_FROM": "updates@example.test",
+            "SMTP_USE_SSL": "1",
+        }
+        with mock.patch.dict(os.environ, smtp_env, clear=False), mock.patch(
+            "trade_review_agent.auth_system.smtplib.SMTP_SSL", return_value=server
+        ) as connect:
+            session = UpdateEmailSMTPSession()
+            session.send("first@example.com", subject="First", text="One")
+            session.send("second@example.com", subject="Second", text="Two")
+            session.close()
+
+        connect.assert_called_once_with("smtp.example.test", 465, timeout=15)
+        server.login.assert_called_once_with("mailer@example.test", "secret")
+        self.assertEqual(server.send_message.call_count, 2)
+        messages = [call.args[0] for call in server.send_message.call_args_list]
+        self.assertEqual([message["To"] for message in messages], ["first@example.com", "second@example.com"])
+        self.assertTrue(all(message.get("Cc") is None and message.get("Bcc") is None for message in messages))
+        server.quit.assert_called_once_with()
+
+    def test_smtp_session_reconnects_once_after_disconnect(self):
+        first_server = mock.Mock()
+        first_server.send_message.side_effect = smtplib.SMTPServerDisconnected("connection lost")
+        second_server = mock.Mock()
+        smtp_env = {
+            "SMTP_HOST": "smtp.example.test",
+            "SMTP_PORT": "465",
+            "SMTP_USER": "mailer@example.test",
+            "SMTP_PASSWORD": "secret",
+            "SMTP_FROM": "updates@example.test",
+            "SMTP_USE_SSL": "1",
+        }
+        with mock.patch.dict(os.environ, smtp_env, clear=False), mock.patch(
+            "trade_review_agent.auth_system.smtplib.SMTP_SSL", side_effect=[first_server, second_server]
+        ) as connect:
+            session = UpdateEmailSMTPSession()
+            session.send("recipient@example.com", subject="Update", text="Body")
+            session.close()
+
+        self.assertEqual(connect.call_count, 2)
+        first_server.send_message.assert_called_once()
+        second_server.send_message.assert_called_once()
+        self.assertEqual(first_server.send_message.call_args.args[0]["To"], "recipient@example.com")
+        self.assertEqual(second_server.send_message.call_args.args[0]["To"], "recipient@example.com")
+        first_server.quit.assert_called_once_with()
+        second_server.quit.assert_called_once_with()
 
 
 if __name__ == "__main__":
