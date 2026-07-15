@@ -1908,6 +1908,77 @@
     padding-inline: var(--mobile-page-gutter);
   }
 
+  .admin-layout {
+    width: 100%;
+    display: block;
+  }
+
+  .admin-sidebar {
+    display: none;
+  }
+
+  .admin-mobile-section-switcher {
+    position: sticky;
+    z-index: 85;
+    top: 0;
+    margin: 0 calc(var(--mobile-page-gutter) * -1) 14px;
+    padding: 7px var(--mobile-page-gutter);
+    display: block;
+    overflow-x: auto;
+    background: rgba(5, 8, 7, .94);
+    backdrop-filter: blur(16px);
+  }
+
+  .admin-mobile-section-switcher .admin-section-nav {
+    width: max-content;
+    display: flex;
+  }
+
+  .admin-mobile-section-switcher .admin-section-nav button {
+    min-height: 42px;
+    flex: 0 0 auto;
+  }
+
+  .admin-topbar {
+    flex-direction: row;
+    align-items: center;
+  }
+
+  .admin-topbar h1 {
+    margin: 0;
+    font-size: 26px;
+  }
+
+  .admin-actions {
+    width: auto;
+    flex-wrap: nowrap;
+  }
+
+  .admin-actions button,
+  .admin-actions a {
+    width: 44px;
+    min-width: 44px;
+    padding: 0;
+    overflow: hidden;
+    font-size: 0;
+  }
+
+  .admin-actions svg { width: 18px; }
+
+  .admin-priority-grid { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .admin-priority-grid button { min-height: 82px; grid-template-columns: minmax(0,1fr) auto; align-items: center; }
+  .admin-priority-grid button small { grid-column: 1 / -1; }
+
+  .admin-login-page { padding: 14px; }
+  .admin-login-card { padding: 20px 16px; border-radius: 16px; }
+  .admin-login-card h1 { font-size: 29px; }
+
+  .home-operations-footer { min-height: 58px; }
+
+  .admin-order-table-head { display: none; }
+  .admin-order-table .admin-list-item { display: block; }
+  .admin-order-table .admin-list-item > * { margin-top: 8px; }
+
   .admin-topbar h1,
   .billing-topbar h1,
   .webhook-hero h1 {

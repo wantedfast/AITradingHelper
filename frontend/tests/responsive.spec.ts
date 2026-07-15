@@ -485,3 +485,65 @@ test.describe("membership plan selection", () => {
     await expectNoGlobalHorizontalOverflow(page, "annual membership checkout");
   });
 });
+
+test.describe("independent admin access", () => {
+  test.use({ viewport: { width: 390, height: 844 } });
+
+  test("ordinary auth has no admin mode or administrator fields", async ({ page }) => {
+    let loginPath = "";
+    await page.route("**/api/legal/registration-agreement", (route) => json(route, { agreement_type: "registration", version: "test", effective_at: "2026-07-15", title: "注册协议", operator_name: "盈航", sections: [], confirmation: "同意", content_hash: "test" }));
+    await page.route("**/api/auth/password-login", (route) => {
+      loginPath = new URL(route.request().url()).pathname;
+      return json(route, { token: "user-token", user: { ...fixtureUser, role: "user" } });
+    });
+    for (const unsafeRedirect of ["javascript:alert(1)", "/\\evil.example", "/admin?section=users"]) {
+      loginPath = "";
+      await page.goto(`/auth?redirect=${encodeURIComponent(unsafeRedirect)}`, { waitUntil: "domcontentloaded" });
+      await page.waitForLoadState("networkidle");
+      await expect(page.getByText("管理员入口")).toHaveCount(0);
+      await expect(page.locator('input[placeholder="请输入管理员账号"]')).toHaveCount(0);
+      await expect(page.locator(".account-mode-switch button")).toHaveCount(2);
+      await page.locator(".account-form input").nth(0).fill("ordinary-user");
+      await page.locator(".account-form input").nth(1).fill("safe-password");
+      await page.locator('.account-form button[type="submit"]').click({ noWaitAfter: true });
+      await expect.poll(() => loginPath).toBe("/api/auth/password-login");
+      await expect(page).toHaveURL(/\/$/);
+    }
+  });
+
+  test("admin section query persists and mobile switcher changes the URL", async ({ page }) => {
+    await installStableApiFixtures(page);
+    await page.goto("/admin?section=orders", { waitUntil: "domcontentloaded" });
+    const switcher = page.locator(".admin-mobile-section-switcher");
+    await expect(switcher).toBeVisible();
+    await expect(switcher.getByRole("button", { name: "会员订单" })).toHaveAttribute("aria-current", "page");
+    await switcher.getByRole("button", { name: "反馈建议" }).click();
+    await expect(page).toHaveURL(/\/admin\?section=feedback$/);
+    await expect(switcher.getByRole("button", { name: "反馈建议" })).toHaveAttribute("aria-current", "page");
+    await expectNoGlobalHorizontalOverflow(page, "admin section switcher");
+  });
+
+  test("admin login uses the dedicated endpoint and rejects external redirects", async ({ page }) => {
+    test.setTimeout(30_000);
+    let loginPath = "";
+    await page.route("**/api/auth/admin-login", async (route) => {
+      loginPath = new URL(route.request().url()).pathname;
+      return json(route, { token: "admin-token", user: fixtureUser });
+    });
+    await page.route("**/api/auth/me", (route) => json(route, { user: fixtureUser }));
+    await page.route("**/api/admin/dashboard**", (route) => json(route, {
+      totals: { users: 0, credits: 0, feedback_pending: 0, orders_paid: 0 },
+      usage_by_day: [], new_users_by_day: [], feedback: [], orders: [], top_users: [], credit_grant_campaigns: [], update_notices: [],
+    }));
+    for (const unsafeRedirect of ["https://example.com", "/\\evil.example"]) {
+      loginPath = "";
+      await page.goto(`/admin/login?redirect=${encodeURIComponent(unsafeRedirect)}`, { waitUntil: "domcontentloaded" });
+      await page.waitForLoadState("networkidle");
+      await page.locator('input[autocomplete="username"]').fill("admin");
+      await page.locator('input[autocomplete="current-password"]').fill("secret");
+      await page.locator('button[type="submit"]').click({ noWaitAfter: true });
+      await expect.poll(() => loginPath).toBe("/api/auth/admin-login");
+      await expect(page).toHaveURL(/\/admin$/);
+    }
+  });
+});
