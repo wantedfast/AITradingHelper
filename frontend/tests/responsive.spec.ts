@@ -84,7 +84,11 @@ function json(route: Route, body: unknown, status = 200) {
   });
 }
 
-async function installStableApiFixtures(page: Page) {
+async function installStableApiFixtures(
+  page: Page,
+  options: { datedBillingStatus?: "charged" | "pending_view" } = {},
+) {
+  const datedBillingStatus = options.datedBillingStatus || "charged";
   await page.addInitScript((user) => {
     window.localStorage.setItem("ai_trade_token", "responsive-test-token");
     window.localStorage.setItem("ai_trade_user", JSON.stringify(user));
@@ -99,13 +103,43 @@ async function installStableApiFixtures(page: Page) {
     if (path === "/api/pay/membership/plans") return json(route, { plans: [] });
     if (path === "/api/update-notices/latest") return json(route, { notice: null });
     if (path === "/api/webhooks") return json(route, { events: [], count: 0, total: 0 });
+    if (path === "/api/auction-strength") {
+      const report = {
+        id: "responsive-daily-top5",
+        request_id: "responsive-daily-top5",
+        received_at: "2026-07-15T09:25:00+08:00",
+        source_ip: "127.0.0.1",
+        trade_date: "2026-07-15",
+        analysis_time: "09:25",
+        summary: { one_sentence: "responsive fixture", selection_logic: "fixture", data_limit: "fixture" },
+        top5_strong_stocks: [],
+        top5_avoid_stocks: [],
+        global_conclusion: {
+          strongest_stock_at_925: "--",
+          strongest_theme_cluster: "--",
+          most_over_expected_stock: "--",
+          best_capacity_confirmation: "--",
+          biggest_negative_feedback: "--",
+          one_sentence_for_930: "responsive fixture",
+        },
+      };
+      return json(route, {
+        latest: report,
+        reports: [report],
+        count: 1,
+        total: 1,
+        billing_status: datedBillingStatus,
+        billing_cost: datedBillingStatus === "pending_view" ? 2 : 0,
+        user: fixtureUser,
+      });
+    }
     if (path === "/api/market-day/reports") {
       return json(route, {
         selected_date: url.searchParams.get("date"),
         available_dates: ["2026-07-15"],
         reports: [{ run_id: marketDayReport.run_id, market_date: "2026-07-15", mainline: "测试主线", one_line_conclusion: "移动端行情报告布局验证" }],
-        billing_status: "charged",
-        billing_cost: 0,
+        billing_status: datedBillingStatus,
+        billing_cost: datedBillingStatus === "pending_view" ? 1 : 0,
         user: fixtureUser,
       });
     }
@@ -117,8 +151,8 @@ async function installStableApiFixtures(page: Page) {
         selected_date: url.searchParams.get("date"),
         available_dates: ["2026-07-15"],
         reports: [{ run_id: aiResearchReport.run_id, research_date: "2026-07-15", title: aiResearchReport.title, summary: aiResearchReport.summary }],
-        billing_status: "charged",
-        billing_cost: 0,
+        billing_status: datedBillingStatus,
+        billing_cost: datedBillingStatus === "pending_view" ? 2 : 0,
         user: fixtureUser,
       });
     }
@@ -191,6 +225,26 @@ async function expectFeatureNavigationInViewport(page: Page, viewportHeight: num
   }
 }
 
+async function expectPrimaryDockAboveNavigation(page: Page) {
+  const dock = page.locator(".mobile-action-dock");
+  const nav = page.locator(".review-workbench-nav");
+  await expect(dock).toBeVisible();
+  await expect(nav).toBeVisible();
+
+  const [dockBox, navBox] = await Promise.all([dock.boundingBox(), nav.boundingBox()]);
+  expect(dockBox, "primary action dock should have a measurable layout box").not.toBeNull();
+  expect(navBox, "feature navigation should have a measurable layout box").not.toBeNull();
+  expect(dockBox!.x).toBeGreaterThanOrEqual(0);
+  expect(dockBox!.x + dockBox!.width).toBeLessThanOrEqual((await page.evaluate(() => window.innerWidth)) + 1);
+  expect(dockBox!.y + dockBox!.height, "primary action must not sit behind the feature navigation").toBeLessThanOrEqual(navBox!.y + 1);
+
+  const button = dock.locator("button");
+  await expect(button).toBeVisible();
+  const buttonBox = await button.boundingBox();
+  expect(buttonBox, "primary action button should have a measurable layout box").not.toBeNull();
+  expect(buttonBox!.height, "primary action button must provide a 48px touch target").toBeGreaterThanOrEqual(47);
+}
+
 for (const viewport of viewports) {
   test.describe(`responsive ${viewport.name}`, () => {
     test.use({ viewport: { width: viewport.width, height: viewport.height } });
@@ -245,6 +299,20 @@ for (const viewport of viewports) {
     });
 
     if (viewport.width <= 767) {
+      test("paid report actions remain visible above the five-feature navigation", async ({ page }) => {
+        await installStableApiFixtures(page, { datedBillingStatus: "pending_view" });
+
+        for (const path of ["/auction-strength", "/market-day", "/ai-research"]) {
+          await test.step(path, async () => {
+            await page.goto(path, { waitUntil: "domcontentloaded" });
+            await expect(page.locator(".mobile-action-dock")).toBeVisible({ timeout: 30_000 });
+            await page.locator(".mobile-action-dock").scrollIntoViewIfNeeded();
+            await expectPrimaryDockAboveNavigation(page);
+            await expectNoGlobalHorizontalOverflow(page, `${path} pending payment action`);
+          });
+        }
+      });
+
       test("wide report tables scroll locally and detailed sections start collapsed", async ({ page }) => {
         await installStableApiFixtures(page);
 

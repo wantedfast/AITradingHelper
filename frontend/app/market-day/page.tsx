@@ -5,6 +5,8 @@ import { useRouter } from "next/navigation";
 import { CalendarDays, Loader2, LockKeyhole, RefreshCcw, TrendingUp } from "lucide-react";
 import { MainSidebar } from "@/components/main-sidebar";
 import { FinancialDisclaimer } from "@/components/financial-disclaimer";
+import { MobileActionDock } from "@/components/mobile-action-dock";
+import { MobileTaskHeader } from "@/components/mobile-task-header";
 import { MarketDayReportView, type MarketDayEnvelope } from "@/components/market-day-report-view";
 import { getAuthToken, storeUser, usageBillingText, type UserProfile } from "@/lib/auth-client";
 import { canReadDatedReport, shouldShowDatedReportPayment, type BillingStatus } from "@/lib/dated-report-access";
@@ -221,6 +223,13 @@ export default function MarketDayPage() {
 
         <FinancialDisclaimer compact={canReadDatedReport(billingStatus)} />
 
+        <MobileTaskHeader
+          eyebrow={<><TrendingUp />{selectedDate}</>}
+          title="AI 当日行情"
+          description={canReadDatedReport(billingStatus) ? summary?.one_line_conclusion || "当天市场总结已准备好。" : billingStatus === "pending_view" ? `确认后扣除 ${billingCost} 次使用机会。` : "所选日期暂无报告，可稍后刷新。"}
+          status={billingStatusText(billingStatus, isToday)}
+        />
+
         <section className="auction-hero dated-report-hero">
           <div>
             <p className="auction-kicker"><TrendingUp />{selectedDate} · {canReadDatedReport(billingStatus) ? "可以直接查看" : billingStatus === "pending_view" ? "确认后查看" : "等待报告"}</p>
@@ -237,10 +246,10 @@ export default function MarketDayPage() {
         {shouldShowDatedReportPayment(billingStatus, Boolean(summary)) ? (
           <section className="auction-panel auction-confirm-panel">
             <div className="auction-panel-head"><LockKeyhole /><div><h2>确认查看 AI 当日行情</h2><p>今天这份行情报告尚未付费，确认后扣除 {billingCost} 次使用机会。</p></div></div>
-            <div className="auction-confirm-actions">
+            <MobileActionDock className="auction-confirm-actions">
               <button type="button" onClick={confirmView} disabled={loading}>确认查看并扣除 {billingCost} 次</button>
               <span>所选日期无数据或读取失败时不会调用确认扣费接口。</span>
-            </div>
+            </MobileActionDock>
           </section>
         ) : (
           <>

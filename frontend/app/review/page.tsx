@@ -28,6 +28,7 @@ import {
 import { getAuthToken, storeUser } from "@/lib/auth-client";
 import { MainSidebar } from "@/components/main-sidebar";
 import { FinancialDisclaimer } from "@/components/financial-disclaimer";
+import { MobileTaskHeader } from "@/components/mobile-task-header";
 
 type ReportPayload = {
   run_id?: string;
@@ -603,6 +604,12 @@ export default function ReviewPage() {
           </div>
         </header>
         <FinancialDisclaimer />
+        <MobileTaskHeader
+          eyebrow="AI REVIEW"
+          title="AI 复盘"
+          description="输入一笔交易或上传交割单，快速看清哪里做对、哪里需要改。"
+          status="生成成功后首次查看扣除 2 次"
+        />
         <section className="review-console-hero">
           <div className="review-hero-copy">
             <p className="review-kicker">AI REVIEW AGENT</p>
