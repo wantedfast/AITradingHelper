@@ -598,15 +598,30 @@ def login_password_user(db_path: Path, *, account: str, password: str, ip: str =
     if not account or not password:
         raise AuthError("请输入账号/邮箱和密码", 400)
     with _connect(db_path) as conn:
-        if EMAIL_RE.match(account):
-            user = _fetch_user_by_email(conn, normalize_email(account))
-        elif account.isdigit():
-            user = _fetch_user_by_phone(conn, account)
-        else:
-            admin_phone = os.getenv("ADMIN_PHONE", "admin").strip()
-            user = _fetch_user_by_phone(conn, account) if account == admin_phone else _fetch_user_by_username(conn, account)
+        user = _fetch_user_by_login_account(conn, account)
         if not user or not _verify_password(password, user["password_salt"], user["password_hash"]):
             raise AuthError("账号/邮箱或密码错误", 401)
+        if user["role"] == "admin":
+            raise AuthError("管理员账号请使用运营后台入口登录", 403)
+        if user["status"] != "active":
+            raise AuthError("账号已被停用，请联系管理员", 403)
+        now = _now()
+        conn.execute("UPDATE users SET last_login_at = ? WHERE id = ?", (now, user["id"]))
+        token = _create_session(conn, int(user["id"]))
+        user = _fetch_user_by_id(conn, int(user["id"]))
+        return {"token": token, "user": _user_payload(conn, user)}
+
+
+def login_admin_password_user(db_path: Path, *, account: str, password: str, ip: str = "") -> dict[str, Any]:
+    account = (account or "").strip()
+    if not account or not password:
+        raise AuthError("管理员账号或权限错误", 401)
+    with _connect(db_path) as conn:
+        user = _fetch_user_by_login_account(conn, account)
+        if not user or not _verify_password(password, user["password_salt"], user["password_hash"]):
+            raise AuthError("管理员账号或权限错误", 401)
+        if user["role"] != "admin":
+            raise AuthError("管理员账号或权限错误", 401)
         if user["status"] != "active":
             raise AuthError("账号已被停用，请联系管理员", 403)
         now = _now()
@@ -2015,6 +2030,15 @@ def _fetch_user_by_username(conn: sqlite3.Connection, username: str) -> sqlite3.
 
 def _fetch_user_by_email(conn: sqlite3.Connection, email: str) -> sqlite3.Row | None:
     return conn.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
+
+
+def _fetch_user_by_login_account(conn: sqlite3.Connection, account: str) -> sqlite3.Row | None:
+    if EMAIL_RE.match(account):
+        return _fetch_user_by_email(conn, normalize_email(account))
+    if account.isdigit():
+        return _fetch_user_by_phone(conn, account)
+    admin_phone = os.getenv("ADMIN_PHONE", "admin").strip()
+    return _fetch_user_by_phone(conn, account) if account == admin_phone else _fetch_user_by_username(conn, account)
 
 
 def _fetch_user_by_id(conn: sqlite3.Connection, user_id: int) -> sqlite3.Row:

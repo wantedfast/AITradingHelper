@@ -3,9 +3,12 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { BarChart3, CheckCircle2, CreditCard, Gift, LogOut, Megaphone, MessageSquare, RefreshCw, Users } from "lucide-react";
-import { apiFetch, clearAuth, getStoredUser, refreshCurrentUser, type UserProfile } from "@/lib/auth-client";
+import { ExternalLink, Gift, LogOut, Megaphone, MessageSquare, RefreshCw } from "lucide-react";
+import { apiFetch, clearAuth, getAuthToken, getStoredUser, refreshCurrentUser, type UserProfile } from "@/lib/auth-client";
 import { useModalAccessibility } from "@/lib/modal-accessibility";
+import { AdminNavigation, adminSections, type AdminSection } from "@/components/admin/admin-navigation";
+import { AdminOverviewSection } from "@/components/admin/admin-overview-section";
+import { AdminFeedbackSection, AdminOrdersSection, AdminUpdatesSection, AdminUsersSection } from "@/components/admin/admin-sections";
 
 type DashboardPayload = {
   totals: {
@@ -119,27 +122,48 @@ export default function AdminPage() {
   const [editingNoticeId, setEditingNoticeId] = useState<number | null>(null);
   const [publishIntent, setPublishIntent] = useState<PublishIntent | null>(null);
   const [publishing, setPublishing] = useState(false);
+  const [section, setSection] = useState<AdminSection>("overview");
+  const [orderFilter, setOrderFilter] = useState("submitted");
+  const [feedbackFilter, setFeedbackFilter] = useState("pending");
+  const [feedbackRewardIntent, setFeedbackRewardIntent] = useState<number | null>(null);
   const activeDialogRef = useRef<HTMLElement>(null);
 
   useModalAccessibility(
-    Boolean(publishIntent) || bulkGrantIntent,
+    Boolean(publishIntent) || bulkGrantIntent || feedbackRewardIntent !== null,
     () => {
       if (!publishing) setPublishIntent(null);
       if (!bulkGrantSubmitting) setBulkGrantIntent(false);
+      setFeedbackRewardIntent(null);
     },
     activeDialogRef,
     !publishing && !bulkGrantSubmitting,
   );
 
   useEffect(() => {
+    const querySection = new URLSearchParams(window.location.search).get("section");
+    if (isAdminSection(querySection)) setSection(querySection);
+    if (!getAuthToken()) {
+      setLoading(false);
+      router.replace("/admin/login?redirect=/admin");
+      return;
+    }
     refreshCurrentUser()
       .then((nextUser) => {
         setUser(nextUser);
         if (nextUser?.role === "admin") return loadDashboard();
         setLoading(false);
       })
-      .catch(() => setLoading(false));
-  }, []);
+      .catch(() => {
+        clearAuth();
+        setLoading(false);
+        router.replace("/admin/login?redirect=/admin");
+      });
+  }, [router]);
+
+  function changeSection(nextSection: AdminSection) {
+    setSection(nextSection);
+    router.replace(`/admin?section=${nextSection}`, { scroll: false });
+  }
 
   async function loadDashboard() {
     setLoading(true);
@@ -160,6 +184,7 @@ export default function AdminPage() {
       body: JSON.stringify({ status: "accepted", admin_note: "反馈已采纳，奖励 10 次免费机会" }),
     });
     await loadDashboard();
+    setFeedbackRewardIntent(null);
   }
 
   async function markPaid(id: number) {
@@ -341,18 +366,25 @@ export default function AdminPage() {
     await loadDashboard();
   }
 
-  const chartMax = useMemo(() => {
-    const values = data?.usage_by_day.map((item) => item.count) || [];
-    return Math.max(1, ...values);
-  }, [data]);
+  const filteredOrders = useMemo(
+    () => (data?.orders || []).filter((item) => orderFilter === "all" || item.status === orderFilter),
+    [data, orderFilter],
+  );
+  const filteredFeedback = useMemo(
+    () => (data?.feedback || []).filter((item) => feedbackFilter === "all" || item.status === feedbackFilter),
+    [data, feedbackFilter],
+  );
+  const pendingMembershipOrders = (data?.orders || []).filter((item) => item.product_type === "membership" && item.status === "submitted");
+  const pendingFeedback = (data?.feedback || []).filter((item) => item.status === "pending");
+  const failedEmailTasks = (data?.update_notices || []).filter((item) => (item.email_campaign?.failed || 0) > 0);
 
   if (!loading && user?.role !== "admin") {
     return (
       <main className="admin-page">
         <section className="admin-locked">
           <h1>管理员面板</h1>
-          <p>需要管理员账号登录后查看。</p>
-          <Link href="/auth?redirect=/admin">登录管理员账号</Link>
+          <p>当前登录账号没有运营管理权限。</p>
+          <Link href="/">返回网站</Link>
         </section>
       </main>
     );
@@ -360,24 +392,28 @@ export default function AdminPage() {
 
   return (
     <main className="admin-page">
+      <div className="admin-layout">
+        <aside className="admin-sidebar">
+          <Link className="admin-sidebar-brand" href="/">盈航运营台</Link>
+          <AdminNavigation active={section} onChange={changeSection} />
+        </aside>
       <section className="admin-shell">
         <header className="admin-topbar">
           <div>
-            <Link href="/">盈航</Link>
-            <h1>运营管理台</h1>
-            <p>查看用户增长、功能使用、反馈奖励和订单状态。</p>
+            <h1>{adminSections.find((item) => item.key === section)?.label || "运营管理台"}</h1>
           </div>
           <div className="admin-actions">
             <button type="button" onClick={loadDashboard}>
               <RefreshCw />
               刷新
             </button>
+            <Link href="/"><ExternalLink />返回网站</Link>
             <button
               type="button"
               onClick={() => {
                 clearAuth();
                 setUser(null);
-                router.push("/auth");
+                router.push("/admin/login");
               }}
             >
               <LogOut />
@@ -386,280 +422,46 @@ export default function AdminPage() {
           </div>
         </header>
 
+        <div className="admin-mobile-section-switcher"><AdminNavigation active={section} onChange={changeSection} /></div>
+
         {message && <div className="admin-alert">{message}</div>}
         {loading && <div className="admin-alert">正在读取统计数据...</div>}
 
         {data && (
           <>
-            <section className="admin-metrics">
-              <Metric icon={Users} label="普通用户" value={data.totals.users} />
-              <Metric icon={Gift} label="系统剩余次数" value={data.totals.credits} />
-              <Metric icon={MessageSquare} label="待审核反馈" value={data.totals.feedback_pending} />
-              <Metric icon={CreditCard} label="已支付订单" value={data.totals.orders_paid} />
-            </section>
+            <AdminOverviewSection active={section === "overview"} totals={data.totals} usage={data.usage_by_day} newUsers={data.new_users_by_day} pendingOrders={pendingMembershipOrders.length} pendingFeedback={pendingFeedback.length} failedEmails={failedEmailTasks.length} onNavigate={changeSection} featureLabel={featureLabel} />
 
-            <section className="admin-panel admin-bulk-credit-panel">
-              <div className="admin-panel-head">
-                <Gift />
-                <h2>给所有现有用户增加次数</h2>
-              </div>
-              <p>仅包含确认发放时已经注册的账号。整批在一个事务中完成，失败不会只发给部分用户。</p>
-              <div className="admin-bulk-credit-form">
-                <label>
-                  每人增加次数
-                  <input
-                    type="number"
-                    min="1"
-                    max="10000"
-                    step="1"
-                    value={bulkGrantDraft.credits}
-                    onChange={(event) => setBulkGrantDraft((current) => ({ ...current, credits: event.target.value }))}
-                  />
-                </label>
-                <label>
-                  发放原因
-                  <input
-                    maxLength={300}
-                    value={bulkGrantDraft.reason}
-                    onChange={(event) => setBulkGrantDraft((current) => ({ ...current, reason: event.target.value }))}
-                    placeholder="例如：平台更新福利"
-                  />
-                </label>
-                <button type="button" onClick={requestBulkGrantConfirmation}>确认发放范围</button>
-              </div>
-              {!!data.credit_grant_campaigns?.length && (
-                <div className="admin-bulk-credit-history">
-                  <b>最近发放记录</b>
-                  {data.credit_grant_campaigns.slice(0, 5).map((campaign) => (
-                    <span key={campaign.id}>
-                      {formatDate(campaign.completed_at || campaign.created_at)} · {campaign.granted_count} 人 × {campaign.credits} 次 · {campaign.reason}
-                    </span>
-                  ))}
-                </div>
-              )}
-            </section>
-
-            <section className="admin-grid">
-              <article className="admin-panel admin-chart-panel">
-                <div className="admin-panel-head">
-                  <BarChart3 />
-                  <h2>近 14 日功能使用</h2>
-                </div>
-                <div className="admin-chart">
-                  {data.usage_by_day.length ? (
-                    data.usage_by_day.map((item) => (
-                      <div key={`${item.day}-${item.feature}`}>
-                        <span>{item.day.slice(5)} · {featureLabel(item.feature)}</span>
-                        <i style={{ width: `${Math.max(8, (item.count / chartMax) * 100)}%` }} />
-                        <b>{item.count}</b>
-                      </div>
-                    ))
-                  ) : (
-                    <p>暂无使用记录。</p>
-                  )}
-                </div>
-              </article>
-
-              <article className="admin-panel">
-                <div className="admin-panel-head">
-                  <Users />
-                  <h2>高频用户</h2>
-                </div>
-                <div className="admin-table">
-                  {data.top_users.map((item) => (
-                    <div key={item.id}>
-                      <span>{item.username || item.email || item.phone}</span>
-                      <b>{item.used_count} 次使用</b>
-                      <em>{item.role === "admin" ? "无限免扣" : `${item.credits} 次余额`}</em>
-                      {item.role !== "admin" && (
-                        <div className="admin-credit-grant">
-                          <input
-                            type="number"
-                            min="1"
-                            step="1"
-                            value={grantDrafts[item.id]?.credits || ""}
-                            onChange={(event) => updateGrantDraft(item.id, { credits: event.target.value })}
-                            placeholder="增加次数"
-                          />
-                          <input
-                            value={grantDrafts[item.id]?.reason || ""}
-                            onChange={(event) => updateGrantDraft(item.id, { reason: event.target.value })}
-                            placeholder="增加原因，会写入邮件"
-                          />
-                          <button type="button" onClick={() => grantCredits(item.id)}>
-                            增加并邮件提醒
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </article>
-            </section>
-
-            <section className="admin-grid">
-              <article className="admin-panel">
-                <div className="admin-panel-head">
-                  <MessageSquare />
-                  <h2>反馈建议</h2>
-                </div>
-                <div className="admin-list">
-                  {data.feedback.map((item) => (
-                    <div className="admin-list-item" key={item.id}>
-                      <header>
-                        <b>{item.category}</b>
-                        <span>{item.status}</span>
-                      </header>
-                      <p>{item.content}</p>
-                      <small>{item.phone} · {formatDate(item.created_at)}</small>
-                      {item.status === "pending" && (
-                        <button type="button" onClick={() => acceptFeedback(item.id)}>
-                          <CheckCircle2 />
-                          采纳并奖励 10 次
-                        </button>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </article>
-
-              <article className="admin-panel">
-                <div className="admin-panel-head">
-                  <CreditCard />
-                  <h2>订单系统</h2>
-                </div>
-                <div className="admin-list">
-                  {data.orders.map((item) => (
-                    <div className="admin-list-item" key={item.id}>
-                      <header>
-                        <b>{item.plan_name}</b>
-                        <span>{orderStatusLabel(item.status)}</span>
-                      </header>
-                      <p>{item.product_type === "membership" ? `会员订阅 · ${item.plan_name}` : `${item.credits} 次`} · ¥{(item.amount_cents / 100).toFixed(2)}</p>
-                      <small>{item.username || item.email || item.phone} · {item.order_no}</small>
-                      {item.product_type === "membership" && (
-                        <p>
-                          {paymentMethodLabel(item.payment_method || "")}
-                          {item.payer_name ? ` · ${item.payer_name}` : ""}
-                          {item.payer_paid_at ? ` · ${item.payer_paid_at}` : ""}
-                          {item.submitted_amount_cents ? ` · ¥${(item.submitted_amount_cents / 100).toFixed(2)}` : ""}
-                          {item.payer_note ? ` · ${item.payer_note}` : ""}
-                        </p>
-                      )}
-                      {item.admin_note ? <small>备注：{item.admin_note}</small> : null}
-                      {item.product_type === "membership" && item.status === "submitted" && (
-                        <>
-                          <button type="button" onClick={() => confirmMembership(item.id)}>
-                            <CheckCircle2 />
-                            确认到账并开通会员
-                          </button>
-                          <button type="button" onClick={() => rejectMembership(item.id)}>
-                            标记异常
-                          </button>
-                        </>
-                      )}
-                      {item.product_type !== "membership" && item.status !== "paid" && (
-                        <button type="button" onClick={() => markPaid(item.id)}>
-                          <CheckCircle2 />
-                          标记已支付
-                        </button>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </article>
-            </section>
-
-            <section className="admin-grid">
-              <article className="admin-panel">
-                <div className="admin-panel-head">
-                  <Megaphone />
-                  <h2>更新公告</h2>
-                </div>
-                <div className="admin-notice-form">
-                  <input
-                    value={noticeDraft.title}
-                    onChange={(event) => setNoticeDraft((current) => ({ ...current, title: event.target.value }))}
-                    placeholder="公告标题，例如：本周更新"
-                  />
-                  <input
-                    type="date"
-                    value={noticeDraft.version}
-                    onChange={(event) => setNoticeDraft((current) => ({ ...current, version: event.target.value }))}
-                    aria-label="公告日期"
-                  />
-                  <textarea
-                    value={noticeDraft.itemsText}
-                    onChange={(event) => setNoticeDraft((current) => ({ ...current, itemsText: event.target.value }))}
-                    placeholder="每行一条更新内容"
-                    rows={5}
-                  />
-                  <div className="admin-notice-actions">
-                    <button type="button" onClick={saveUpdateNotice}>
-                      {editingNoticeId ? "保存修改" : "保存草稿"}
-                    </button>
-                    <button type="button" onClick={() => setPublishIntent({ source: "form", noticeId: editingNoticeId })}>
-                      保存并发布
-                    </button>
-                    {editingNoticeId && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setEditingNoticeId(null);
-                          setNoticeDraft(emptyNoticeDraft);
-                        }}
-                      >
-                        取消编辑
-                      </button>
-                    )}
-                  </div>
-                </div>
-              </article>
-
-              <article className="admin-panel">
-                <div className="admin-panel-head">
-                  <Megaphone />
-                  <h2>公告列表</h2>
-                </div>
-                <div className="admin-list">
-                  {(data.update_notices || []).map((notice) => (
-                    <div className="admin-list-item" key={notice.id}>
-                      <header>
-                        <b>{notice.title}</b>
-                        <span>{notice.status === "published" ? "已发布" : "草稿"}</span>
-                      </header>
-                      <p>{notice.version} · {formatDate(notice.published_at || notice.updated_at)}</p>
-                      <small>{notice.items.join(" / ")}</small>
-                      {notice.email_campaign && (
-                        <div className="admin-email-campaign">
-                          <b>邮件：{emailCampaignLabel(notice.email_campaign.status)}</b>
-                          <span>成功 {notice.email_campaign.sent} · 待发送 {notice.email_campaign.pending + notice.email_campaign.sending} · 失败 {notice.email_campaign.failed} · 跳过 {notice.email_campaign.skipped}</span>
-                          {notice.email_campaign.failed > 0 && (
-                            <button type="button" onClick={() => retryEmailCampaign(notice.email_campaign!.id)}>重试失败邮件</button>
-                          )}
-                        </div>
-                      )}
-                      <button type="button" onClick={() => editUpdateNotice(notice)}>
-                        编辑
-                      </button>
-                      {notice.status === "published" ? (
-                        <button type="button" onClick={() => unpublishUpdateNotice(notice.id)}>
-                          下线
-                        </button>
-                      ) : (
-                        <button type="button" onClick={() => publishUpdateNotice(notice.id)}>
-                          发布
-                        </button>
-                      )}
-                    </div>
-                  ))}
-                  {!(data.update_notices || []).length && <p>暂无更新公告。</p>}
-                </div>
-              </article>
-            </section>
+            <AdminUsersSection
+              active={section === "users"}
+              bulkDraft={bulkGrantDraft}
+              onBulkDraftChange={(patch) => setBulkGrantDraft((current) => ({ ...current, ...patch }))}
+              onRequestBulkGrant={requestBulkGrantConfirmation}
+              campaigns={data.credit_grant_campaigns || []}
+              users={data.top_users}
+              grantDrafts={grantDrafts}
+              onGrantDraftChange={updateGrantDraft}
+              onGrantCredits={grantCredits}
+            />
+            <AdminFeedbackSection active={section === "feedback"} filter={feedbackFilter} onFilterChange={setFeedbackFilter} items={filteredFeedback} onRewardRequest={setFeedbackRewardIntent} />
+            <AdminOrdersSection active={section === "orders"} filter={orderFilter} onFilterChange={setOrderFilter} items={filteredOrders} onConfirmMembership={confirmMembership} onRejectMembership={rejectMembership} onMarkPaid={markPaid} />
+            <AdminUpdatesSection
+              active={section === "updates"}
+              draft={noticeDraft}
+              editingNoticeId={editingNoticeId}
+              onDraftChange={(patch) => setNoticeDraft((current) => ({ ...current, ...patch }))}
+              onSave={saveUpdateNotice}
+              onRequestFormPublish={() => setPublishIntent({ source: "form", noticeId: editingNoticeId })}
+              onCancelEdit={() => { setEditingNoticeId(null); setNoticeDraft(emptyNoticeDraft); }}
+              notices={data.update_notices || []}
+              onRetryCampaign={retryEmailCampaign}
+              onEdit={editUpdateNotice}
+              onUnpublish={unpublishUpdateNotice}
+              onPublish={publishUpdateNotice}
+            />
           </>
         )}
       </section>
+      </div>
       {publishIntent && (
         <div className="admin-publish-backdrop" role="presentation" onMouseDown={() => !publishing && setPublishIntent(null)}>
           <section className="admin-publish-dialog" role="dialog" aria-modal="true" aria-labelledby="publish-dialog-title" ref={activeDialogRef} tabIndex={-1} onMouseDown={(event) => event.stopPropagation()}>
@@ -690,18 +492,25 @@ export default function AdminPage() {
           </section>
         </div>
       )}
+      {feedbackRewardIntent !== null && (
+        <div className="admin-publish-backdrop" role="presentation" onMouseDown={() => setFeedbackRewardIntent(null)}>
+          <section className="admin-publish-dialog" role="dialog" aria-modal="true" aria-labelledby="feedback-reward-dialog-title" ref={activeDialogRef} tabIndex={-1} onMouseDown={(event) => event.stopPropagation()}>
+            <MessageSquare />
+            <h2 id="feedback-reward-dialog-title">确认采纳反馈并奖励？</h2>
+            <p>确认后将把反馈标记为已采纳，并给该用户增加 10 次使用机会。</p>
+            <div>
+              <button type="button" onClick={() => acceptFeedback(feedbackRewardIntent)}>确认采纳并奖励</button>
+              <button type="button" onClick={() => setFeedbackRewardIntent(null)}>取消</button>
+            </div>
+          </section>
+        </div>
+      )}
     </main>
   );
 }
 
-function Metric({ icon: Icon, label, value }: { icon: typeof Users; label: string; value: number }) {
-  return (
-    <article>
-      <Icon />
-      <span>{label}</span>
-      <b>{value}</b>
-    </article>
-  );
+function isAdminSection(value: string | null): value is AdminSection {
+  return adminSections.some((item) => item.key === value);
 }
 
 function featureLabel(value: string) {
@@ -709,32 +518,6 @@ function featureLabel(value: string) {
   if (value === "watch_plan") return "AI 盯盘";
   if (value === "membership_free") return "会员免扣";
   return value;
-}
-
-function emailCampaignLabel(value: EmailCampaign["status"]) {
-  if (value === "pending") return "等待发送";
-  if (value === "sending") return "发送中";
-  if (value === "completed") return "已完成";
-  if (value === "partial_failed") return "部分失败";
-  return "发送失败";
-}
-
-function orderStatusLabel(value: string) {
-  if (value === "pending") return "待付款";
-  if (value === "submitted") return "待确认";
-  if (value === "paid") return "已支付";
-  if (value === "rejected") return "异常";
-  return value;
-}
-
-function paymentMethodLabel(value: string) {
-  if (value === "alipay") return "支付宝";
-  if (value === "wechat") return "微信";
-  return "未提交付款方式";
-}
-
-function formatDate(value: string) {
-  return value ? value.slice(0, 16).replace("T", " ") : "";
 }
 
 function todayDateInputValue() {
