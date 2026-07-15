@@ -8,7 +8,7 @@ import { AuctionStrengthPerformanceTicker, useAuctionStrengthPerformance } from 
 import { GoldMagicCube } from "@/components/gold-magic-cube";
 import { HomeMusic } from "@/components/home-music";
 import { FinancialDisclaimer } from "@/components/financial-disclaimer";
-import { apiFetch, clearAuth, getStoredUser, inviteUrl, refreshCurrentUser, userAccessLabel, userBalanceText, type UserProfile } from "@/lib/auth-client";
+import { apiFetch, clearAuth, getStoredUser, inviteUrl, refreshCurrentUser, storeUser, userAccessLabel, userBalanceText, type UserProfile } from "@/lib/auth-client";
 import { copyTextToClipboard } from "@/lib/clipboard";
 
 const features = [
@@ -76,6 +76,7 @@ export default function Page() {
   const [inviteCopied, setInviteCopied] = useState(false);
   const [updateNotice, setUpdateNotice] = useState<UpdateNotice | null>(null);
   const [showUpdateNotice, setShowUpdateNotice] = useState(false);
+  const [savingEmailPreference, setSavingEmailPreference] = useState(false);
   const auctionPerformance = useAuctionStrengthPerformance();
   const recentAuctionTop1Rows = auctionPerformance.rows.slice(-5).reverse();
 
@@ -143,6 +144,25 @@ export default function Page() {
     setInviteCopied(false);
   }
 
+  async function toggleUpdateEmails() {
+    if (!user || savingEmailPreference) return;
+    setSavingEmailPreference(true);
+    setFeedbackMessage("");
+    try {
+      const payload = await apiFetch<{ user: UserProfile }>("/api/auth/email-preferences", {
+        method: "POST",
+        body: JSON.stringify({ update_emails_enabled: !(user.update_emails_enabled ?? true) }),
+      });
+      setUser(payload.user);
+      storeUser(payload.user);
+      setFeedbackMessage(payload.user.update_emails_enabled ? "已开启产品更新邮件。" : "已关闭产品更新邮件，网站更新弹窗仍会正常显示。");
+    } catch (error) {
+      setFeedbackMessage(error instanceof Error ? error.message : "邮件偏好保存失败");
+    } finally {
+      setSavingEmailPreference(false);
+    }
+  }
+
   const currentInviteUrl = hydrated && user ? inviteUrl(user) : "";
 
   async function submitFeedback(event: FormEvent<HTMLFormElement>) {
@@ -207,6 +227,12 @@ export default function Page() {
                       <span>邮箱</span>
                       <em>{user.email || "暂未绑定邮箱"}</em>
                     </div>
+                    <button className="home-user-copy" type="button" onClick={toggleUpdateEmails} disabled={savingEmailPreference}>
+                      <BellRing className="h-4 w-4" />
+                      {savingEmailPreference
+                        ? "正在保存..."
+                        : `产品更新邮件：${user.update_emails_enabled ?? true ? "已开启" : "已关闭"}`}
+                    </button>
                     <div className="home-user-row">
                       <span>剩余次数</span>
                       <em>{userBalanceText(user)}</em>
