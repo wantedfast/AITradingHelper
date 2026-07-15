@@ -214,6 +214,11 @@ function AuthContent() {
         </section>
 
         <section className="account-panel">
+          <div className="account-mobile-intro">
+            <Link href="/">盈航 AI TRADING</Link>
+            <b>{isRegister ? "注册并领取免费次数" : "登录后继续使用"}</b>
+            <span>{isRegister ? "使用邮箱完成注册，已有账号可直接登录。" : "查看你的报告、预案和剩余使用次数。"}</span>
+          </div>
           <div className="account-mode-switch">
             <button className={mode === "password-login" || mode === "admin" ? "active" : ""} type="button" onClick={() => setMode("password-login")}>
               密码登录

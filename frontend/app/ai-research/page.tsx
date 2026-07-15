@@ -5,6 +5,8 @@ import { useRouter } from "next/navigation";
 import { CalendarDays, FileText, Loader2, LockKeyhole, RefreshCcw } from "lucide-react";
 import { MainSidebar } from "@/components/main-sidebar";
 import { FinancialDisclaimer } from "@/components/financial-disclaimer";
+import { MobileActionDock } from "@/components/mobile-action-dock";
+import { MobileTaskHeader } from "@/components/mobile-task-header";
 import { getAuthToken, storeUser, usageBillingText, type UserProfile } from "@/lib/auth-client";
 import { canReadDatedReport, shouldShowDatedReportPayment, type BillingStatus } from "@/lib/dated-report-access";
 import { type AiResearchReport, type AiResearchSummary, ReportBody, ReportMeta } from "./report-components";
@@ -207,6 +209,13 @@ function AiResearchPageContent() {
 
         <FinancialDisclaimer compact={canReadDatedReport(billingStatus)} />
 
+        <MobileTaskHeader
+          eyebrow={<><FileText />{selectedDate}</>}
+          title="AI 研报"
+          description={canReadDatedReport(billingStatus) ? summary?.summary || "国内外重要信息已经整理完成。" : billingStatus === "pending_view" ? `确认后扣除 ${billingCost} 次使用机会。` : "所选日期暂无研报，可稍后刷新。"}
+          status={billingStatusText(billingStatus, isToday)}
+        />
+
         <section className="auction-hero dated-report-hero">
           <div>
             <p className="auction-kicker"><FileText />{selectedDate} · {canReadDatedReport(billingStatus) ? "可以直接查看" : billingStatus === "pending_view" ? "确认后查看" : "等待研报"}</p>
@@ -223,10 +232,10 @@ function AiResearchPageContent() {
         {shouldShowDatedReportPayment(billingStatus, Boolean(summary)) ? (
           <section className="auction-panel auction-confirm-panel">
             <div className="auction-panel-head"><LockKeyhole /><div><h2>确认查看 AI 研报</h2><p>今天这份研报尚未付费，确认后扣除 {billingCost} 次使用机会。</p></div></div>
-            <div className="auction-confirm-actions">
+            <MobileActionDock className="auction-confirm-actions">
               <button type="button" onClick={confirmView} disabled={loading}>确认查看并扣除 {billingCost} 次</button>
               <span>所选日期无数据或读取失败时不会调用确认扣费接口。</span>
-            </div>
+            </MobileActionDock>
           </section>
         ) : (
           <>
