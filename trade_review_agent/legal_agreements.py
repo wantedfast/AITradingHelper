@@ -181,4 +181,3 @@ def registration_agreement_payload() -> dict[str, Any]:
     canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     payload["content_hash"] = hashlib.sha256(canonical).hexdigest()
     return payload
-
