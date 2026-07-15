@@ -8284,7 +8284,7 @@ button.radar-core,
   color: var(--rw-cyan);
 }
 
-@media (max-width: 1100px) {
+@media (max-width: 1099px) {
   :is(.review-workbench-page, .review-console-page) {
     grid-template-columns: 1fr;
   }

@@ -1,5 +1,6 @@
 import { ShieldCheck } from "lucide-react";
 import { ReportPipeContent } from "@/components/report-pipe-table";
+import { MobileReportDisclosure } from "@/components/mobile-report-disclosure";
 import { containsMarkdownPipeTable } from "@/lib/markdown-pipe-table";
 import { evidenceReportText, namedReportText, watchPointReportText, type LabeledReportText } from "@/lib/market-day-report-content";
 
@@ -126,6 +127,7 @@ export function MarketDayReportView({
         </div>
       </section>
 
+      <MobileReportDisclosure title="次主线与弱方向" summary="更多市场背景，点击展开">
       <section className="review-workbench-grid">
         <section className="research-panel">
           <span className="card-label">次主线</span>
@@ -136,7 +138,9 @@ export function MarketDayReportView({
           <NamedLineList items={report.fakeOrWeakLines} />
         </section>
       </section>
+      </MobileReportDisclosure>
 
+      <MobileReportDisclosure title="复盘观察与证据" summary="详细观察点和来源提醒">
       <section className="research-panel market-day-audit-panel">
         <span className="card-label">复盘观察</span>
         <LineList items={report.watchPoints} icon />
@@ -145,6 +149,7 @@ export function MarketDayReportView({
           <article><b>来源提醒</b><LineList items={report.audit?.sourceWarnings} /></article>
         </div>
       </section>
+      </MobileReportDisclosure>
     </div>
   );
 }

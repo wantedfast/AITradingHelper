@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getAuthToken, storeUser, usageBillingText, type UserProfile } from "@/lib/auth-client";
 import { FinancialDisclaimer } from "@/components/financial-disclaimer";
+import { MobileFeatureNav } from "@/components/main-sidebar";
 
 type ViewKey = "review" | "choice" | "theme" | "logic";
 
@@ -208,6 +209,7 @@ export default function ReviewReportPage({ params }: ReviewReportPageProps) {
   return (
     <main className="review-page">
       <style dangerouslySetInnerHTML={{ __html: styles }} />
+      <MobileFeatureNav activeKey="review" />
 
       <header className="topbar glass">
         <Link className="icon-button" href="/review" aria-label="返回复盘列表" title="返回复盘列表">

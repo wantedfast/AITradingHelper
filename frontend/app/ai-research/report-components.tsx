@@ -1,5 +1,6 @@
 import { Building2, CalendarDays, CheckCircle2, Clock3, FileText, ListChecks, Target, TrendingUp } from "lucide-react";
 import { ReportPipeContent } from "@/components/report-pipe-table";
+import { MobileReportDisclosure } from "@/components/mobile-report-disclosure";
 import { parseMarkdownPipeTables } from "@/lib/markdown-pipe-table";
 
 export type AiResearchSummary = {
@@ -62,6 +63,7 @@ export function ReportBody({ report, compact = false }: { report: AiResearchRepo
         )}
       </section>
 
+      <MobileReportDisclosure title="海外机构研究" summary="背景资料，点击展开">
       <section className="ai-report-section">
         <div className="ai-report-section-head">
           <span><Building2 /></span>
@@ -87,7 +89,9 @@ export function ReportBody({ report, compact = false }: { report: AiResearchRepo
           <LineCards lines={[]} emptyText="本篇未找到可公开核验的海外机构产业研报；不使用无法验证的付费墙内容。" />
         )}
       </section>
+      </MobileReportDisclosure>
 
+      <MobileReportDisclosure title="证据链" summary="判断依据，点击展开">
       <section className="ai-report-section">
         <div className="ai-report-section-head">
           <span><FileText /></span>
@@ -104,6 +108,7 @@ export function ReportBody({ report, compact = false }: { report: AiResearchRepo
           <LineCards lines={fallbackEvidenceLines} emptyText="本篇暂无结构化证据表。" />
         )}
       </section>
+      </MobileReportDisclosure>
 
       <section className="ai-report-section">
         <div className="ai-report-section-head">
@@ -166,6 +171,7 @@ export function ReportBody({ report, compact = false }: { report: AiResearchRepo
       {!compact ? (
         <>
           {blocks.length ? (
+            <MobileReportDisclosure title="深度分析" summary="完整研究框架与判断依据">
             <section className="ai-report-section">
               <div className="ai-report-section-head">
                 <span><ListChecks /></span>
@@ -190,9 +196,11 @@ export function ReportBody({ report, compact = false }: { report: AiResearchRepo
                 ))}
               </div>
             </section>
+            </MobileReportDisclosure>
           ) : null}
 
           {report.sources?.length ? (
+            <MobileReportDisclosure title="信息来源" summary="用于复核的公开来源">
             <section className="ai-report-section">
               <div className="ai-report-section-head">
                 <span><CheckCircle2 /></span>
@@ -203,6 +211,7 @@ export function ReportBody({ report, compact = false }: { report: AiResearchRepo
               </div>
               <LineCards lines={report.sources.map(formatSource)} />
             </section>
+            </MobileReportDisclosure>
           ) : null}
         </>
       ) : null}

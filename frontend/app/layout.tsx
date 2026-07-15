@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import "./responsive.css";
 import { EmailBindingReminder } from "@/components/email-binding-reminder";
 
 export const metadata: Metadata = {
