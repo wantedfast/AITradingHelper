@@ -424,7 +424,10 @@ export default function Page() {
               <Sparkles className="h-4 w-4" />
               AI 交易决策助手
             </div>
-            <h1>AI Trading for Beginners</h1>
+            <h1>
+              <span className="home-title-desktop">AI Trading for Beginners</span>
+              <span className="home-title-mobile">每天看懂市场，交易更有计划</span>
+            </h1>
             <p className="headline-sub">Stop Guessing. Start Trading With Your Best Strategy.</p>
             <p className="cn-slogan">摆脱盲从，依托优策。</p>
             <p className="description">
@@ -434,6 +437,10 @@ export default function Page() {
               <Link className="primary" href="/review">
                 <Sparkles className="h-5 w-5" />
                 立即开始
+              </Link>
+              <Link className="primary home-mobile-primary" href="/auction-strength">
+                <Trophy className="h-5 w-5" />
+                查看今日 TOP5
               </Link>
               {hydrated && !user && (
                 <Link className="secondary home-auth-link" href="/auth">

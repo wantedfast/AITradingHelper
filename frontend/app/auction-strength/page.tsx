@@ -7,6 +7,8 @@ import { BarChart3, CalendarDays, Flame, GitBranch, Loader2, LockKeyhole, Refres
 import { getAuthToken, storeUser, usageBillingText, type UserProfile } from "@/lib/auth-client";
 import { MainSidebar } from "@/components/main-sidebar";
 import { FinancialDisclaimer } from "@/components/financial-disclaimer";
+import { MobileActionDock } from "@/components/mobile-action-dock";
+import { MobileTaskHeader } from "@/components/mobile-task-header";
 import { canReadDatedReport, shouldShowDatedReportPayment, type BillingStatus } from "@/lib/dated-report-access";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || (process.env.NODE_ENV === "development" ? "http://127.0.0.1:8600" : "");
@@ -344,6 +346,13 @@ export default function AuctionStrengthPage() {
 
         <FinancialDisclaimer compact={hasAccess} />
 
+        <MobileTaskHeader
+          eyebrow={<><Flame className="h-4 w-4" />{selectedDate || "等待数据"}</>}
+          title="每日 TOP5"
+          description={hasAccess ? selectedReport?.summary.one_sentence || "查看当天最值得关注的 5 只强势股。" : billingStatus === "pending_view" ? `今天的数据需确认并扣除 ${billingCost} 次使用机会。` : "所选日期暂无数据，可稍后刷新。"}
+          status={hasAccess ? "已可直接查看" : billingStatus === "pending_view" ? "待确认查看" : "暂无数据"}
+        />
+
         <section className="auction-hero">
           <div>
             <p className="auction-kicker">
@@ -373,12 +382,12 @@ export default function AuctionStrengthPage() {
         {shouldShowDatedReportPayment(billingStatus, Boolean(selectedReport)) ? (
           <section className="auction-panel auction-confirm-panel">
             <PanelHead icon={<LockKeyhole className="h-5 w-5" />} title="确认查看每日 TOP5" text={`今天的数据尚未付费，确认后扣除 ${billingCost} 次使用机会。`} />
-            <div className="auction-confirm-actions">
+            <MobileActionDock className="auction-confirm-actions">
               <button type="button" onClick={confirmView} disabled={loading}>
                 确认查看并扣除 {billingCost} 次
               </button>
               <span>所选日期无数据或读取失败时不会扣除使用次数。</span>
-            </div>
+            </MobileActionDock>
           </section>
         ) : hasAccess ? (
           <>

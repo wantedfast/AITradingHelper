@@ -25,6 +25,7 @@ import { getAuthToken, storeUser, type UserProfile } from "@/lib/auth-client";
 import { MainSidebar } from "@/components/main-sidebar";
 import { useModalAccessibility } from "@/lib/modal-accessibility";
 import { FinancialDisclaimer } from "@/components/financial-disclaimer";
+import { MobileTaskHeader } from "@/components/mobile-task-header";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || (process.env.NODE_ENV === "development" ? "http://127.0.0.1:8600" : "");
 const SHOW_WATCH_VOICE_TEST = process.env.NODE_ENV === "development";
@@ -673,6 +674,13 @@ export default function WatchClient({ mode }: { mode: Mode }) {
         </header>
 
         <FinancialDisclaimer compact={viewMode === "result"} />
+
+        <MobileTaskHeader
+          eyebrow="AI WATCH"
+          title={viewMode === "result" ? "明日盯盘预案" : "AI 盯盘"}
+          description={viewMode === "result" ? "先看关键价位和操作重点，再展开详细依据。" : "填入持仓信息，生成明天观察、买卖和停手的执行计划。"}
+          status={viewMode === "result" ? "预案已生成" : "每次生成扣除 1 次"}
+        />
 
         {viewMode === "entry" ? (
           <WatchEntryView

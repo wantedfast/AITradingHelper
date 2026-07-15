@@ -26,6 +26,56 @@
   display: contents;
 }
 
+.financial-disclaimer {
+  display: block;
+}
+
+.financial-disclaimer__summary {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 12px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.financial-disclaimer__summary::-webkit-details-marker {
+  display: none;
+}
+
+.financial-disclaimer__summary span {
+  min-width: 0;
+}
+
+.financial-disclaimer__summary small {
+  display: none;
+}
+
+.financial-disclaimer__chevron {
+  display: none;
+}
+
+.financial-disclaimer__body {
+  padding: 4px 0 0 34px;
+}
+
+.mobile-action-dock {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.mobile-action-dock__action {
+  display: contents;
+}
+
+.mobile-action-dock__hint {
+  color: rgba(242, 238, 224, 0.58);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
 :is(a, button, input, select, textarea, summary):focus-visible {
   outline: 2px solid #f2cf67;
   outline-offset: 3px;
@@ -1003,6 +1053,785 @@
   svg,
   canvas {
     max-width: 100%;
+  }
+}
+
+/* Mobile information hierarchy: compact trading-tool surfaces, not stacked desktop cards. */
+.home-title-mobile,
+.home-mobile-primary,
+.mobile-task-header,
+.account-mobile-intro {
+  display: none;
+}
+
+@media (max-width: 767px) {
+  :root {
+    --mobile-page-gutter: clamp(14px, 4vw, 16px);
+    --mobile-panel-radius: 14px;
+    --mobile-section-gap: 16px;
+  }
+
+  body {
+    background-color: #050808;
+  }
+
+  .financial-disclaimer {
+    margin: 8px 0 14px;
+    padding: 0;
+    border-color: rgba(242, 207, 103, 0.16);
+    border-radius: 12px;
+    background: rgba(242, 207, 103, 0.045);
+    box-shadow: none;
+  }
+
+  .financial-disclaimer__summary {
+    min-height: 48px;
+    padding: 9px 11px;
+    align-items: center;
+    gap: 9px;
+  }
+
+  .financial-disclaimer__summary > svg:first-child {
+    width: 18px;
+    height: 18px;
+  }
+
+  .financial-disclaimer__summary strong {
+    margin: 0;
+    font-size: 13px;
+    line-height: 1.3;
+  }
+
+  .financial-disclaimer__summary small {
+    display: block;
+    margin-top: 2px;
+    overflow: hidden;
+    color: rgba(242, 238, 224, 0.52);
+    font-size: 11px;
+    line-height: 1.3;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .financial-disclaimer__chevron {
+    width: 17px !important;
+    height: 17px !important;
+    display: block;
+    transition: transform 0.18s ease;
+  }
+
+  .financial-disclaimer[open] .financial-disclaimer__chevron {
+    transform: rotate(180deg);
+  }
+
+  .financial-disclaimer__body {
+    padding: 0 12px 12px 38px;
+  }
+
+  .financial-disclaimer__body p {
+    font-size: 12px;
+    line-height: 1.6;
+  }
+
+  /* Homepage puts a useful action and account state in the first viewport. */
+  .site-page {
+    min-height: 100dvh;
+  }
+
+  .site-page .music-toggle {
+    display: none;
+  }
+
+  .site-shell {
+    width: calc(100% - (2 * var(--mobile-page-gutter)));
+  }
+
+  .site-shell > .financial-disclaimer {
+    margin-top: 4px;
+  }
+
+  .hero {
+    min-height: auto;
+    padding: 24px 0 20px;
+    gap: 12px;
+  }
+
+  .hero-copy {
+    min-height: 0;
+    transform: none;
+  }
+
+  .hero h1 {
+    margin: 16px 0 0;
+    font-size: clamp(31px, 9vw, 38px);
+    font-weight: 800;
+    line-height: 1.12;
+    letter-spacing: -0.04em;
+  }
+
+  .home-title-desktop,
+  .headline-sub {
+    display: none;
+  }
+
+  .home-title-mobile {
+    display: inline;
+  }
+
+  .cn-slogan {
+    margin-top: 10px;
+    font-size: 17px;
+  }
+
+  .description {
+    margin-top: 10px;
+    font-size: 14px;
+    line-height: 1.65;
+  }
+
+  .actions {
+    width: 100%;
+    margin-top: 18px;
+    display: grid;
+    gap: 9px;
+  }
+
+  .actions > .primary:not(.home-mobile-primary) {
+    display: none;
+  }
+
+  .home-mobile-primary {
+    width: 100%;
+    min-height: 50px;
+    display: inline-flex;
+  }
+
+  .home-auth-link {
+    width: 100%;
+    min-height: 46px;
+  }
+
+  .hero-copy > .hero-performance-chip {
+    width: 100%;
+    min-height: 0;
+    margin-top: 14px;
+    padding: 12px 14px;
+    border-radius: 12px;
+    animation: none;
+  }
+
+  .hero-performance-rate {
+    font-size: 28px;
+  }
+
+  .hero-performance-tooltip {
+    display: none !important;
+  }
+
+  .home-credit-strip {
+    width: 100%;
+    margin-top: 10px;
+  }
+
+  .features {
+    margin-top: 18px;
+  }
+
+  .feature-shell {
+    padding: 16px 0 0;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .feature-cat-mark,
+  .feature-shell__glow,
+  .feature-top-edge {
+    display: none;
+  }
+
+  .feature-section-title {
+    margin: 0 0 12px;
+    font-size: 23px;
+    text-align: left;
+  }
+
+  .feature-marquee-viewport {
+    overflow: visible;
+  }
+
+  .feature-marquee-track {
+    width: 100%;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 9px;
+  }
+
+  .feature-marquee-track .feature-card {
+    width: 100%;
+    min-width: 0;
+    min-height: 96px;
+    height: auto;
+    flex: none;
+    padding: 13px;
+    border-radius: 13px;
+    background: rgba(255, 255, 255, 0.025);
+    box-shadow: none;
+  }
+
+  .feature-marquee-track .feature-card:first-child {
+    grid-column: 1 / -1;
+    min-height: 88px;
+    border-color: rgba(242, 207, 103, 0.34);
+    background: linear-gradient(110deg, rgba(242, 207, 103, 0.11), rgba(255, 255, 255, 0.02));
+  }
+
+  .feature-card p,
+  .feature-card ul,
+  .feature-card__glow,
+  .feature-card__shine {
+    display: none;
+  }
+
+  .feature-card .feature-top {
+    align-items: center;
+    gap: 10px;
+  }
+
+  .feature-card .feature-icon {
+    width: 38px;
+    height: 38px;
+  }
+
+  .feature-card h3 {
+    margin-top: 3px;
+    font-size: 16px;
+  }
+
+  .feature-card .feature-top span {
+    font-size: 9px;
+  }
+
+  .auction-strength-section {
+    margin: 34px 0 42px;
+    padding: 18px;
+    border-radius: 16px;
+    gap: 18px;
+  }
+
+  .auction-strength-copy h2 {
+    margin: 14px 0 10px;
+    font-size: 27px;
+    line-height: 1.18;
+  }
+
+  .auction-strength-copy p {
+    font-size: 14px;
+    line-height: 1.65;
+  }
+
+  .auction-strength-points {
+    display: none;
+  }
+
+  .auction-strength-cta {
+    width: 100%;
+    min-height: 48px;
+    margin-top: 16px;
+    border-radius: 12px;
+  }
+
+  .auction-performance-card {
+    width: 100%;
+    height: auto;
+    padding: 14px;
+    border-radius: 14px;
+    box-shadow: none;
+  }
+
+  .auction-performance-mask {
+    height: 148px;
+  }
+
+  .auction-performance-track {
+    animation: none;
+  }
+
+  .auction-performance-track .auction-performance-row:nth-child(n + 4) {
+    display: none;
+  }
+
+  .auction-performance-header,
+  .auction-performance-row {
+    grid-template-columns: 1fr 1fr 0.75fr;
+    gap: 7px;
+    font-size: 11px;
+  }
+
+  .auction-performance-header span:nth-child(3),
+  .auction-performance-row span:nth-child(3) {
+    display: none;
+  }
+
+  .home-feedback-section {
+    margin: 0 0 28px;
+    padding: 18px;
+    border-radius: 16px;
+    gap: 16px;
+  }
+
+  .home-feedback-copy h2 {
+    font-size: 24px;
+  }
+
+  /* Feature pages expose the active task before supporting explanations. */
+  .mobile-task-header {
+    padding: 10px 0 14px;
+    display: grid;
+    gap: 7px;
+    border-bottom: 1px solid rgba(242, 207, 103, 0.12);
+  }
+
+  .mobile-task-header__eyebrow,
+  .mobile-task-header__status {
+    width: fit-content;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: #f2cf67;
+    font-size: 11px;
+    font-weight: 850;
+    letter-spacing: 0.06em;
+  }
+
+  .mobile-task-header__eyebrow svg {
+    width: 15px;
+    height: 15px;
+  }
+
+  .mobile-task-header h1 {
+    margin: 0;
+    color: #f6f0de;
+    font-size: clamp(27px, 7.6vw, 32px);
+    line-height: 1.12;
+    letter-spacing: -0.03em;
+  }
+
+  .mobile-task-header p {
+    margin: 0;
+    color: rgba(242, 238, 224, 0.65);
+    font-size: 14px;
+    line-height: 1.6;
+  }
+
+  .mobile-task-header__status {
+    min-height: 26px;
+    padding: 0 9px;
+    border: 1px solid rgba(242, 207, 103, 0.18);
+    border-radius: 999px;
+    color: rgba(242, 238, 224, 0.72);
+    background: rgba(242, 207, 103, 0.06);
+    letter-spacing: 0;
+  }
+
+  :is(.review-workbench-main, .review-console-main),
+  .auction-main,
+  .dated-report-page .auction-main {
+    width: calc(100% - (2 * var(--mobile-page-gutter)));
+    padding: 12px 0 24px;
+  }
+
+  :is(.review-workbench-topbar, .review-console-topbar),
+  .auction-topbar {
+    min-height: 52px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid rgba(242, 207, 103, 0.12);
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+  }
+
+  :is(.review-topbar-title, .auction-topbar > div:first-child) span:not(.topbar-icon) {
+    font-size: 9px;
+    letter-spacing: 0.12em;
+  }
+
+  :is(.review-topbar-title, .auction-topbar > div:first-child) b {
+    font-size: 18px;
+  }
+
+  :is(.review-workbench-actions, .review-console-actions),
+  .auction-topbar-actions {
+    width: auto;
+    flex-wrap: nowrap;
+    gap: 6px;
+  }
+
+  :is(.review-workbench-actions, .review-console-actions) button {
+    width: 44px;
+    min-width: 44px;
+    padding: 0;
+  }
+
+  :is(.review-workbench-actions, .review-console-actions) button span {
+    display: none;
+  }
+
+  .auction-date-picker {
+    width: min(152px, 44vw);
+    min-height: 44px;
+    padding: 0 9px;
+  }
+
+  .auction-date-picker input {
+    width: 100%;
+    min-width: 0;
+    padding: 0;
+    font-size: 14px !important;
+  }
+
+  .auction-topbar-actions > button {
+    width: 44px;
+    flex: 0 0 44px;
+    padding: 0;
+  }
+
+  .auction-topbar-actions > button span {
+    display: none;
+  }
+
+  :is(.review-console-hero, .review-workbench-hero),
+  .auction-hero,
+  .dated-report-page .auction-hero {
+    min-height: 0;
+    padding: 12px 0 16px;
+    border: 0;
+    border-bottom: 1px solid rgba(242, 207, 103, 0.12);
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .auction-hero > div:first-child,
+  .review-console-hero > .review-hero-copy,
+  .watch-workbench-hero > .review-hero-copy {
+    display: none;
+  }
+
+  .auction-hero:has(.auction-status-strip) {
+    padding-top: 4px;
+  }
+
+  :is(.review-console-hero, .review-workbench-hero) {
+    gap: 14px;
+  }
+
+  .review-hero-copy h1,
+  .auction-hero h1,
+  .dated-report-page .auction-hero h1,
+  .market-day-report-hero h1 {
+    margin: 8px 0;
+    font-size: clamp(27px, 7.5vw, 32px);
+    line-height: 1.14;
+    letter-spacing: -0.03em;
+  }
+
+  .review-hero-copy p:not(.review-kicker),
+  .auction-hero > div > p:not(.auction-kicker) {
+    font-size: 14px;
+    line-height: 1.6;
+  }
+
+  .auction-buy-note {
+    margin: 8px 0;
+    font-size: 12px;
+  }
+
+  .auction-status-strip {
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+    gap: 1px;
+    overflow: hidden;
+    border: 1px solid rgba(242, 207, 103, 0.12);
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.025);
+  }
+
+  .auction-status-strip article {
+    min-height: 66px;
+    padding: 10px 8px;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+  }
+
+  .auction-status-strip article + article {
+    border-left: 1px solid rgba(242, 207, 103, 0.1);
+  }
+
+  .auction-status-strip span {
+    font-size: 10px;
+  }
+
+  .auction-status-strip b {
+    margin-top: 5px;
+    font-size: 13px;
+    overflow-wrap: anywhere;
+  }
+
+  .auction-panel,
+  .research-panel,
+  .ai-report-section,
+  .review-hero-card {
+    padding: 15px;
+    border-radius: var(--mobile-panel-radius);
+    box-shadow: none;
+  }
+
+  .auction-grid,
+  .review-workbench-grid,
+  .review-console-grid,
+  .watch-result-stack,
+  .ai-research-inline-stack {
+    gap: var(--mobile-section-gap);
+  }
+
+  .auction-panel-head h2,
+  .research-panel h2,
+  .ai-report-section h2 {
+    font-size: 20px;
+    line-height: 1.25;
+  }
+
+  .manual-trade-head p,
+  .watch-entry-step p,
+  .generation-time-note,
+  .watch-entry-hint {
+    font-size: 12px;
+    line-height: 1.55;
+  }
+
+  .review-flow-panel,
+  .watch-entry-preview-card {
+    margin-top: 0;
+  }
+
+  .review-flow-panel {
+    order: 5;
+  }
+
+  .workflow-track,
+  .watch-preview-feature-grid {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+
+  .workflow-arrow {
+    display: none;
+  }
+
+  .watch-workbench-hero .review-hero-copy .review-hero-actions {
+    display: none;
+  }
+
+  .watch-entry-form-card,
+  .hero-upload-card {
+    order: -1;
+  }
+
+  .watch-entry-form-card .watch-v2-submit,
+  .upload-action-row .primary-gold-action {
+    min-height: 50px;
+  }
+
+  .watch-entry-form-card .watch-v2-submit,
+  .upload-action-row {
+    position: sticky;
+    z-index: 70;
+    bottom: calc(var(--mobile-feature-nav-height) + var(--mobile-feature-nav-safe) + 8px);
+  }
+
+  .watch-entry-form-card .watch-v2-submit {
+    box-shadow: 0 14px 34px rgba(0, 0, 0, 0.46);
+  }
+
+  .upload-action-row {
+    padding: 8px;
+    border: 1px solid rgba(242, 207, 103, 0.22);
+    border-radius: 14px;
+    background: rgba(7, 11, 11, 0.95);
+    box-shadow: 0 14px 34px rgba(0, 0, 0, 0.46);
+    backdrop-filter: blur(16px);
+  }
+
+  /* One mobile action dock, rendered only by states that actually require action. */
+  .mobile-action-dock.auction-confirm-actions {
+    position: fixed;
+    z-index: 95;
+    right: var(--mobile-page-gutter);
+    bottom: calc(var(--mobile-feature-nav-height) + var(--mobile-feature-nav-safe) + 8px);
+    left: var(--mobile-page-gutter);
+    width: auto;
+    padding: 8px;
+    border: 1px solid rgba(242, 207, 103, 0.3);
+    border-radius: 14px;
+    background: rgba(7, 11, 11, 0.96);
+    box-shadow: 0 16px 44px rgba(0, 0, 0, 0.5);
+    backdrop-filter: blur(18px);
+  }
+
+  .mobile-action-dock__action {
+    width: 100%;
+    display: block;
+  }
+
+  .mobile-action-dock__action > button {
+    width: 100%;
+    min-height: 50px;
+  }
+
+  .mobile-action-dock__action > span,
+  .mobile-action-dock__hint {
+    display: none;
+  }
+
+  .auction-confirm-panel:has(.mobile-action-dock) {
+    min-height: 90px;
+    margin-bottom: 76px;
+  }
+
+  /* Long report surfaces use readable rhythm and only table-level scrolling. */
+  .dated-report-content,
+  .market-day-report-view,
+  .ai-research-inline-report,
+  .review-report-detail-page {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .report-pipe-table-scroll {
+    max-width: calc(100vw - (2 * var(--mobile-page-gutter)) - 30px);
+    border-radius: 10px;
+  }
+
+  .report-pipe-table th {
+    position: sticky;
+    top: 0;
+    background: #171815;
+  }
+
+  .market-day-fact-grid,
+  .market-day-score-board,
+  .ai-report-meta,
+  .watch-key-grid-v2 {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+
+  .market-day-fact-grid > *:last-child:nth-child(odd),
+  .ai-report-meta > *:last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+  }
+
+  /* Auth, billing, admin and webhook: form/task first, decoration second. */
+  .account-shell {
+    padding-top: 12px;
+  }
+
+  .account-panel {
+    padding: 16px;
+    border-radius: 16px;
+  }
+
+  .account-mobile-intro {
+    margin-bottom: 16px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid rgba(242, 207, 103, 0.14);
+    display: grid;
+    gap: 5px;
+  }
+
+  .account-mobile-intro a {
+    width: fit-content;
+    color: #f2cf67;
+    font-size: 11px;
+    font-weight: 900;
+    letter-spacing: 0.1em;
+    text-decoration: none;
+  }
+
+  .account-mobile-intro b {
+    color: #f6f0de;
+    font-size: 24px;
+  }
+
+  .account-mobile-intro span {
+    color: rgba(242, 238, 224, 0.58);
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  .account-hero {
+    padding: 6px 2px 24px;
+  }
+
+  .account-hero h1 {
+    font-size: 28px;
+  }
+
+  .account-hero p,
+  .account-rules {
+    display: none;
+  }
+
+  .admin-page,
+  .billing-page,
+  .webhook-main {
+    padding-inline: var(--mobile-page-gutter);
+  }
+
+  .admin-topbar h1,
+  .billing-topbar h1,
+  .webhook-hero h1 {
+    font-size: 28px;
+  }
+
+  .admin-panel,
+  .billing-packages,
+  .billing-checkout,
+  .webhook-hero,
+  .webhook-panel {
+    padding: 15px;
+    border-radius: 14px;
+    box-shadow: none;
+  }
+
+  .admin-table thead {
+    display: none;
+  }
+
+  .admin-table,
+  .admin-table tbody,
+  .admin-table tr,
+  .admin-table td {
+    width: 100%;
+    display: block;
+  }
+
+  .admin-table tr {
+    margin-bottom: 10px;
+    padding: 12px;
+    border: 1px solid rgba(242, 207, 103, 0.14);
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.025);
+  }
+
+  .admin-table td {
+    padding: 7px 0;
+    border: 0;
+    overflow-wrap: anywhere;
+  }
+
+  :is(.account-agreement-modal, .email-binding-modal, .product-guide-modal, .update-notice-modal, .admin-publish-dialog) {
+    padding: 18px 16px calc(14px + env(safe-area-inset-bottom, 0px));
   }
 }
 
