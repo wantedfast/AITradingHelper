@@ -424,8 +424,13 @@ export default function ReviewPage() {
 
   async function pollReportStatus(statusUrl: string): Promise<ReportPayload> {
     const target = statusUrl.startsWith("http") ? statusUrl : `${API_BASE}${statusUrl}`;
+    const token = getAuthToken();
+    if (!token) throw new Error("请先登录后查看报告");
     for (let attempt = 0; attempt < 240; attempt += 1) {
-      const response = await fetch(target, { cache: "no-store" });
+      const response = await fetch(target, {
+        headers: { Authorization: `Bearer ${token}` },
+        cache: "no-store",
+      });
       const payload = await parseJsonResponse(response);
       setGenerationStage(payload.stage === "build_ai_review" && attempt >= 12 ? "build_ai_review_late" : payload.stage || payload.status || "queued");
       if (!response.ok) throw new Error(formatReportError(payload, copy.errorTitle));
@@ -533,7 +538,10 @@ export default function ReviewPage() {
       if (structuredUrl) {
         setAgentSummaryLoading(true);
         try {
-          const structuredResponse = await fetch(`${API_BASE}${structuredUrl}`, { cache: "no-store" });
+          const structuredResponse = await fetch(`${API_BASE}${structuredUrl}`, {
+            headers: { Authorization: `Bearer ${token}` },
+            cache: "no-store",
+          });
           if (structuredResponse.ok) {
             setAgentSummaryData((await structuredResponse.json()) as AgentSummaryData);
           }
