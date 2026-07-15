@@ -336,3 +336,38 @@ for (const viewport of viewports) {
     }
   });
 }
+
+test.describe("homepage guest acquisition", () => {
+  test.use({ viewport: { width: 390, height: 844 } });
+
+  test("hero exposes direct registration and login without loading homepage music", async ({ page }) => {
+    await page.route("**/api/update-notices/latest", (route) => json(route, { notice: null }));
+    await page.route("**/api/auction-strength/performance", (route) => json(route, { rows: [] }));
+    await page.route("**/api/legal/registration-agreement", (route) =>
+      json(route, {
+        agreement_type: "registration",
+        version: "responsive-test",
+        effective_at: "2026-07-15",
+        title: "注册协议",
+        operator_name: "盈航运营方",
+        sections: [],
+        confirmation: "我已阅读并同意",
+        content_hash: "responsive-test",
+      }),
+    );
+
+    await page.goto("/", { waitUntil: "domcontentloaded" });
+
+    const heroActions = page.locator(".hero .actions");
+    const registerLink = heroActions.locator('a[href="/auth?mode=register"]');
+    const loginLink = heroActions.locator('a[href="/auth"]');
+    await expect(registerLink).toBeVisible();
+    await expect(loginLink).toBeVisible();
+    await expect(page.locator("audio, .music-toggle")).toHaveCount(0);
+
+    await registerLink.click();
+    await expect(page).toHaveURL(/\/auth\?mode=register$/);
+    await expect(page.locator(".account-mode-switch button").nth(1)).toHaveClass(/active/);
+    await expect(page.locator('input[placeholder="name@example.com"]')).toBeVisible();
+  });
+});
