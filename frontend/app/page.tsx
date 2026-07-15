@@ -647,6 +647,10 @@ export default function Page() {
             {feedbackMessage && <p>{feedbackMessage}</p>}
           </form>
         </section>
+        <footer className="home-operations-footer">
+          <span>© 盈航 AI TRADING</span>
+          <Link href="/admin/login">运营登录</Link>
+        </footer>
       </div>
       {showUpdateNotice && updateNotice && (
         <div className="product-guide-backdrop" role="presentation" onMouseDown={closeUpdateNotice}>

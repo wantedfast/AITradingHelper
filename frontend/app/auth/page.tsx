@@ -17,7 +17,7 @@ import {
 } from "lucide-react";
 import { apiFetch, storeAuth, type AuthResult } from "@/lib/auth-client";
 
-type Mode = "password-login" | "password-register" | "admin";
+type Mode = "password-login" | "password-register";
 
 type AgreementSection = {
   id: string;
@@ -50,7 +50,7 @@ function AuthContent() {
   const params = useSearchParams();
   const inviteFromUrl = normalizeInviteCode(params.get("invite") || params.get("invite_code") || params.get("ref") || "");
   const registerFromUrl = ["register", "password-register"].includes(params.get("mode") || "");
-  const redirect = params.get("redirect") || "/";
+  const redirect = safeUserRedirect(params.get("redirect"));
   const [mode, setMode] = useState<Mode>(inviteFromUrl || registerFromUrl ? "password-register" : "password-login");
   const [account, setAccount] = useState("");
   const [username, setUsername] = useState("");
@@ -171,7 +171,7 @@ function AuthContent() {
         });
       }
       storeAuth(result);
-      const target = mode === "admin" && !params.get("redirect") ? "/admin" : redirect;
+      const target = redirect;
       router.push(result.user.role !== "admin" && target === "/admin" ? "/" : target);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "操作失败，请稍后重试");
@@ -221,19 +221,12 @@ function AuthContent() {
             <span>{isRegister ? "使用邮箱完成注册，已有账号可直接登录。" : "查看你的报告、预案和剩余使用次数。"}</span>
           </div>
           <div className="account-mode-switch">
-            <button className={mode === "password-login" || mode === "admin" ? "active" : ""} type="button" onClick={() => setMode("password-login")}>
+            <button className={mode === "password-login" ? "active" : ""} type="button" onClick={() => setMode("password-login")}>
               密码登录
             </button>
             <button className={isRegister ? "active" : ""} type="button" onClick={() => setMode("password-register")}>
               邮箱注册
             </button>
-          </div>
-          <div className="account-submode-row">
-            {!isRegister && (
-              <button className={mode === "admin" ? "active" : ""} type="button" onClick={() => setMode(mode === "admin" ? "password-login" : "admin")}>
-                {mode === "admin" ? "返回普通密码登录" : "管理员入口"}
-              </button>
-            )}
           </div>
           <h2>{title}</h2>
           <p>{helper}</p>
@@ -248,19 +241,6 @@ function AuthContent() {
                   </i>
                 </label>
                 <PasswordField value={password} onChange={setPassword} placeholder="请输入密码" />
-              </>
-            )}
-
-            {mode === "admin" && (
-              <>
-                <label>
-                  <span>管理员账号</span>
-                  <i>
-                    <UserRound />
-                    <input value={account} onChange={(event) => setAccount(event.target.value)} placeholder="请输入管理员账号" />
-                  </i>
-                </label>
-                <PasswordField value={password} onChange={setPassword} placeholder="请输入管理员密码" />
               </>
             )}
 
@@ -455,20 +435,23 @@ function PasswordField({ value, onChange, placeholder }: { value: string; onChan
 
 function titleForMode(mode: Mode) {
   if (mode === "password-login") return "账号或邮箱登录";
-  if (mode === "password-register") return "账号密码注册";
-  return "管理员登录";
+  return "账号密码注册";
 }
 
 function actionForMode(mode: Mode) {
   if (mode === "password-login") return "密码登录";
-  if (mode === "password-register") return "账号注册并领取 5 次免费机会";
-  return "登录管理台";
+  return "账号注册并领取 5 次免费机会";
 }
 
 function helperForMode(mode: Mode) {
   if (mode === "password-login") return "可以使用账号名或注册邮箱登录。";
-  if (mode === "password-register") return "填写账号名、注册邮箱和密码；邮箱验证码通过后即可创建账号。";
-  return "管理员保留密码登录，避免邮件服务异常时无法进入后台。";
+  return "填写账号名、注册邮箱和密码；邮箱验证码通过后即可创建账号。";
+}
+
+function safeUserRedirect(value: string | null) {
+  if (!value || !value.startsWith("/") || value.startsWith("//") || value.includes(":") || value.includes("\\") || /[\u0000-\u001f\u007f]/.test(value)) return "/";
+  if (value === "/admin" || value.startsWith("/admin/") || value.startsWith("/admin?") || value.startsWith("/admin#")) return "/";
+  return value;
 }
 
 function normalizeInviteCode(value: string) {

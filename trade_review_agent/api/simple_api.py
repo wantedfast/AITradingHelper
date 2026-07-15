@@ -44,6 +44,7 @@ from trade_review_agent.auth_system import (
     init_auth_db,
     latest_published_update_notice,
     list_update_notices,
+    login_admin_password_user,
     login_password_user,
     logout_user,
     mark_order_paid_by_order_no,
@@ -248,6 +249,9 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/auth/password-login":
                 self._auth_password_login()
+                return
+            if path == "/api/auth/admin-login":
+                self._auth_admin_login()
                 return
             if path == "/api/auth/logout":
                 self._auth_logout()
@@ -815,6 +819,16 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
     def _auth_password_login(self) -> None:
         payload = self._read_json_body()
         result = login_password_user(
+            AUTH_DB,
+            account=str(payload.get("account") or ""),
+            password=str(payload.get("password") or ""),
+            ip=self._client_ip(),
+        )
+        self._json(result)
+
+    def _auth_admin_login(self) -> None:
+        payload = self._read_json_body()
+        result = login_admin_password_user(
             AUTH_DB,
             account=str(payload.get("account") or ""),
             password=str(payload.get("password") or ""),
