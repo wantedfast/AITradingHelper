@@ -3,11 +3,11 @@
 import Image from "next/image";
 import Link from "next/link";
 import { FormEvent, useEffect, useRef, useState } from "react";
-import { BellRing, ChevronDown, Copy, CreditCard, FileSearch, FileText, Gift, Info, LogIn, LogOut, Megaphone, Menu, MessageSquare, ShieldCheck, Sparkles, TrendingUp, Trophy, UserPlus, UserRound, X } from "lucide-react";
+import { BellRing, ChevronDown, Copy, Crown, FileSearch, FileText, Gift, Info, LogOut, Megaphone, Menu, MessageSquare, ShieldCheck, Sparkles, TrendingUp, Trophy, UserPlus, UserRound, X } from "lucide-react";
 import { AuctionStrengthPerformanceTicker, useAuctionStrengthPerformance } from "@/components/auction-strength-performance-ticker";
 import { GoldMagicCube } from "@/components/gold-magic-cube";
 import { FinancialDisclaimer } from "@/components/financial-disclaimer";
-import { apiFetch, clearAuth, getStoredUser, inviteUrl, refreshCurrentUser, storeUser, userAccessLabel, userBalanceText, type UserProfile } from "@/lib/auth-client";
+import { apiFetch, clearAuth, getStoredUser, hasActiveMembership, inviteUrl, membershipExpiryText, refreshCurrentUser, storeUser, userAccessLabel, userBalanceText, type UserProfile } from "@/lib/auth-client";
 import { copyTextToClipboard } from "@/lib/clipboard";
 
 const features = [
@@ -262,6 +262,10 @@ export default function Page() {
             <Link href="/watch">AI 盯盘</Link>
             <Link href="/market-day">AI当日行情</Link>
             <Link href="/ai-research">AI研报</Link>
+            <Link className="home-membership-nav" href="/billing">
+              <Crown className="h-4 w-4" />
+              {hydrated && hasActiveMembership(user) ? "会员已开通" : "开通会员"}
+            </Link>
             {hydrated && user?.role === "admin" && <Link href="/admin">管理台</Link>}
             {hydrated && user ? (
               <div className="home-user-menu">
@@ -308,8 +312,8 @@ export default function Page() {
                       {inviteCopied ? "已复制邀请链接" : "复制邀请链接"}
                     </button>
                     <Link className="home-user-copy" href="/billing" onClick={() => setShowUserMenu(false)}>
-                      <CreditCard className="h-4 w-4" />
-                      购买次数
+                      <Crown className="h-4 w-4" />
+                      {hasActiveMembership(user) ? `会员有效至 ${membershipExpiryText(user) || "当前周期"}` : "开通会员"}
                     </Link>
                     <button className="home-user-logout" type="button" onClick={logout}>
                       <LogOut className="h-4 w-4" />
@@ -326,8 +330,19 @@ export default function Page() {
           </nav>
           <div className="home-mobile-actions">
             {hydrated && !user ? (
-              <Link className="home-mobile-login" href="/auth">
-                登录
+              <>
+                <Link className="home-mobile-membership" href="/auth?mode=register&redirect=/billing">
+                  <Crown aria-hidden="true" />
+                  会员
+                </Link>
+                <Link className="home-mobile-register" href="/auth?mode=register">
+                  免费注册
+                </Link>
+              </>
+            ) : hydrated && user ? (
+              <Link className={`home-mobile-membership${hasActiveMembership(user) ? " is-active" : ""}`} href="/billing">
+                <Crown aria-hidden="true" />
+                {hasActiveMembership(user) ? "会员已开通" : "开通会员"}
               </Link>
             ) : null}
             <button
@@ -370,6 +385,15 @@ export default function Page() {
                   );
                 })}
               </div>
+              <Link className="home-mobile-membership-card" href={user ? "/billing" : "/auth?mode=register&redirect=/billing"} onClick={() => setShowMobileMenu(false)}>
+                <span className="home-mobile-membership-card__icon"><Crown aria-hidden="true" /></span>
+                <span>
+                  <small>盈航会员 · 全功能不限次数</small>
+                  <b>{hasActiveMembership(user) ? "会员权益已生效" : "月度 ¥59 · 年度 ¥399"}</b>
+                  <em>{hasActiveMembership(user) ? `有效至 ${membershipExpiryText(user) || "当前周期结束"}` : "年度会员更划算，开通后会员期内无限使用"}</em>
+                </span>
+                <strong>{hasActiveMembership(user) ? "查看" : "开通"}</strong>
+              </Link>
               <div className="home-mobile-menu-secondary">
                 <button type="button" onClick={() => { setShowMobileMenu(false); openProductGuide(); }}>
                   <Info aria-hidden="true" />
@@ -397,8 +421,8 @@ export default function Page() {
                   </div>
                   <p>{userBalanceText(user)}</p>
                   <Link href="/billing" onClick={() => setShowMobileMenu(false)}>
-                    <CreditCard aria-hidden="true" />
-                    购买次数
+                    <Crown aria-hidden="true" />
+                    {hasActiveMembership(user) ? "查看会员权益" : "开通会员"}
                   </Link>
                   <button type="button" onClick={mobileLogout}>
                     <LogOut aria-hidden="true" />
@@ -406,9 +430,10 @@ export default function Page() {
                   </button>
                 </div>
               ) : (
-                <Link className="home-mobile-account-login" href="/auth" onClick={() => setShowMobileMenu(false)}>
-                  登录或注册
-                </Link>
+                <div className="home-mobile-guest-actions">
+                  <Link className="home-mobile-account-register" href="/auth?mode=register" onClick={() => setShowMobileMenu(false)}>免费注册，领取 5 次</Link>
+                  <Link className="home-mobile-account-login" href="/auth" onClick={() => setShowMobileMenu(false)}>已有账号登录</Link>
+                </div>
               )}
             </nav>
           </div>
@@ -448,10 +473,6 @@ export default function Page() {
                   <Link className="primary home-register-primary" href="/auth?mode=register">
                     <UserPlus className="h-5 w-5" />
                     免费注册，领取 5 次
-                  </Link>
-                  <Link className="secondary home-auth-link" href="/auth">
-                    <LogIn className="h-5 w-5" />
-                    已有账号，立即登录
                   </Link>
                 </>
               )}

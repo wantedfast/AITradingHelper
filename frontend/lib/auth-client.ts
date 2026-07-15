@@ -71,7 +71,8 @@ export function clearAuth() {
 }
 
 export function hasActiveMembership(user: AccessUser | null | undefined) {
-  return Boolean(user?.membership_active || user?.membership_status === "active");
+  if (typeof user?.membership_active === "boolean") return user.membership_active;
+  return user?.membership_status === "active";
 }
 
 export function membershipExpiryText(user: AccessUser | null | undefined) {

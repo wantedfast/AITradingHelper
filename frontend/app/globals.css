@@ -2123,6 +2123,126 @@
   font-weight: 900;
 }
 
+/* Membership entry points and selectable membership plans. */
+.home-membership-nav {
+  display: inline-flex !important;
+  align-items: center;
+  gap: 6px;
+  color: #f5d77a !important;
+}
+
+.home-membership-nav svg {
+  width: 16px;
+  height: 16px;
+}
+
+.billing-package-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.billing-package-heading > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #f4f0e8;
+  font-size: 17px;
+  font-weight: 900;
+}
+
+.billing-package-heading svg {
+  width: 19px;
+  color: #f5d77a;
+}
+
+.billing-package-heading > small {
+  color: #9ca3a0;
+  font-size: 12px;
+}
+
+.billing-plan-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.billing-packages .billing-plan-options button {
+  position: relative;
+  min-height: 154px;
+  grid-template-columns: 42px minmax(0, 1fr) auto;
+  align-items: start;
+}
+
+.billing-packages .billing-plan-options button.is-recommended {
+  border-color: rgba(245, 199, 107, 0.4);
+}
+
+.billing-packages .billing-plan-options button:disabled {
+  cursor: default;
+  opacity: 0.62;
+}
+
+.billing-packages .billing-plan-options button.active:disabled {
+  opacity: 1;
+}
+
+.billing-plan-icon {
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  color: #f5d77a;
+  background: rgba(245, 199, 107, 0.09);
+}
+
+.billing-plan-icon svg {
+  width: 21px;
+  height: 21px;
+}
+
+.billing-plan-copy {
+  min-width: 0;
+  display: grid;
+  gap: 7px;
+}
+
+.billing-plan-name-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.billing-plan-name-row em {
+  padding: 3px 7px;
+  border-radius: 999px;
+  color: #161008;
+  background: #f5d77a;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 900;
+}
+
+.billing-plan-copy i {
+  color: rgba(245, 215, 122, 0.76);
+  font-size: 12px;
+  font-style: normal;
+}
+
+.billing-packages .billing-plan-options strong {
+  display: flex;
+  align-items: baseline;
+  gap: 2px;
+  font-size: 28px;
+}
+
+.billing-packages .billing-plan-options strong small {
+  color: inherit;
+  font-size: 13px;
+}
+
 @media (max-width: 920px) {
   .home-feedback-section,
   .account-shell,

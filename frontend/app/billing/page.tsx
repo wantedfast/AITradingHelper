@@ -4,7 +4,7 @@ import Link from "next/link";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
-import { ArrowLeft, CheckCircle2, CreditCard, Loader2, QrCode, RefreshCw, Send, ShieldCheck } from "lucide-react";
+import { ArrowLeft, CheckCircle2, Crown, CreditCard, Loader2, QrCode, RefreshCw, Send, ShieldCheck, Sparkles } from "lucide-react";
 import { apiFetch, getAuthToken, storeUser, type UserProfile } from "@/lib/auth-client";
 
 type MembershipPlan = {
@@ -21,6 +21,8 @@ type OrderPayload = {
   order_no: string;
   plan_name: string;
   amount_cents: number;
+  package_id?: string;
+  duration_days?: number;
   status: "pending" | "submitted" | "paid" | "rejected" | string;
   payment_method?: string;
   payer_name?: string;
@@ -43,6 +45,7 @@ type PaymentDraft = {
 export default function BillingPage() {
   const router = useRouter();
   const [plans, setPlans] = useState<MembershipPlan[]>([]);
+  const [selectedPlanId, setSelectedPlanId] = useState("");
   const [order, setOrder] = useState<OrderPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
@@ -57,7 +60,10 @@ export default function BillingPage() {
     payer_note: "",
   });
 
-  const selectedPlan = useMemo(() => plans[0], [plans]);
+  const selectedPlan = useMemo(
+    () => plans.find((plan) => plan.id === selectedPlanId) || plans[0],
+    [plans, selectedPlanId],
+  );
 
   useEffect(() => {
     if (!getAuthToken()) {
@@ -80,8 +86,10 @@ export default function BillingPage() {
     setMessage("");
     try {
       const payload = await apiFetch<{ plans: MembershipPlan[] }>("/api/pay/membership/plans");
-      setPlans(payload.plans || []);
-      const plan = payload.plans?.[0];
+      const nextPlans = payload.plans || [];
+      setPlans(nextPlans);
+      const plan = nextPlans.find(isAnnualPlan) || nextPlans[0];
+      setSelectedPlanId(plan?.id || "");
       if (plan) setDraft((current) => ({ ...current, submitted_amount_yuan: (plan.amount_cents / 100).toFixed(2) }));
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "读取会员套餐失败");
@@ -100,6 +108,8 @@ export default function BillingPage() {
         body: JSON.stringify({ plan_id: selectedPlan.id }),
       });
       setOrder(payload.order);
+      if (payload.order.package_id) setSelectedPlanId(payload.order.package_id);
+      setDraft((current) => ({ ...current, submitted_amount_yuan: (payload.order.amount_cents / 100).toFixed(2) }));
       if (payload.user) storeUser(payload.user);
       setMessage("订单已创建。扫码付款后，请点击“我已付款”提交信息，系统会邮件通知管理员。");
     } catch (error) {
@@ -107,6 +117,13 @@ export default function BillingPage() {
     } finally {
       setCreating(false);
     }
+  }
+
+  function selectPlan(plan: MembershipPlan) {
+    if (order) return;
+    setSelectedPlanId(plan.id);
+    setDraft((current) => ({ ...current, submitted_amount_yuan: (plan.amount_cents / 100).toFixed(2) }));
+    setMessage("");
   }
 
   async function submitPayment() {
@@ -127,6 +144,7 @@ export default function BillingPage() {
         }),
       });
       setOrder(payload.order);
+      if (payload.order.package_id) setSelectedPlanId(payload.order.package_id);
       if (payload.user) storeUser(payload.user);
       const notice = payload.order.admin_notification;
       const nextMessage = notice?.sent === false ? `付款信息已提交，但邮件提醒未发送：${notice.error || "未知原因"}` : "付款信息已提交，已邮件通知管理员核对到账。";
@@ -146,6 +164,7 @@ export default function BillingPage() {
     try {
       const payload = await apiFetch<{ order: OrderPayload; user?: UserProfile | null }>(`/api/orders/${orderId}`);
       setOrder(payload.order);
+      if (payload.order.package_id) setSelectedPlanId(payload.order.package_id);
       if (payload.user) storeUser(payload.user);
       if (payload.order.status === "paid") {
         setMessage("会员已开通。");
@@ -166,9 +185,9 @@ export default function BillingPage() {
             返回首页
           </Link>
           <div>
-            <span>MONTHLY MEMBERSHIP</span>
-            <h1>开通 59 元/月会员</h1>
-            <p>扫码付款后点击“我已付款”，系统会邮件通知管理员；管理员确认到账后开通。</p>
+            <span>YINGHANG MEMBERSHIP</span>
+            <h1>开通盈航会员</h1>
+            <p>会员期内五项核心功能不限次数使用。选择套餐并创建订单，付款后由管理员确认开通。</p>
           </div>
         </header>
 
@@ -177,19 +196,42 @@ export default function BillingPage() {
 
         <section className="billing-grid">
           <div className="billing-packages">
-            {selectedPlan && (
-              <button className="active" type="button">
-                <CreditCard />
-                <span>
-                  <b>{selectedPlan.plan_name}</b>
-                  <small>{selectedPlan.duration_days} 天会员权益</small>
-                </span>
-                <strong>¥{(selectedPlan.amount_cents / 100).toFixed(2)}</strong>
-              </button>
-            )}
+            <div className="billing-package-heading">
+              <span><Crown />选择会员套餐</span>
+              <small>{order ? "订单已创建，套餐已锁定" : "推荐年度会员，平均每月更划算"}</small>
+            </div>
+            <div className="billing-plan-options" role="radiogroup" aria-label="会员套餐">
+              {plans.map((plan) => {
+                const annual = isAnnualPlan(plan);
+                const active = selectedPlan?.id === plan.id;
+                const annualSavings = annual ? membershipAnnualSavings(plans, plan) : 0;
+                return (
+                  <button
+                    aria-checked={active}
+                    className={`${active ? "active" : ""}${annual ? " is-recommended" : ""}`.trim()}
+                    disabled={Boolean(order)}
+                    key={plan.id}
+                    onClick={() => selectPlan(plan)}
+                    role="radio"
+                    type="button"
+                  >
+                    <span className="billing-plan-icon">{annual ? <Sparkles /> : <CreditCard />}</span>
+                    <span className="billing-plan-copy">
+                      <span className="billing-plan-name-row">
+                        <b>{plan.plan_name}</b>
+                        {annual ? <em>推荐</em> : null}
+                      </span>
+                      <small>{plan.duration_days} 天会员权益 · 五项功能不限次数</small>
+                      <i>{annualSavings > 0 ? `比连续购买月度节省 ¥${annualSavings}` : annual ? "年度套餐更划算" : "适合先体验一个月"}</i>
+                    </span>
+                    <strong><small>¥</small>{(plan.amount_cents / 100).toFixed(0)}</strong>
+                  </button>
+                );
+              })}
+            </div>
             <div className="billing-empty-qr">
               <ShieldCheck />
-              <p>付款时请备注订单号或账号，未备注会延迟开通。管理员只在确认到账后开通会员。</p>
+              <p>每日 TOP5、AI 复盘、AI 盯盘、AI 当日行情和 AI 研报均不限次数。付款时请备注订单号。</p>
             </div>
           </div>
 
@@ -197,7 +239,7 @@ export default function BillingPage() {
             <div className="billing-card-head">
               <QrCode />
               <span>
-                <b>{order ? `订单 ${order.order_no}` : selectedPlan?.plan_name || "月度会员"}</b>
+                <b>{order ? `${order.plan_name} · 订单 ${order.order_no}` : selectedPlan?.plan_name || "会员套餐"}</b>
                 <small>{order ? orderStatusText(order.status) : "先创建订单，再扫码付款"}</small>
               </span>
             </div>
@@ -213,6 +255,8 @@ export default function BillingPage() {
                   <b>{order.order_no}</b>
                   <span>状态</span>
                   <b>{orderStatusText(order.status)}</b>
+                  <span>会员套餐</span>
+                  <b>{order.plan_name}</b>
                 </div>
                 {order.status !== "paid" && (
                   <div className="billing-payment-form">
@@ -234,7 +278,7 @@ export default function BillingPage() {
                     </label>
                     <label>
                       <span>实付金额</span>
-                      <input value={draft.submitted_amount_yuan} onChange={(event) => setDraft((current) => ({ ...current, submitted_amount_yuan: event.target.value }))} />
+                      <input value={draft.submitted_amount_yuan} readOnly aria-readonly="true" />
                     </label>
                     <label>
                       <span>付款备注</span>
@@ -254,14 +298,14 @@ export default function BillingPage() {
                 {order.status === "paid" && (
                   <div className="billing-paid">
                     <CheckCircle2 />
-                    会员已开通
+                    {order.plan_name}已开通
                   </div>
                 )}
               </>
             ) : (
               <button className="billing-primary" type="button" onClick={createMembershipOrder} disabled={!selectedPlan || creating || loading}>
                 {creating ? <Loader2 className="spin-icon" /> : <CreditCard />}
-                {creating ? "正在创建订单" : "创建会员订单"}
+                {creating ? "正在创建订单" : `创建${selectedPlan?.plan_name || "会员"}订单`}
               </button>
             )}
           </aside>
@@ -269,6 +313,16 @@ export default function BillingPage() {
       </section>
     </main>
   );
+}
+
+function isAnnualPlan(plan: MembershipPlan) {
+  return plan.id.toLowerCase().includes("annual") || plan.duration_days >= 300;
+}
+
+function membershipAnnualSavings(plans: MembershipPlan[], annualPlan: MembershipPlan) {
+  const monthlyPlan = plans.find((plan) => !isAnnualPlan(plan));
+  if (!monthlyPlan) return 0;
+  return Math.max(0, Math.round((monthlyPlan.amount_cents * 12 - annualPlan.amount_cents) / 100));
 }
 
 function QrBox({ title, src }: { title: string; src: string }) {

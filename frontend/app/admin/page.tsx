@@ -170,7 +170,7 @@ export default function AdminPage() {
   async function confirmMembership(id: number) {
     await apiFetch(`/api/admin/orders/${id}/confirm-membership`, {
       method: "POST",
-      body: JSON.stringify({ admin_note: "已人工核对到账，开通月度会员" }),
+      body: JSON.stringify({ admin_note: "已人工核对到账，开通会员" }),
     });
     await loadDashboard();
   }
@@ -535,7 +535,7 @@ export default function AdminPage() {
                         <b>{item.plan_name}</b>
                         <span>{orderStatusLabel(item.status)}</span>
                       </header>
-                      <p>{item.product_type === "membership" ? "会员订阅" : `${item.credits} 次`} · ¥{(item.amount_cents / 100).toFixed(2)}</p>
+                      <p>{item.product_type === "membership" ? `会员订阅 · ${item.plan_name}` : `${item.credits} 次`} · ¥{(item.amount_cents / 100).toFixed(2)}</p>
                       <small>{item.username || item.email || item.phone} · {item.order_no}</small>
                       {item.product_type === "membership" && (
                         <p>
@@ -551,7 +551,7 @@ export default function AdminPage() {
                         <>
                           <button type="button" onClick={() => confirmMembership(item.id)}>
                             <CheckCircle2 />
-                            确认到账并开通
+                            确认到账并开通会员
                           </button>
                           <button type="button" onClick={() => rejectMembership(item.id)}>
                             标记异常
