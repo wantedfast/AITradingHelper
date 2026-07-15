@@ -3541,61 +3541,6 @@ h1 {
   }
 }
 
-.music-toggle {
-  position: fixed;
-  right: 24px;
-  bottom: 24px;
-  z-index: 40;
-  display: grid;
-  place-items: center;
-  width: 46px;
-  height: 46px;
-  padding: 0;
-  border: 1px solid rgba(201, 166, 70, 0.42);
-  border-radius: 999px;
-  color: #F5D77A;
-  background:
-    linear-gradient(135deg, rgba(10, 10, 10, 0.88), rgba(26, 20, 6, 0.82)),
-    rgba(0, 0, 0, 0.68);
-  box-shadow:
-    0 0 20px rgba(201, 166, 70, 0.18),
-    inset 0 0 10px rgba(245, 215, 122, 0.08);
-  backdrop-filter: blur(18px);
-  cursor: pointer;
-  transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
-}
-
-.music-toggle:hover {
-  transform: translateY(-2px);
-  border-color: rgba(245, 215, 122, 0.78);
-  box-shadow:
-    0 0 28px rgba(201, 166, 70, 0.26),
-    inset 0 0 12px rgba(245, 215, 122, 0.12);
-}
-
-.music-toggle__icon {
-  display: grid;
-  width: 26px;
-  height: 26px;
-  place-items: center;
-  border-radius: 999px;
-  color: #0B0B0B;
-  background: linear-gradient(135deg, #FFF1B8, #F5D77A 52%, #C9A646);
-}
-
-.music-toggle.is-playing .music-toggle__icon {
-  animation: musicPulse 1.8s ease-in-out infinite;
-}
-
-@keyframes musicPulse {
-  0%, 100% {
-    box-shadow: 0 0 0 0 rgba(245, 215, 122, 0.28);
-  }
-  50% {
-    box-shadow: 0 0 0 8px rgba(245, 215, 122, 0);
-  }
-}
-
 .review-studio-page {
   min-height: 100vh;
   color: var(--text);
@@ -10615,35 +10560,6 @@ button.radar-core,
   text-shadow: 0 0 12px rgba(255, 92, 92, 0.24);
 }
 
-.music-toggle {
-  width: auto;
-  min-width: 116px;
-  gap: 8px;
-  padding: 0 12px 0 10px;
-  border-color: transparent;
-  background: transparent;
-  box-shadow: none;
-  backdrop-filter: none;
-}
-
-.music-toggle:hover {
-  border-color: transparent;
-  background: transparent;
-  box-shadow: none;
-}
-
-.music-toggle__label {
-  color: rgba(255, 241, 184, 0.88);
-  font-size: 13px;
-  font-weight: 900;
-  letter-spacing: 0;
-}
-
-.music-toggle.is-blocked {
-  border-color: transparent;
-  box-shadow: none;
-}
-
 :is(.review-workbench-page, .review-console-page),
 .watch-terminal-page,
 .review-report-detail-page {
@@ -14671,9 +14587,18 @@ button.radar-core,
 }
 
 .dated-report-content {
+  width: 100%;
+  max-width: 100%;
   display: grid;
   min-width: 0;
   gap: 18px;
+  overflow-x: hidden;
+}
+
+.dated-report-content > *,
+.dated-report-content .review-hero-copy {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .dated-report-content .review-workbench-hero,
@@ -14899,6 +14824,8 @@ button.radar-core,
 
 /* Dependency-free rendering for Markdown pipe tables embedded in reports. */
 .report-pipe-table-scroll {
+  width: 100%;
+  min-width: 0;
   max-width: 100%;
   margin: 12px 0;
   overflow-x: auto;

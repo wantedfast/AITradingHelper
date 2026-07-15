@@ -49,8 +49,9 @@ function AuthContent() {
   const router = useRouter();
   const params = useSearchParams();
   const inviteFromUrl = normalizeInviteCode(params.get("invite") || params.get("invite_code") || params.get("ref") || "");
+  const registerFromUrl = ["register", "password-register"].includes(params.get("mode") || "");
   const redirect = params.get("redirect") || "/";
-  const [mode, setMode] = useState<Mode>(inviteFromUrl ? "password-register" : "password-login");
+  const [mode, setMode] = useState<Mode>(inviteFromUrl || registerFromUrl ? "password-register" : "password-login");
   const [account, setAccount] = useState("");
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
@@ -76,10 +77,10 @@ function AuthContent() {
   const helper = useMemo(() => helperForMode(mode), [mode]);
 
   useEffect(() => {
-    if (!inviteFromUrl) return;
-    setInviteCode(inviteFromUrl);
+    if (!inviteFromUrl && !registerFromUrl) return;
+    if (inviteFromUrl) setInviteCode(inviteFromUrl);
     setMode("password-register");
-  }, [inviteFromUrl]);
+  }, [inviteFromUrl, registerFromUrl]);
 
   useEffect(() => {
     if (!isRegister) return;

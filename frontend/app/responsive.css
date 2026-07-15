@@ -1138,10 +1138,6 @@
     min-height: 100dvh;
   }
 
-  .site-page .music-toggle {
-    display: none;
-  }
-
   .site-shell {
     width: calc(100% - (2 * var(--mobile-page-gutter)));
   }
@@ -1196,11 +1192,12 @@
     gap: 9px;
   }
 
-  .actions > .primary:not(.home-mobile-primary) {
+  .actions > .primary:not(.home-mobile-primary):not(.home-register-primary) {
     display: none;
   }
 
-  .home-mobile-primary {
+  .home-mobile-primary,
+  .home-register-primary {
     width: 100%;
     min-height: 50px;
     display: inline-flex;
