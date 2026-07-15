@@ -3,10 +3,9 @@
 import Image from "next/image";
 import Link from "next/link";
 import { FormEvent, useEffect, useRef, useState } from "react";
-import { BellRing, ChevronDown, Copy, CreditCard, FileSearch, FileText, Gift, Info, LogOut, Megaphone, Menu, MessageSquare, ShieldCheck, Sparkles, TrendingUp, Trophy, UserRound, X } from "lucide-react";
+import { BellRing, ChevronDown, Copy, CreditCard, FileSearch, FileText, Gift, Info, LogIn, LogOut, Megaphone, Menu, MessageSquare, ShieldCheck, Sparkles, TrendingUp, Trophy, UserPlus, UserRound, X } from "lucide-react";
 import { AuctionStrengthPerformanceTicker, useAuctionStrengthPerformance } from "@/components/auction-strength-performance-ticker";
 import { GoldMagicCube } from "@/components/gold-magic-cube";
-import { HomeMusic } from "@/components/home-music";
 import { FinancialDisclaimer } from "@/components/financial-disclaimer";
 import { apiFetch, clearAuth, getStoredUser, inviteUrl, refreshCurrentUser, storeUser, userAccessLabel, userBalanceText, type UserProfile } from "@/lib/auth-client";
 import { copyTextToClipboard } from "@/lib/clipboard";
@@ -244,7 +243,6 @@ export default function Page() {
 
   return (
     <main className="site-page">
-      <HomeMusic />
       <div className="noise-layer" />
       <div className="site-shell">
         <header className="nav">
@@ -434,18 +432,28 @@ export default function Page() {
               从交割单开始，AI 自动还原你的交易现场：市场情绪、板块方向、个股强度、产业链位置和下一步执行方案一目了然。
             </p>
             <div className="actions">
-              <Link className="primary" href="/review">
-                <Sparkles className="h-5 w-5" />
-                立即开始
-              </Link>
-              <Link className="primary home-mobile-primary" href="/auction-strength">
-                <Trophy className="h-5 w-5" />
-                查看今日 TOP5
-              </Link>
-              {hydrated && !user && (
-                <Link className="secondary home-auth-link" href="/auth">
-                  邮箱注册，送 5 次免费
-                </Link>
+              {user ? (
+                <>
+                  <Link className="primary" href="/review">
+                    <Sparkles className="h-5 w-5" />
+                    开始 AI 复盘
+                  </Link>
+                  <Link className="primary home-mobile-primary" href="/auction-strength">
+                    <Trophy className="h-5 w-5" />
+                    查看今日 TOP5
+                  </Link>
+                </>
+              ) : (
+                <>
+                  <Link className="primary home-register-primary" href="/auth?mode=register">
+                    <UserPlus className="h-5 w-5" />
+                    免费注册，领取 5 次
+                  </Link>
+                  <Link className="secondary home-auth-link" href="/auth">
+                    <LogIn className="h-5 w-5" />
+                    已有账号，立即登录
+                  </Link>
+                </>
               )}
             </div>
             <div
