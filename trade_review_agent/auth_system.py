@@ -36,6 +36,8 @@ SMS_CODE_TTL_MINUTES = 5
 SMS_RESEND_SECONDS = 60
 EMAIL_CODE_TTL_MINUTES = 10
 EMAIL_RESEND_SECONDS = 60
+UPDATE_EMAIL_MAX_ATTEMPTS = 3
+UPDATE_EMAIL_RETRY_MINUTES = (1, 5, 30)
 CREDIT_PACKAGES = {
     "pack_10": {"plan_name": "10 次使用包", "credits": 10, "amount_cents": 990},
     "pack_50": {"plan_name": "50 次使用包", "credits": 50, "amount_cents": 3990},
@@ -76,6 +78,7 @@ def init_auth_db(db_path: Path) -> None:
                 register_ip TEXT,
                 last_login_at TEXT,
                 created_at TEXT NOT NULL,
+                update_emails_enabled INTEGER NOT NULL DEFAULT 1,
                 FOREIGN KEY (referred_by) REFERENCES users(id)
             );
 
@@ -173,6 +176,35 @@ def init_auth_db(db_path: Path) -> None:
                 FOREIGN KEY (created_by) REFERENCES users(id)
             );
 
+            CREATE TABLE IF NOT EXISTS update_email_campaigns (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                notice_id INTEGER NOT NULL,
+                request_id TEXT NOT NULL UNIQUE,
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_by INTEGER,
+                created_at TEXT NOT NULL,
+                started_at TEXT,
+                finished_at TEXT,
+                FOREIGN KEY (notice_id) REFERENCES update_notices(id),
+                FOREIGN KEY (created_by) REFERENCES users(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS update_email_deliveries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                campaign_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                email TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'pending',
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                next_attempt_at TEXT,
+                last_error TEXT,
+                sent_at TEXT,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (campaign_id) REFERENCES update_email_campaigns(id),
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                UNIQUE (campaign_id, user_id)
+            );
+
             CREATE TABLE IF NOT EXISTS sms_codes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 phone TEXT NOT NULL,
@@ -213,6 +245,8 @@ def init_auth_db(db_path: Path) -> None:
             CREATE INDEX IF NOT EXISTS idx_feedback_status ON feedback(status);
             CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
             CREATE INDEX IF NOT EXISTS idx_update_notices_status ON update_notices(status, published_at);
+            CREATE INDEX IF NOT EXISTS idx_update_email_campaigns_notice ON update_email_campaigns(notice_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_update_email_deliveries_queue ON update_email_deliveries(status, next_attempt_at, id);
             CREATE INDEX IF NOT EXISTS idx_sms_codes_phone ON sms_codes(phone, purpose, created_at);
             CREATE INDEX IF NOT EXISTS idx_email_codes_email ON email_codes(email, purpose, created_at);
             CREATE INDEX IF NOT EXISTS idx_agreement_acceptances_user ON agreement_acceptances(user_id, accepted_at);
@@ -238,6 +272,7 @@ def _ensure_user_columns(conn: sqlite3.Connection) -> None:
         "membership_plan": "ALTER TABLE users ADD COLUMN membership_plan TEXT",
         "membership_status": "ALTER TABLE users ADD COLUMN membership_status TEXT",
         "membership_expires_at": "ALTER TABLE users ADD COLUMN membership_expires_at TEXT",
+        "update_emails_enabled": "ALTER TABLE users ADD COLUMN update_emails_enabled INTEGER NOT NULL DEFAULT 1",
     }
     for column, statement in migrations.items():
         if column not in columns:
@@ -954,7 +989,7 @@ def admin_dashboard(db_path: Path, days: int = 14) -> dict[str, Any]:
             "feedback": [_feedback_payload(row) for row in feedback_rows],
             "orders": [_order_payload(row) | {"phone": row["phone"], "username": row["username"], "email": row["email"]} for row in orders],
             "top_users": [dict(row) for row in top_users],
-            "update_notices": [_update_notice_payload(row) for row in _update_notice_rows(conn)],
+            "update_notices": [_update_notice_payload(row, conn=conn) for row in _update_notice_rows(conn)],
         }
 
 
@@ -975,7 +1010,15 @@ def latest_published_update_notice(db_path: Path) -> dict[str, Any] | None:
 def list_update_notices(db_path: Path, limit: int = 20) -> list[dict[str, Any]]:
     limit = max(1, min(100, int(limit or 20)))
     with _connect(db_path) as conn:
-        return [_update_notice_payload(row) for row in _update_notice_rows(conn, limit=limit)]
+        return [_update_notice_payload(row, conn=conn) for row in _update_notice_rows(conn, limit=limit)]
+
+
+def set_update_email_preference(db_path: Path, *, user_id: int, enabled: bool) -> dict[str, Any]:
+    if type(enabled) is not bool:
+        raise AuthError("update_emails_enabled 必须是布尔值", 400)
+    with _connect(db_path) as conn:
+        conn.execute("UPDATE users SET update_emails_enabled = ? WHERE id = ?", (1 if enabled else 0, user_id))
+        return _user_payload(conn, _fetch_user_by_id(conn, user_id))
 
 
 def create_update_notice(
@@ -1025,8 +1068,21 @@ def update_update_notice(
         return _update_notice_payload(conn.execute("SELECT * FROM update_notices WHERE id = ?", (notice_id,)).fetchone())
 
 
-def publish_update_notice(db_path: Path, *, notice_id: int) -> dict[str, Any]:
+def publish_update_notice(
+    db_path: Path,
+    *,
+    notice_id: int,
+    send_email: bool = False,
+    request_id: str = "",
+    admin_id: int | None = None,
+) -> dict[str, Any]:
+    if type(send_email) is not bool:
+        raise AuthError("send_email 必须是布尔值", 400)
+    request_id = str(request_id or "").strip()
+    if send_email and not re.fullmatch(r"[A-Za-z0-9_-]{8,100}", request_id):
+        raise AuthError("邮件推送 request_id 无效", 400)
     with _connect(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
         existing = conn.execute("SELECT * FROM update_notices WHERE id = ?", (notice_id,)).fetchone()
         if not existing:
             raise AuthError("更新公告不存在", 404)
@@ -1034,12 +1090,106 @@ def publish_update_notice(db_path: Path, *, notice_id: int) -> dict[str, Any]:
         conn.execute(
             """
             UPDATE update_notices
-            SET status = 'published', published_at = COALESCE(published_at, ?), updated_at = ?
+            SET status = 'published', published_at = ?, updated_at = ?
             WHERE id = ?
             """,
             (now, now, notice_id),
         )
-        return _update_notice_payload(conn.execute("SELECT * FROM update_notices WHERE id = ?", (notice_id,)).fetchone())
+        campaign = None
+        if send_email:
+            campaign = _create_update_email_campaign(conn, notice_id=notice_id, request_id=request_id, admin_id=admin_id)
+        notice = _update_notice_payload(conn.execute("SELECT * FROM update_notices WHERE id = ?", (notice_id,)).fetchone(), conn=conn)
+        return {"notice": notice, "email_campaign": campaign}
+
+
+def retry_update_email_campaign(db_path: Path, *, campaign_id: int) -> dict[str, Any]:
+    with _connect(db_path) as conn:
+        existing = conn.execute("SELECT id FROM update_email_campaigns WHERE id = ?", (campaign_id,)).fetchone()
+        if not existing:
+            raise AuthError("邮件推送任务不存在", 404)
+        now = _now()
+        cursor = conn.execute(
+            """
+            UPDATE update_email_deliveries
+            SET status = 'pending', attempt_count = 0, next_attempt_at = ?, last_error = NULL, updated_at = ?
+            WHERE campaign_id = ? AND status = 'failed'
+            """,
+            (now, now, campaign_id),
+        )
+        if cursor.rowcount:
+            conn.execute("UPDATE update_email_campaigns SET status = 'pending', finished_at = NULL WHERE id = ?", (campaign_id,))
+        return _email_campaign_payload(conn, campaign_id)
+
+
+def recover_update_email_queue(db_path: Path) -> int:
+    cutoff = (datetime.now(CN_TZ) - timedelta(minutes=10)).isoformat()
+    with _connect(db_path) as conn:
+        cursor = conn.execute(
+            """
+            UPDATE update_email_deliveries
+            SET status = 'pending', next_attempt_at = ?, updated_at = ?
+            WHERE status = 'sending' AND updated_at < ?
+            """,
+            (_now(), _now(), cutoff),
+        )
+        return int(cursor.rowcount)
+
+
+def process_next_update_email(db_path: Path) -> bool:
+    now = _now()
+    with _connect(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            """
+            SELECT d.id, d.campaign_id, d.email, d.attempt_count,
+                   n.title, n.version, n.items_json
+            FROM update_email_deliveries d
+            JOIN update_email_campaigns c ON c.id = d.campaign_id
+            JOIN update_notices n ON n.id = c.notice_id
+            WHERE d.status = 'pending' AND (d.next_attempt_at IS NULL OR d.next_attempt_at <= ?)
+            ORDER BY d.id
+            LIMIT 1
+            """,
+            (now,),
+        ).fetchone()
+        if not row:
+            return False
+        attempt = int(row["attempt_count"]) + 1
+        conn.execute(
+            "UPDATE update_email_deliveries SET status = 'sending', attempt_count = ?, updated_at = ? WHERE id = ?",
+            (attempt, now, row["id"]),
+        )
+        conn.execute(
+            "UPDATE update_email_campaigns SET status = 'sending', started_at = COALESCE(started_at, ?) WHERE id = ?",
+            (now, row["campaign_id"]),
+        )
+        delivery = dict(row)
+        delivery["attempt_count"] = attempt
+    try:
+        _send_update_notice_email(delivery)
+    except Exception as exc:
+        with _connect(db_path) as conn:
+            if attempt >= UPDATE_EMAIL_MAX_ATTEMPTS:
+                conn.execute(
+                    "UPDATE update_email_deliveries SET status = 'failed', last_error = ?, updated_at = ? WHERE id = ?",
+                    (str(exc)[:500], _now(), delivery["id"]),
+                )
+            else:
+                delay = UPDATE_EMAIL_RETRY_MINUTES[min(attempt - 1, len(UPDATE_EMAIL_RETRY_MINUTES) - 1)]
+                next_attempt = (datetime.now(CN_TZ) + timedelta(minutes=delay)).isoformat()
+                conn.execute(
+                    "UPDATE update_email_deliveries SET status = 'pending', next_attempt_at = ?, last_error = ?, updated_at = ? WHERE id = ?",
+                    (next_attempt, str(exc)[:500], _now(), delivery["id"]),
+                )
+            _refresh_email_campaign_status(conn, int(delivery["campaign_id"]))
+    else:
+        with _connect(db_path) as conn:
+            conn.execute(
+                "UPDATE update_email_deliveries SET status = 'sent', sent_at = ?, last_error = NULL, updated_at = ? WHERE id = ?",
+                (_now(), _now(), delivery["id"]),
+            )
+            _refresh_email_campaign_status(conn, int(delivery["campaign_id"]))
+    return True
 
 
 def unpublish_update_notice(db_path: Path, *, notice_id: int) -> dict[str, Any]:
@@ -1714,6 +1864,7 @@ def _user_payload(conn: sqlite3.Connection, row: sqlite3.Row | dict[str, Any]) -
         "phone": row["phone"],
         "username": row["username"] if "username" in row.keys() else "",
         "email": row["email"] if "email" in row.keys() else "",
+        "update_emails_enabled": bool(row["update_emails_enabled"]) if "update_emails_enabled" in row.keys() else True,
         "role": row["role"],
         "invite_code": row["invite_code"],
         "credits": _credit_balance(conn, user_id),
@@ -1754,14 +1905,14 @@ def _update_notice_rows(conn: sqlite3.Connection, limit: int = 20) -> list[sqlit
     ).fetchall()
 
 
-def _update_notice_payload(row: sqlite3.Row) -> dict[str, Any]:
+def _update_notice_payload(row: sqlite3.Row, *, conn: sqlite3.Connection | None = None) -> dict[str, Any]:
     try:
         items = json.loads(row["items_json"] or "[]")
     except Exception:
         items = []
     if not isinstance(items, list):
         items = []
-    return {
+    payload = {
         "id": row["id"],
         "title": row["title"],
         "version": row["version"],
@@ -1772,6 +1923,119 @@ def _update_notice_payload(row: sqlite3.Row) -> dict[str, Any]:
         "updated_at": row["updated_at"],
         "published_at": row["published_at"],
     }
+    if conn is not None:
+        campaign = conn.execute(
+            "SELECT id FROM update_email_campaigns WHERE notice_id = ? ORDER BY id DESC LIMIT 1",
+            (row["id"],),
+        ).fetchone()
+        payload["email_campaign"] = _email_campaign_payload(conn, int(campaign["id"])) if campaign else None
+    return payload
+
+
+def _create_update_email_campaign(
+    conn: sqlite3.Connection, *, notice_id: int, request_id: str, admin_id: int | None
+) -> dict[str, Any]:
+    existing = conn.execute("SELECT id, notice_id FROM update_email_campaigns WHERE request_id = ?", (request_id,)).fetchone()
+    if existing:
+        if int(existing["notice_id"]) != int(notice_id):
+            raise AuthError("request_id 已用于其他更新公告", 409)
+        return _email_campaign_payload(conn, int(existing["id"]))
+    now = _now()
+    campaign_id = int(
+        conn.execute(
+            "INSERT INTO update_email_campaigns (notice_id, request_id, status, created_by, created_at) VALUES (?, ?, 'pending', ?, ?)",
+            (notice_id, request_id, admin_id, now),
+        ).lastrowid
+    )
+    users = conn.execute("SELECT id, email, email_verified, update_emails_enabled FROM users ORDER BY id").fetchall()
+    for user in users:
+        email = str(user["email"] or "").strip().lower()
+        eligible = bool(email and int(user["email_verified"] or 0) == 1 and int(user["update_emails_enabled"] or 0) == 1)
+        reason = None
+        if not eligible:
+            reason = "邮箱未验证或用户已关闭产品更新邮件"
+        conn.execute(
+            """
+            INSERT INTO update_email_deliveries (
+                campaign_id, user_id, email, status, attempt_count, next_attempt_at, last_error, updated_at
+            ) VALUES (?, ?, ?, ?, 0, ?, ?, ?)
+            """,
+            (campaign_id, user["id"], email, "pending" if eligible else "skipped", now if eligible else None, reason, now),
+        )
+    _refresh_email_campaign_status(conn, campaign_id)
+    return _email_campaign_payload(conn, campaign_id)
+
+
+def _email_campaign_payload(conn: sqlite3.Connection, campaign_id: int) -> dict[str, Any]:
+    row = conn.execute("SELECT * FROM update_email_campaigns WHERE id = ?", (campaign_id,)).fetchone()
+    if not row:
+        raise AuthError("邮件推送任务不存在", 404)
+    counts = {str(item["status"]): int(item["count"]) for item in conn.execute(
+        "SELECT status, COUNT(*) AS count FROM update_email_deliveries WHERE campaign_id = ? GROUP BY status",
+        (campaign_id,),
+    ).fetchall()}
+    return {
+        "id": int(row["id"]),
+        "notice_id": int(row["notice_id"]),
+        "request_id": row["request_id"],
+        "status": row["status"],
+        "total": sum(counts.values()),
+        "pending": counts.get("pending", 0),
+        "sending": counts.get("sending", 0),
+        "sent": counts.get("sent", 0),
+        "failed": counts.get("failed", 0),
+        "skipped": counts.get("skipped", 0),
+        "created_at": row["created_at"],
+        "started_at": row["started_at"],
+        "finished_at": row["finished_at"],
+    }
+
+
+def _refresh_email_campaign_status(conn: sqlite3.Connection, campaign_id: int) -> None:
+    counts = {str(row["status"]): int(row["count"]) for row in conn.execute(
+        "SELECT status, COUNT(*) AS count FROM update_email_deliveries WHERE campaign_id = ? GROUP BY status",
+        (campaign_id,),
+    ).fetchall()}
+    if counts.get("sending"):
+        status, finished = "sending", None
+    elif counts.get("pending"):
+        status, finished = "pending", None
+    elif counts.get("failed"):
+        status, finished = ("partial_failed" if counts.get("sent") else "failed"), _now()
+    else:
+        status, finished = "completed", _now()
+    conn.execute(
+        "UPDATE update_email_campaigns SET status = ?, finished_at = ? WHERE id = ?",
+        (status, finished, campaign_id),
+    )
+
+
+def _send_update_notice_email(delivery: dict[str, Any]) -> None:
+    try:
+        items = json.loads(str(delivery.get("items_json") or "[]"))
+    except Exception:
+        items = []
+    items = [str(item) for item in items if str(item).strip()]
+    title = str(delivery.get("title") or "产品更新")
+    version = str(delivery.get("version") or "")
+    site_url = os.getenv("PUBLIC_SITE_URL", "").strip().rstrip("/")
+    if not site_url:
+        raise AuthError("PUBLIC_SITE_URL 未配置", 500)
+    text_items = "\n".join(f"- {item}" for item in items)
+    text = f"盈航产品更新：{title}\n\n版本/日期：{version}\n\n{text_items}\n\n查看网站：{site_url}\n"
+    html_items = "".join(f"<li style='margin:8px 0'>{_html_escape(item)}</li>" for item in items)
+    html = f"""
+    <html><body style="font-family:Arial,'Microsoft YaHei',sans-serif;background:#050505;color:#f4f0e8;padding:24px;">
+      <div style="max-width:600px;margin:auto;border:1px solid #c9a64655;border-radius:16px;padding:24px;background:#111;">
+        <div style="color:#f5d77a;font-size:13px;letter-spacing:2px;">盈航 · 产品更新</div>
+        <h2 style="color:#f5d77a;">{_html_escape(title)}</h2>
+        <p style="color:#aaa;">{_html_escape(version)}</p><ul>{html_items}</ul>
+        <p><a href="{_html_escape(site_url)}" style="color:#f5d77a;">打开盈航查看</a></p>
+        <p style="color:#888;font-size:12px;">你可以登录盈航，在账户菜单中关闭产品更新邮件。</p>
+      </div>
+    </body></html>
+    """
+    _send_smtp_message(str(delivery["email"]), subject=f"盈航产品更新｜{title}", text=text, html=html)
 
 
 def _order_payload(row: sqlite3.Row) -> dict[str, Any]:

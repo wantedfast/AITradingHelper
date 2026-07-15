@@ -1725,6 +1725,44 @@
   background: rgba(255, 255, 255, 0.05);
 }
 
+.admin-email-campaign {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(214, 179, 86, 0.24);
+  border-radius: 10px;
+  background: rgba(214, 179, 86, 0.06);
+}
+
+.admin-email-campaign span { color: #b9b4aa; font-size: 12px; }
+
+.admin-publish-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(0, 0, 0, 0.76);
+  backdrop-filter: blur(8px);
+}
+
+.admin-publish-dialog {
+  width: min(520px, 100%);
+  padding: 28px;
+  border: 1px solid rgba(214, 179, 86, 0.42);
+  border-radius: 18px;
+  background: #11120f;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.55);
+}
+
+.admin-publish-dialog > svg { color: #f1cf6c; }
+.admin-publish-dialog h2 { margin: 14px 0 8px; }
+.admin-publish-dialog p { color: #b9b4aa; line-height: 1.7; }
+.admin-publish-dialog > div { display: grid; gap: 10px; margin-top: 20px; }
+.admin-publish-dialog button { min-height: 44px; border-radius: 10px; }
+
 .admin-list-item header {
   display: flex;
   justify-content: space-between;
