@@ -671,10 +671,11 @@
   .home-mobile-actions {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
   }
 
-  .home-mobile-login,
+  .home-mobile-register,
+  .home-mobile-membership,
   .home-mobile-menu-button {
     min-height: 44px;
     border: 1px solid rgba(245, 215, 122, 0.3);
@@ -683,12 +684,38 @@
     background: rgba(255, 255, 255, 0.04);
   }
 
-  .home-mobile-login {
-    padding: 0 14px;
+  .home-mobile-register,
+  .home-mobile-membership {
+    padding: 0 10px;
     display: inline-flex;
     align-items: center;
+    justify-content: center;
+    gap: 5px;
     text-decoration: none;
     font-weight: 800;
+    white-space: nowrap;
+  }
+
+  .home-mobile-register {
+    border-color: rgba(245, 215, 122, 0.78);
+    color: #151006;
+    background: linear-gradient(135deg, #fff1b8, #f5d77a 55%, #c9a646);
+    box-shadow: 0 8px 20px rgba(201, 166, 70, 0.18);
+  }
+
+  .home-mobile-membership {
+    color: #f5d77a;
+  }
+
+  .home-mobile-membership svg {
+    width: 15px;
+    height: 15px;
+  }
+
+  .home-mobile-membership.is-active {
+    border-color: rgba(110, 231, 168, 0.36);
+    color: #9df1bf;
+    background: rgba(110, 231, 168, 0.08);
   }
 
   .home-mobile-menu-button {
@@ -736,6 +763,58 @@
   .home-mobile-account button {
     display: flex;
     align-items: center;
+  }
+
+  .home-mobile-membership-card {
+    min-height: 98px;
+    padding: 13px;
+    border: 1px solid rgba(245, 215, 122, 0.32);
+    border-radius: 14px;
+    display: grid;
+    grid-template-columns: 38px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 10px;
+    color: #f4f0e8;
+    background: linear-gradient(120deg, rgba(245, 215, 122, 0.12), rgba(255, 255, 255, 0.025));
+    text-decoration: none;
+  }
+
+  .home-mobile-membership-card__icon {
+    width: 38px;
+    height: 38px;
+    border-radius: 11px;
+    display: grid;
+    place-items: center;
+    color: #f5d77a;
+    background: rgba(245, 215, 122, 0.1);
+  }
+
+  .home-mobile-membership-card__icon svg {
+    width: 20px;
+  }
+
+  .home-mobile-membership-card > span:nth-child(2) {
+    min-width: 0;
+    display: grid;
+    gap: 3px;
+  }
+
+  .home-mobile-membership-card small,
+  .home-mobile-membership-card em {
+    color: rgba(244, 240, 232, 0.58);
+    font-size: 10px;
+    font-style: normal;
+    line-height: 1.35;
+  }
+
+  .home-mobile-membership-card b {
+    color: #f5d77a;
+    font-size: 14px;
+  }
+
+  .home-mobile-membership-card strong {
+    color: #f5d77a;
+    font-size: 12px;
   }
 
   .home-mobile-menu-head {
@@ -786,6 +865,31 @@
   .home-mobile-account {
     display: grid;
     gap: 8px;
+  }
+
+  .home-mobile-guest-actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+    gap: 8px;
+  }
+
+  .home-mobile-account-register,
+  .home-mobile-account-login {
+    min-height: 48px;
+    padding: 0 10px;
+    border-radius: 12px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    text-decoration: none;
+    font-size: 12px;
+    font-weight: 900;
+  }
+
+  .home-mobile-account-register {
+    color: #151006;
+    background: linear-gradient(135deg, #fff1b8, #c9a646);
   }
 
   .home-mobile-menu-secondary button,
@@ -972,6 +1076,25 @@
   .billing-packages button {
     grid-template-columns: 36px minmax(0, 1fr);
     padding: 14px;
+  }
+
+  .billing-package-heading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .billing-plan-options {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .billing-packages .billing-plan-options button {
+    min-height: 126px;
+    grid-template-columns: 36px minmax(0, 1fr) auto;
+  }
+
+  .billing-packages .billing-plan-options button strong {
+    grid-column: 3;
   }
 
   .billing-packages button strong {

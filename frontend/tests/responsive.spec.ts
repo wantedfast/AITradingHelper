@@ -29,6 +29,11 @@ const shellRoutes = [
 
 const featureRoutes = ["/auction-strength", "/review", "/watch", "/market-day", "/ai-research"];
 
+const membershipPlans = [
+  { id: "monthly_membership", plan_name: "月度会员", amount_cents: 5900, duration_days: 31, alipay_qr_url: "/pay/alipay-qr.jpg", wechat_qr_url: "/pay/wechat-qr.jpg" },
+  { id: "annual_membership", plan_name: "年度会员", amount_cents: 39900, duration_days: 365, alipay_qr_url: "/pay/alipay-qr.jpg", wechat_qr_url: "/pay/wechat-qr.jpg" },
+];
+
 const fixtureUser = {
   id: 1,
   phone: "13800000000",
@@ -100,7 +105,7 @@ async function installStableApiFixtures(
 
     if (path === "/api/auth/me") return json(route, { user: fixtureUser });
     if (path === "/api/auth/email-preferences") return json(route, { user: fixtureUser });
-    if (path === "/api/pay/membership/plans") return json(route, { plans: [] });
+    if (path === "/api/pay/membership/plans") return json(route, { plans: membershipPlans });
     if (path === "/api/update-notices/latest") return json(route, { notice: null });
     if (path === "/api/webhooks") return json(route, { events: [], count: 0, total: 0 });
     if (path === "/api/auction-strength") {
@@ -340,7 +345,7 @@ for (const viewport of viewports) {
 test.describe("homepage guest acquisition", () => {
   test.use({ viewport: { width: 390, height: 844 } });
 
-  test("hero exposes direct registration and login without loading homepage music", async ({ page }) => {
+  test("hero emphasizes registration and keeps guest login in the menu", async ({ page }) => {
     await page.route("**/api/update-notices/latest", (route) => json(route, { notice: null }));
     await page.route("**/api/auction-strength/performance", (route) => json(route, { rows: [] }));
     await page.route("**/api/legal/registration-agreement", (route) =>
@@ -360,14 +365,123 @@ test.describe("homepage guest acquisition", () => {
 
     const heroActions = page.locator(".hero .actions");
     const registerLink = heroActions.locator('a[href="/auth?mode=register"]');
-    const loginLink = heroActions.locator('a[href="/auth"]');
     await expect(registerLink).toBeVisible();
-    await expect(loginLink).toBeVisible();
+    await expect(heroActions.locator('a[href="/auth"]')).toHaveCount(0);
+    await page.locator(".home-mobile-menu-button").click();
+    await expect(page.locator(".home-mobile-account-login")).toBeVisible();
+    await page.locator(".home-mobile-menu-head button").click();
     await expect(page.locator("audio, .music-toggle")).toHaveCount(0);
 
     await registerLink.click();
     await expect(page).toHaveURL(/\/auth\?mode=register$/);
     await expect(page.locator(".account-mode-switch button").nth(1)).toHaveClass(/active/);
     await expect(page.locator('input[placeholder="name@example.com"]')).toBeVisible();
+  });
+
+  test("360px topbar keeps membership, registration and menu in the required order", async ({ page }) => {
+    await page.setViewportSize({ width: 360, height: 800 });
+    await page.route("**/api/update-notices/latest", (route) => json(route, { notice: null }));
+    await page.route("**/api/auction-strength/performance", (route) => json(route, { rows: [] }));
+
+    await page.goto("/", { waitUntil: "domcontentloaded" });
+
+    const membership = page.locator(".home-mobile-actions .home-mobile-membership");
+    const register = page.locator(".home-mobile-actions .home-mobile-register");
+    const menu = page.locator(".home-mobile-actions .home-mobile-menu-button");
+    await expect(membership).toBeVisible();
+    await expect(register).toBeVisible();
+    await expect(menu).toBeVisible();
+    const [membershipBox, registerBox, menuBox] = await Promise.all([membership.boundingBox(), register.boundingBox(), menu.boundingBox()]);
+    expect(membershipBox!.x + membershipBox!.width).toBeLessThanOrEqual(registerBox!.x);
+    expect(registerBox!.x + registerBox!.width).toBeLessThanOrEqual(menuBox!.x);
+    await expect(page.locator(".home-mobile-actions .home-mobile-login")).toHaveCount(0);
+    await expectNoGlobalHorizontalOverflow(page, "360px guest acquisition topbar");
+  });
+
+  test("expired membership status does not override the authoritative active flag", async ({ page }) => {
+    const expiredUser = {
+      ...fixtureUser,
+      role: "user",
+      membership_status: "active",
+      membership_active: false,
+      membership_expires_at: "2026-07-01T00:00:00+08:00",
+    };
+    const activeUser = {
+      ...expiredUser,
+      membership_active: true,
+      membership_expires_at: "2027-07-15T00:00:00+08:00",
+    };
+    let currentUser = expiredUser;
+    await page.addInitScript((user) => {
+      window.localStorage.setItem("ai_trade_token", "membership-state-token");
+      window.localStorage.setItem("ai_trade_user", JSON.stringify(user));
+    }, expiredUser);
+    await page.route("**/api/**", async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path === "/api/auth/me") return json(route, { user: currentUser });
+      if (path === "/api/update-notices/latest") return json(route, { notice: null });
+      if (path === "/api/auction-strength/performance") return json(route, { rows: [] });
+      return json(route, {});
+    });
+
+    await page.goto("/", { waitUntil: "domcontentloaded" });
+    const membershipAction = page.locator(".home-mobile-actions .home-mobile-membership");
+    await expect(membershipAction).toHaveText(/开通会员/);
+    await expect(membershipAction).not.toHaveClass(/is-active/);
+
+    currentUser = activeUser;
+    await page.evaluate((user) => window.localStorage.setItem("ai_trade_user", JSON.stringify(user)), activeUser);
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expect(membershipAction).toHaveText(/会员已开通/);
+    await expect(membershipAction).toHaveClass(/is-active/);
+  });
+});
+
+test.describe("membership plan selection", () => {
+  test.use({ viewport: { width: 390, height: 844 } });
+
+  test("shows monthly then annual, recommends annual and locks the API-selected order", async ({ page }) => {
+    let submittedPlanId = "";
+    await page.addInitScript((user) => {
+      window.localStorage.setItem("ai_trade_token", "membership-test-token");
+      window.localStorage.setItem("ai_trade_user", JSON.stringify(user));
+    }, fixtureUser);
+    await page.route("**/api/**", async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path === "/api/pay/membership/plans") return json(route, { plans: membershipPlans });
+      if (path === "/api/auth/me") return json(route, { user: fixtureUser });
+      if (path === "/api/pay/membership/orders" && route.request().method() === "POST") {
+        submittedPlanId = String(route.request().postDataJSON()?.plan_id || "");
+        return json(route, {
+          order: {
+            id: 88,
+            order_no: "YMRESPONSIVE",
+            plan_name: "年度会员",
+            amount_cents: 39900,
+            status: "pending",
+            package_id: "annual_membership",
+            duration_days: 365,
+          },
+          user: fixtureUser,
+        });
+      }
+      if (path === "/api/orders/88") return json(route, { order: { id: 88, order_no: "YMRESPONSIVE", plan_name: "年度会员", amount_cents: 39900, status: "pending" }, user: fixtureUser });
+      return json(route, {});
+    });
+
+    await page.goto("/billing", { waitUntil: "domcontentloaded" });
+    const planCards = page.locator('.billing-plan-options button[role="radio"]');
+    await expect(planCards).toHaveCount(2);
+    await expect(planCards.nth(0)).toContainText("月度会员");
+    await expect(planCards.nth(1)).toContainText("年度会员");
+    await expect(planCards.nth(1)).toHaveAttribute("aria-checked", "true");
+    await expect(planCards.nth(1)).toContainText("比连续购买月度节省 ¥309");
+
+    await page.locator(".billing-checkout .billing-primary").click();
+    await expect.poll(() => submittedPlanId).toBe("annual_membership");
+    await expect(planCards.nth(0)).toBeDisabled();
+    await expect(planCards.nth(1)).toBeDisabled();
+    await expect(page.locator('.billing-payment-form input').nth(2)).toHaveValue("399.00");
+    await expectNoGlobalHorizontalOverflow(page, "annual membership checkout");
   });
 });
