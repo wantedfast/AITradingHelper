@@ -14,6 +14,8 @@ from trade_review_agent.auth_system import (
     ensure_feature_credit_available,
     has_feature_access,
     init_auth_db,
+    membership_plans,
+    notify_admin_membership_payment,
     submit_membership_payment,
 )
 
@@ -34,6 +36,146 @@ class MembershipPaymentTest(unittest.TestCase):
                     ("member@example.com", "memberuser", "member@example.com", "MEMBER1", "2026-07-02T10:00:00+08:00"),
                 )
                 return int(cursor.lastrowid)
+
+    def test_membership_plans_include_monthly_and_annual_options(self):
+        with patch.dict(
+            "os.environ",
+            {
+                "PAYMENT_MONTHLY_PLAN_NAME": "月度会员",
+                "PAYMENT_MONTHLY_AMOUNT_CENTS": "5900",
+                "PAYMENT_MONTHLY_DURATION_DAYS": "31",
+                "PAYMENT_ANNUAL_PLAN_NAME": "年度会员",
+                "PAYMENT_ANNUAL_AMOUNT_CENTS": "39900",
+                "PAYMENT_ANNUAL_DURATION_DAYS": "365",
+            },
+            clear=False,
+        ):
+            plans = membership_plans()
+
+        self.assertEqual(
+            [(plan["id"], plan["amount_cents"], plan["duration_days"]) for plan in plans],
+            [("monthly_membership", 5900, 31), ("annual_membership", 39900, 365)],
+        )
+        self.assertEqual(plans[1]["plan_name"], "年度会员")
+
+    def test_annual_membership_order_uses_server_plan_amount_and_duration(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "auth.sqlite"
+            user_id = self._create_user(db_path)
+            with patch.dict(
+                "os.environ",
+                {
+                    "PAYMENT_ANNUAL_PLAN_NAME": "年度会员",
+                    "PAYMENT_ANNUAL_AMOUNT_CENTS": "39900",
+                    "PAYMENT_ANNUAL_DURATION_DAYS": "365",
+                },
+                clear=False,
+            ):
+                order = create_membership_order(db_path, user_id=user_id, plan_id="annual_membership")
+
+        self.assertEqual(order["package_id"], "annual_membership")
+        self.assertEqual(order["plan_name"], "年度会员")
+        self.assertEqual(order["amount_cents"], 39900)
+        self.assertEqual(order["duration_days"], 365)
+
+    def test_membership_order_rejects_unknown_plan_id(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "auth.sqlite"
+            user_id = self._create_user(db_path)
+
+            with self.assertRaises(AuthError) as error:
+                create_membership_order(db_path, user_id=user_id, plan_id="annual_membership_399")
+
+        self.assertEqual(error.exception.status, 400)
+
+    def test_annual_confirmation_extends_existing_membership_by_365_days(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "auth.sqlite"
+            user_id = self._create_user(db_path)
+            existing_expiry = "2030-01-01T09:30:00+08:00"
+            with closing(sqlite3.connect(db_path)) as conn:
+                with conn:
+                    conn.execute(
+                        "UPDATE users SET membership_plan = '月度会员', membership_status = 'active', membership_expires_at = ? WHERE id = ?",
+                        (existing_expiry, user_id),
+                    )
+
+            with patch.dict(
+                "os.environ",
+                {
+                    "PAYMENT_ANNUAL_PLAN_NAME": "年度会员",
+                    "PAYMENT_ANNUAL_AMOUNT_CENTS": "39900",
+                    "PAYMENT_ANNUAL_DURATION_DAYS": "365",
+                    "ADMIN_PAYMENT_NOTIFY_EMAIL": "admin@example.com",
+                    "EMAIL_PROVIDER": "log",
+                },
+                clear=False,
+            ):
+                order = create_membership_order(db_path, user_id=user_id, plan_id="annual_membership")
+                with self.assertRaises(AuthError) as amount_error:
+                    submit_membership_payment(
+                        db_path,
+                        order_id=int(order["id"]),
+                        user_id=user_id,
+                        payment_method="wechat",
+                        payer_name="付款用户",
+                        payer_paid_at="2026-07-15T12:00",
+                        submitted_amount_cents=5900,
+                    )
+                self.assertEqual(amount_error.exception.status, 400)
+
+                submit_membership_payment(
+                    db_path,
+                    order_id=int(order["id"]),
+                    user_id=user_id,
+                    payment_method="wechat",
+                    payer_name="付款用户",
+                    payer_paid_at="2026-07-15T12:00",
+                    submitted_amount_cents=39900,
+                )
+                paid = confirm_membership_order(db_path, order_id=int(order["id"]), admin_id=1)
+                confirmed_again = confirm_membership_order(db_path, order_id=int(order["id"]), admin_id=1)
+
+            self.assertEqual(paid["status"], "paid")
+            self.assertEqual(confirmed_again["status"], "paid")
+            self.assertEqual(paid["duration_days"], 365)
+            with closing(sqlite3.connect(db_path)) as conn:
+                membership = conn.execute(
+                    "SELECT membership_plan, membership_status, membership_expires_at FROM users WHERE id = ?",
+                    (user_id,),
+                ).fetchone()
+                ledger_count = conn.execute(
+                    "SELECT COUNT(*) FROM membership_ledger WHERE order_id = ?",
+                    (int(order["id"]),),
+                ).fetchone()[0]
+            self.assertEqual(membership[0], "年度会员")
+            self.assertEqual(membership[1], "active")
+            self.assertEqual(membership[2], "2031-01-01T09:30:00+08:00")
+            self.assertEqual(ledger_count, 1)
+
+    def test_annual_payment_notification_uses_order_plan_and_amount(self):
+        with patch.dict(
+            "os.environ",
+            {"ADMIN_PAYMENT_NOTIFY_EMAIL": "admin@example.com", "EMAIL_PROVIDER": "smtp"},
+            clear=False,
+        ), patch("trade_review_agent.auth_system._send_smtp_message") as send_message:
+            result = notify_admin_membership_payment(
+                order={
+                    "order_no": "YM20260715ANNUAL",
+                    "plan_name": "年度会员",
+                    "amount_cents": 39900,
+                    "submitted_amount_cents": 39900,
+                    "payment_method": "alipay",
+                },
+                user={"id": 7, "username": "memberuser", "email": "member@example.com"},
+            )
+
+        self.assertTrue(result["sent"])
+        self.assertEqual(send_message.call_count, 1)
+        self.assertEqual(
+            send_message.call_args.kwargs["subject"],
+            "【盈航】用户已付款待确认 - 年度会员 ¥399.00 - 订单号 YM20260715ANNUAL",
+        )
 
     def test_membership_payment_submit_notifies_admin_and_confirm_opens_membership(self):
         with tempfile.TemporaryDirectory() as temp_dir:

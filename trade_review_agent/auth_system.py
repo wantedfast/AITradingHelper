@@ -53,9 +53,15 @@ CREDIT_PACKAGES = {
 }
 MONTHLY_MEMBERSHIP_PLAN = {
     "id": "monthly_membership",
-    "plan_name": os.getenv("PAYMENT_MONTHLY_PLAN_NAME", "月度会员"),
-    "amount_cents": int(os.getenv("PAYMENT_MONTHLY_AMOUNT_CENTS", "5900") or "5900"),
+    "plan_name": "月度会员",
+    "amount_cents": 5900,
     "duration_days": 31,
+}
+ANNUAL_MEMBERSHIP_PLAN = {
+    "id": "annual_membership",
+    "plan_name": "年度会员",
+    "amount_cents": 39900,
+    "duration_days": 365,
 }
 
 
@@ -764,13 +770,13 @@ def credit_packages() -> list[dict[str, Any]]:
 
 
 def membership_plans() -> list[dict[str, Any]]:
-    plan = _membership_plan()
     return [
         {
             **plan,
             "alipay_qr_url": os.getenv("PAYMENT_ALIPAY_QR_URL", "/pay/alipay-qr.png").strip(),
             "wechat_qr_url": os.getenv("PAYMENT_WECHAT_QR_URL", "/pay/wechat-qr.png").strip(),
         }
+        for plan in _membership_plans()
     ]
 
 
@@ -799,9 +805,7 @@ def create_order(db_path: Path, *, user_id: int, plan_name: str = "", credits: i
 
 
 def create_membership_order(db_path: Path, *, user_id: int, plan_id: str = "monthly_membership") -> dict[str, Any]:
-    plan = _membership_plan()
-    if plan_id and plan_id != plan["id"]:
-        raise AuthError("未知的会员套餐", 400)
+    plan = _membership_plan(plan_id)
     order_no = f"YM{datetime.now(CN_TZ).strftime('%Y%m%d%H%M%S')}{secrets.token_hex(3).upper()}"
     now = _now()
     with _connect(db_path) as conn:
@@ -1435,7 +1439,8 @@ def notify_admin_membership_payment(*, order: dict[str, Any], user: dict[str, An
         amount = int(order.get("amount_cents") or 0) / 100
         submitted_amount = int(order.get("submitted_amount_cents") or 0) / 100
         payment_method = _payment_provider_label(str(order.get("payment_method") or ""))
-        subject = f"【盈航】用户已付款待确认 - 59元/月会员 - 订单号 {order.get('order_no')}"
+        plan_name = str(order.get("plan_name") or "会员套餐").strip() or "会员套餐"
+        subject = f"【盈航】用户已付款待确认 - {plan_name} ¥{amount:.2f} - 订单号 {order.get('order_no')}"
         admin_url = os.getenv("ADMIN_DASHBOARD_URL", "").strip() or "/admin"
         user_label = user.get("username") or user.get("email") or user.get("phone") or f"用户 {user.get('id')}"
         text = (
@@ -1485,13 +1490,36 @@ def notify_admin_membership_payment(*, order: dict[str, Any], user: dict[str, An
         return {"sent": False, "error": str(exc)}
 
 
-def _membership_plan() -> dict[str, Any]:
-    return {
-        "id": "monthly_membership",
-        "plan_name": os.getenv("PAYMENT_MONTHLY_PLAN_NAME", MONTHLY_MEMBERSHIP_PLAN["plan_name"]).strip() or "月度会员",
-        "amount_cents": int(os.getenv("PAYMENT_MONTHLY_AMOUNT_CENTS", str(MONTHLY_MEMBERSHIP_PLAN["amount_cents"])) or "5900"),
-        "duration_days": int(os.getenv("PAYMENT_MONTHLY_DURATION_DAYS", str(MONTHLY_MEMBERSHIP_PLAN["duration_days"])) or "31"),
-    }
+def _membership_plans() -> list[dict[str, Any]]:
+    plans = []
+    for prefix, defaults in (
+        ("MONTHLY", MONTHLY_MEMBERSHIP_PLAN),
+        ("ANNUAL", ANNUAL_MEMBERSHIP_PLAN),
+    ):
+        plans.append(
+            {
+                "id": defaults["id"],
+                "plan_name": os.getenv(f"PAYMENT_{prefix}_PLAN_NAME", str(defaults["plan_name"])).strip()
+                or str(defaults["plan_name"]),
+                "amount_cents": int(
+                    os.getenv(f"PAYMENT_{prefix}_AMOUNT_CENTS", str(defaults["amount_cents"]))
+                    or str(defaults["amount_cents"])
+                ),
+                "duration_days": int(
+                    os.getenv(f"PAYMENT_{prefix}_DURATION_DAYS", str(defaults["duration_days"]))
+                    or str(defaults["duration_days"])
+                ),
+            }
+        )
+    return plans
+
+
+def _membership_plan(plan_id: str = "monthly_membership") -> dict[str, Any]:
+    normalized_plan_id = (plan_id or "").strip()
+    for plan in _membership_plans():
+        if plan["id"] == normalized_plan_id:
+            return plan
+    raise AuthError("未知的会员套餐", 400)
 
 
 def _normalize_payment_method(value: str) -> str:
