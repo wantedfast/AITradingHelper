@@ -206,7 +206,7 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                 self._serve_report(path)
                 return
             if path == "/api/watch/plans":
-                self._json({"plans": [_plan_payload(plan) for plan in load_plans(ALERT_PLANS)]})
+                self._list_watch_plans()
                 return
             if path == "/api/watch/voice-settings":
                 settings = load_voice_settings(VOICE_SETTINGS_PATH)
@@ -380,6 +380,9 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
 
         status_payload = _read_report_status_payload(run_dir) or _report_status_payload(run_id, status="done", stage="done")
         owner_id = int(status_payload.get("user_id") or 0)
+        if not owner_id:
+            self._json({"error": "report not found"}, status=404)
+            return
         if owner_id and owner_id != int(user["id"]) and user.get("role") != "admin":
             raise AuthError("只能确认扣除自己生成的 AI 复盘次数", 403)
 
@@ -399,7 +402,7 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                 "status_url": f"/api/reports/{run_id}/status",
                 "billing_status": "charged",
                 "charged_at": datetime.now(CN_TZ).isoformat(),
-                "user_id": owner_id or int(user["id"]),
+                "user_id": owner_id,
                 "user": updated_user,
             }
         )
@@ -407,7 +410,7 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
         self._json({"ok": True, "billing_status": "charged", "user": updated_user})
 
     def _list_reports(self) -> None:
-        self._require_user()
+        user = self._require_user()
         limit = 30
         query = urlparse(self.path).query
         for part in query.split("&"):
@@ -417,7 +420,12 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                     limit = max(1, min(100, int(value)))
                 except ValueError:
                     limit = 30
-        self._json({"reports": _recent_report_summaries(limit=limit)})
+        self._json({"reports": _recent_report_summaries(limit=limit, user_id=int(user["id"]))})
+
+    def _list_watch_plans(self) -> None:
+        user = self._require_user()
+        plans = _watch_plans_for_user(load_plans(ALERT_PLANS), user_id=int(user["id"]))
+        self._json({"plans": [_plan_payload(plan) for plan in plans]})
 
     def _create_market_day_report(self) -> None:
         user = self._require_user()
@@ -1328,20 +1336,36 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             buy_price=buy_price,
             cache_db=CACHE_DB,
         )
+        plan.user_id = int(user["id"])
         self._set_stage("save_watch_plan")
         plans = [item for item in load_plans(ALERT_PLANS) if item.plan_id != plan.plan_id]
         plans.insert(0, plan)
         save_plans(ALERT_PLANS, plans)
-        self._json({"plan": _plan_payload(plan), "plans": [_plan_payload(item) for item in plans], "user": updated_user})
+        user_plans = _watch_plans_for_user(plans, user_id=int(user["id"]))
+        self._json({"plan": _plan_payload(plan), "plans": [_plan_payload(item) for item in user_plans], "user": updated_user})
 
     def _clear_watch_plans(self) -> None:
-        save_plans(ALERT_PLANS, [])
-        _save_seen_event_map(WATCH_SEEN_EVENTS, {})
+        user = self._require_user()
+        plans = load_plans(ALERT_PLANS)
+        user_plan_ids = {
+            plan.plan_id for plan in _watch_plans_for_user(plans, user_id=int(user["id"]))
+        }
+        remaining_plans = [plan for plan in plans if plan.plan_id not in user_plan_ids]
+        save_plans(ALERT_PLANS, remaining_plans)
+        seen_map = _load_seen_event_map(WATCH_SEEN_EVENTS)
+        remaining_seen = {
+            key: value
+            for key, value in seen_map.items()
+            if key.split(":", 1)[0] not in user_plan_ids
+        }
+        _save_seen_event_map(WATCH_SEEN_EVENTS, remaining_seen)
         self._json({"plans": []})
 
     def _poll_watch_plans(self) -> None:
+        user = self._require_user()
         _ = self._read_json_body()
-        plans = load_plans(ALERT_PLANS)
+        all_plans = load_plans(ALERT_PLANS)
+        plans = _watch_plans_for_user(all_plans, user_id=int(user["id"]))
         quotes, candidate_events, errors = evaluate_plans(plans)
         seen_map = _load_seen_event_map(WATCH_SEEN_EVENTS)
         voice_settings = load_voice_settings(VOICE_SETTINGS_PATH)
@@ -1363,7 +1387,8 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                 plans_changed = True
 
         if plans_changed:
-            save_plans(ALERT_PLANS, plans)
+            changed_by_id = {plan.plan_id: plan for plan in plans}
+            save_plans(ALERT_PLANS, [changed_by_id.get(plan.plan_id, plan) for plan in all_plans])
         _save_seen_event_map(WATCH_SEEN_EVENTS, seen_map)
 
         self._json(
@@ -1498,6 +1523,10 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
         run_id = parts[3]
         filename = Path(unquote(parts[4])).name
         run_dir = REPORT_DIR / run_id
+        user = self._require_user()
+        if not _user_can_access_review_report(run_dir, user):
+            self._json({"error": "report not found"}, status=404)
+            return
         if filename == "status":
             self._serve_report_status(run_id, run_dir)
             return
@@ -2935,12 +2964,15 @@ def _manifest_payload(run_id: str, reports: list[dict]) -> dict:
     }
 
 
-def _recent_report_summaries(*, limit: int = 30) -> list[dict]:
+def _recent_report_summaries(*, limit: int = 30, user_id: int) -> list[dict]:
     if not REPORT_DIR.exists():
         return []
     items: list[dict] = []
     for run_dir in REPORT_DIR.iterdir():
         if not run_dir.is_dir():
+            continue
+        status_payload = _read_report_status_payload(run_dir) or {}
+        if int(status_payload.get("user_id") or 0) != user_id:
             continue
         manifest = _recover_report_manifest(run_dir.name, run_dir)
         if not manifest:
@@ -2967,6 +2999,15 @@ def _recent_report_summaries(*, limit: int = 30) -> list[dict]:
         )
     items.sort(key=lambda item: item.get("created_at") or "", reverse=True)
     return items[:limit]
+
+
+def _user_can_access_review_report(run_dir: Path, user: dict) -> bool:
+    owner_id = int((_read_report_status_payload(run_dir) or {}).get("user_id") or 0)
+    return owner_id == int(user["id"])
+
+
+def _watch_plans_for_user(plans: list[AlertPlan], *, user_id: int) -> list[AlertPlan]:
+    return [plan for plan in plans if int(plan.user_id or 0) == user_id]
 
 
 def _normalized_report_date(value: object) -> str:
