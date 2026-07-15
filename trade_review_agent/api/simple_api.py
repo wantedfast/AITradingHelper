@@ -26,6 +26,7 @@ import requests
 from trade_review_agent.auth_system import (
     AuthError,
     admin_dashboard,
+    bind_user_email,
     confirm_membership_order,
     consume_feature_credit,
     consume_feature_credit_once,
@@ -38,6 +39,7 @@ from trade_review_agent.auth_system import (
     get_order,
     get_order_by_order_no,
     get_current_user,
+    grant_credits_to_all_users,
     grant_user_credits,
     init_auth_db,
     latest_published_update_notice,
@@ -57,8 +59,10 @@ from trade_review_agent.auth_system import (
     retry_update_email_campaign,
     recover_update_email_queue,
     send_email_code,
+    send_email_binding_code,
     submit_membership_payment,
     submit_feedback,
+    UpdateEmailSMTPSession,
     unpublish_update_notice,
     update_update_notice,
     set_update_email_preference,
@@ -98,6 +102,7 @@ AUCTION_STRENGTH_PATH = BASE_DIR / "work" / "auction_strength_reports.jsonl"
 AUCTION_TOP1_PERFORMANCE_PATH = BASE_DIR / "work" / "auction_top1_performance.jsonl"
 API_ERROR_LOG = BASE_DIR / "work" / "api_errors.log"
 UPDATE_EMAIL_QUEUE_WAKE = threading.Event()
+UPDATE_EMAIL_WORKER_COUNT = 4
 AUTH_DB = BASE_DIR / "work" / "auth.sqlite"
 CN_TZ = ZoneInfo("Asia/Shanghai")
 ALLOWED_SUFFIXES = {".xls", ".xlsx", ".csv", ".txt", ".png", ".jpg", ".jpeg", ".webp"}
@@ -232,6 +237,12 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             if path == "/api/auth/send-email-code":
                 self._auth_send_email_code()
                 return
+            if path == "/api/auth/email-binding/code":
+                self._auth_email_binding_code()
+                return
+            if path == "/api/auth/email-binding":
+                self._auth_email_binding()
+                return
             if path == "/api/auth/password-register":
                 self._auth_password_register()
                 return
@@ -273,6 +284,9 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                 return
             if path.startswith("/api/admin/orders/"):
                 self._admin_order_action(path)
+                return
+            if path == "/api/admin/credits/grant-all":
+                self._admin_grant_all_user_credits()
                 return
             if path.startswith("/api/admin/users/"):
                 self._admin_grant_user_credits(path)
@@ -666,6 +680,7 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
         )
 
     def _list_auction_strength_reports(self) -> None:
+        user = self._require_user()
         limit = 20
         trade_date = ""
         query = urlparse(self.path).query
@@ -687,9 +702,19 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
         reports = _recent_auction_strength_reports(AUCTION_STRENGTH_PATH, limit=limit, trade_date=trade_date)
         total = _auction_strength_report_count(AUCTION_STRENGTH_PATH, trade_date=trade_date)
         if not reports:
-            self._json({"latest": None, "reports": [], "count": 0, "total": total, "billing_status": "no_data"})
+            self._json(
+                {
+                    "latest": None,
+                    "reports": [],
+                    "count": 0,
+                    "total": total,
+                    "billing_status": "no_data",
+                    "billing_cost": 0,
+                    "billing_trade_date": trade_date,
+                    "user": user,
+                }
+            )
             return
-        user = self._require_user()
         billing_trade_date = trade_date or str(reports[0].get("trade_date") or "").strip()
         if not _is_today_trade_date(billing_trade_date):
             self._json(
@@ -699,27 +724,26 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                     "count": len(reports),
                     "total": total,
                     "billing_status": "free_history",
+                    "billing_cost": 0,
                     "billing_trade_date": billing_trade_date,
                     "user": user,
                 }
             )
             return
-        current_user = ensure_feature_credit_available(
-            AUTH_DB,
-            user_id=int(user["id"]),
-            feature="auction_strength_view",
-            ip=self._client_ip(),
-            related_id=billing_trade_date,
+        already_paid = has_feature_access(
+            AUTH_DB, user_id=int(user["id"]), feature="auction_strength_view", related_id=billing_trade_date
         )
+        visible_reports = reports if already_paid else [_auction_strength_report_summary(report) for report in reports]
         self._json(
             {
-                "latest": reports[0],
-                "reports": reports,
+                "latest": visible_reports[0],
+                "reports": visible_reports,
                 "count": len(reports),
                 "total": total,
-                "billing_status": "pending_view",
+                "billing_status": "charged" if already_paid else "pending_view",
+                "billing_cost": 0 if already_paid else 2,
                 "billing_trade_date": billing_trade_date,
-                "user": current_user,
+                "user": user,
             }
         )
 
@@ -798,11 +822,34 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
         result = send_email_code(
             AUTH_DB,
             email=str(payload.get("email") or ""),
-            purpose=str(payload.get("purpose") or "register"),
+            purpose="register",
             ip=self._client_ip(),
             log_path=BASE_DIR / "work" / "email_codes.log",
         )
         self._json(result)
+
+    def _auth_email_binding_code(self) -> None:
+        user = self._require_user()
+        payload = self._read_json_body()
+        result = send_email_binding_code(
+            AUTH_DB,
+            user_id=int(user["id"]),
+            email=str(payload.get("email") or ""),
+            ip=self._client_ip(),
+            log_path=BASE_DIR / "work" / "email_codes.log",
+        )
+        self._json(result)
+
+    def _auth_email_binding(self) -> None:
+        user = self._require_user()
+        payload = self._read_json_body()
+        updated = bind_user_email(
+            AUTH_DB,
+            user_id=int(user["id"]),
+            email=str(payload.get("email") or ""),
+            email_code=str(payload.get("email_code") or ""),
+        )
+        self._json({"user": updated})
 
     def _auth_logout(self) -> None:
         logout_user(AUTH_DB, self._bearer_token())
@@ -1151,6 +1198,18 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             user_id=int(parts[4]),
             credits=int(payload.get("credits") or 0),
             reason=str(payload.get("reason") or ""),
+            admin_id=int(admin["id"]),
+        )
+        self._json(result)
+
+    def _admin_grant_all_user_credits(self) -> None:
+        admin = self._require_admin()
+        payload = self._read_json_body()
+        result = grant_credits_to_all_users(
+            AUTH_DB,
+            credits=payload.get("credits"),
+            reason=str(payload.get("reason") or ""),
+            request_id=str(payload.get("request_id") or ""),
             admin_id=int(admin["id"]),
         )
         self._json(result)
@@ -3477,6 +3536,15 @@ def _auction_strength_public_report(report: dict) -> dict:
     return public_report
 
 
+def _auction_strength_report_summary(report: dict) -> dict:
+    return {
+        "id": str(report.get("id") or report.get("request_id") or ""),
+        "request_id": str(report.get("request_id") or ""),
+        "trade_date": str(report.get("trade_date") or ""),
+        "analysis_time": str(report.get("analysis_time") or ""),
+    }
+
+
 def _public_auction_stock_items(value: object, *, follow_key: str) -> list[dict]:
     if not isinstance(value, list):
         return []
@@ -3862,29 +3930,39 @@ def _start_auction_top1_refresh_clock() -> None:
     thread.start()
 
 
-def _update_email_queue_worker() -> None:
-    recover_update_email_queue(AUTH_DB)
-    while True:
-        UPDATE_EMAIL_QUEUE_WAKE.wait(timeout=5)
-        UPDATE_EMAIL_QUEUE_WAKE.clear()
-        try:
-            while process_next_update_email(AUTH_DB):
-                time.sleep(1)
-        except Exception as exc:
-            _write_api_error(
-                request_id="update-email-worker",
-                method="WORKER",
-                path="/api/admin/update-email-campaigns",
-                run_id="",
-                stage="update_email_queue",
-                exc=exc,
-                recovered=True,
-            )
+def _update_email_queue_worker(worker_index: int) -> None:
+    smtp_session = UpdateEmailSMTPSession()
+    try:
+        while True:
+            UPDATE_EMAIL_QUEUE_WAKE.wait(timeout=5)
+            UPDATE_EMAIL_QUEUE_WAKE.clear()
+            try:
+                while process_next_update_email(AUTH_DB, sender=smtp_session.send_update_notice):
+                    pass
+            except Exception as exc:
+                _write_api_error(
+                    request_id=f"update-email-worker-{worker_index}",
+                    method="WORKER",
+                    path="/api/admin/update-email-campaigns",
+                    run_id="",
+                    stage="update_email_queue",
+                    exc=exc,
+                    recovered=True,
+                )
+    finally:
+        smtp_session.close()
 
 
 def _start_update_email_queue_worker() -> None:
-    thread = threading.Thread(target=_update_email_queue_worker, name="update-email-queue", daemon=True)
-    thread.start()
+    recover_update_email_queue(AUTH_DB)
+    for worker_index in range(UPDATE_EMAIL_WORKER_COUNT):
+        thread = threading.Thread(
+            target=_update_email_queue_worker,
+            args=(worker_index + 1,),
+            name=f"update-email-queue-{worker_index + 1}",
+            daemon=True,
+        )
+        thread.start()
 
 
 def run(host: str = "0.0.0.0", port: int = 8600) -> None:

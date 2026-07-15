@@ -1,4 +1,7 @@
 import { ShieldCheck } from "lucide-react";
+import { ReportPipeContent } from "@/components/report-pipe-table";
+import { containsMarkdownPipeTable } from "@/lib/markdown-pipe-table";
+import { evidenceReportText, namedReportText, watchPointReportText, type LabeledReportText } from "@/lib/market-day-report-content";
 
 export type MarketDayEnvelope = {
   run_id?: string;
@@ -67,8 +70,8 @@ export function MarketDayReportView({
       <section className="review-workbench-hero market-day-report-hero">
         <div className="review-hero-copy">
           <p className="review-kicker">MARKET JUDGE RESULT</p>
-          <h1>{report.oneLineConclusion || "AI 当日行情复盘"}</h1>
-          <p>{report.mainline?.reason || "系统已完成当天行情主线判断。"}</p>
+          <TableAwareHeading value={report.oneLineConclusion || "AI 当日行情复盘"} level={1} />
+          <TableAwareText value={report.mainline?.reason || "系统已完成当天行情主线判断。"} />
           {billingMessage ? <div className="market-day-billing-note">{billingMessage}</div> : null}
         </div>
         <div className="market-day-score-board">
@@ -80,7 +83,7 @@ export function MarketDayReportView({
 
       <section className="research-panel market-day-mood-panel">
         <span className="card-label">市场情绪</span>
-        <h2>{report.marketMood?.summary || "市场情绪证据不足"}</h2>
+        <TableAwareHeading value={report.marketMood?.summary || "市场情绪证据不足"} level={2} />
         <div className="market-day-fact-grid">
           <Metric label="涨停家数" value={report.marketMood?.limitUpCount} />
           <Metric label="跌停家数" value={report.marketMood?.limitDownCount} />
@@ -92,7 +95,7 @@ export function MarketDayReportView({
       <section className="research-panel market-day-mainline-panel">
         <span className="card-label">当日最强主线</span>
         <h2>{report.mainline?.name || "主线证据不足"}</h2>
-        <p>{report.mainline?.reason || "暂无主线判断。"}</p>
+        <TableAwareText value={report.mainline?.reason || "暂无主线判断。"} />
         <div className="market-day-chip-row">
           {(report.mainline?.branches || []).map((branch) => <span key={branch}>{branch}</span>)}
         </div>
@@ -109,14 +112,14 @@ export function MarketDayReportView({
               <div className="market-day-stock-rank">#{stock.rank || "-"}</div>
               <div>
                 <h3>{stock.name || "未命名个股"} <small>{stock.code || ""}</small></h3>
-                <p>{stock.strengthReason || "强势原因证据不足。"}</p>
+                <TableAwareText value={stock.strengthReason || "强势原因证据不足。"} />
                 <div className="market-day-chip-row">
                   <span>{stock.leaderType || "证据不足"}</span>
                   <span>{stock.theme || "主线待确认"}</span>
                   <span>{formatScore(stock.score)}</span>
                 </div>
                 <EvidenceList items={stock.evidence} />
-                {stock.riskOrDivergence ? <em>{stock.riskOrDivergence}</em> : null}
+                {stock.riskOrDivergence ? <TableAwareText value={stock.riskOrDivergence} emphasis /> : null}
               </div>
             </article>
           )) : <p className="market-day-empty-text">暂无强势个股数据。</p>}
@@ -126,11 +129,11 @@ export function MarketDayReportView({
       <section className="review-workbench-grid">
         <section className="research-panel">
           <span className="card-label">次主线</span>
-          <LineList items={report.secondaryLines?.map((item) => `${item.name || "未命名"}：${item.reason || "证据不足"}`)} />
+          <NamedLineList items={report.secondaryLines} />
         </section>
         <section className="research-panel">
           <span className="card-label">伪主线 / 弱方向</span>
-          <LineList items={report.fakeOrWeakLines?.map((item) => `${item.name || "未命名"}：${item.reason || "证据不足"}`)} />
+          <NamedLineList items={report.fakeOrWeakLines} />
         </section>
       </section>
 
@@ -151,40 +154,68 @@ function Metric({ label, value }: { label: string; value?: string }) {
 }
 
 function EvidenceList({ items }: { items?: EvidenceItem[] }) {
-  const lines = (items || []).map(formatEvidenceItem).filter(Boolean).slice(0, 6);
-  if (!lines.length) return null;
-  return <ul className="market-day-evidence-list">{lines.map((item) => <li key={item}>{item}</li>)}</ul>;
+  const entries = (items || []).map(evidenceReportText).filter((parts) => parts.length).slice(0, 6);
+  if (!entries.length) return null;
+  return <ul className="market-day-evidence-list">{entries.map((parts, index) => <li key={index}><div className="report-labeled-text"><LabeledTextParts parts={parts} /></div></li>)}</ul>;
 }
 
 function LineList({ items, icon = false }: { items?: unknown[]; icon?: boolean }) {
-  const lines = (items || []).map(formatLineItem).filter(Boolean);
-  if (!lines.length) return <p className="market-day-empty-text">暂无明确证据。</p>;
+  const entries = (items || []).map(watchPointReportText).filter((parts) => parts.length);
+  if (!entries.length) return <p className="market-day-empty-text">暂无明确证据。</p>;
   return (
     <ul className="market-day-line-list">
-      {lines.map((item) => <li key={item}>{icon ? <ShieldCheck /> : null}<span>{item}</span></li>)}
+      {entries.map((parts, index) => <li key={index}>{icon ? <ShieldCheck /> : null}<div className="report-labeled-text"><LabeledTextParts parts={parts} /></div></li>)}
     </ul>
   );
 }
 
-function formatEvidenceItem(item: EvidenceItem) {
-  if (typeof item === "string") return item.trim();
-  return [item?.type?.trim(), item?.content?.trim()].filter(Boolean).join("：");
+function NamedLineList({ items }: { items?: Array<{ name?: string; reason?: string }> }) {
+  const entries = (items || []).map((item) => namedReportText(item.name, item.reason));
+  if (!entries.length) return <p className="market-day-empty-text">暂无明确证据。</p>;
+  return <ul className="market-day-line-list">{entries.map((parts, index) => <li key={index}><div className="report-labeled-text"><LabeledTextParts parts={parts} /></div></li>)}</ul>;
 }
 
-function formatLineItem(item: unknown) {
-  if (typeof item === "string") return item.trim();
-  if (!item || typeof item !== "object") return "";
-  const point = item as WatchPoint;
-  return [
-    point.object,
-    point.condition ? `条件：${point.condition}` : "",
-    point.positiveSignal ? `正向：${point.positiveSignal}` : "",
-    point.negativeSignal ? `负向：${point.negativeSignal}` : "",
-    point.meaning ? `含义：${point.meaning}` : "",
-  ].filter(Boolean).join("；");
+function LabeledTextParts({ parts }: { parts: LabeledReportText[] }) {
+  return (
+    <>
+      {parts.map((part, index) => containsMarkdownPipeTable(part.value) ? (
+        <div className="report-labeled-text-part report-labeled-text-part--table" key={`${part.label}-${index}`}>
+          {index > 0 ? <span className="report-labeled-text-separator">；</span> : null}
+          {part.label ? <b>{part.label}</b> : null}
+          <TableAwareText value={part.value} inline />
+        </div>
+      ) : (
+        <span className="report-labeled-text-part" key={`${part.label}-${index}`}>
+          {index > 0 ? <span className="report-labeled-text-separator">；</span> : null}
+          {part.label ? <b>{part.label}</b> : null}
+          {part.value}
+        </span>
+      ))}
+    </>
+  );
 }
 
 function formatScore(value?: number) {
   if (typeof value !== "number" || !Number.isFinite(value)) return "-";
   return `${Math.round(value * 10) / 10}/10`;
+}
+
+function TableAwareHeading({ value, level }: { value: string; level: 1 | 2 }) {
+  if (containsMarkdownPipeTable(value)) return <div className="report-table-aware-heading"><ReportPipeContent value={value} /></div>;
+  return level === 1 ? <h1>{value}</h1> : <h2>{value}</h2>;
+}
+
+function TableAwareText({ value, inline = false, emphasis = false }: { value: string; inline?: boolean; emphasis?: boolean }) {
+  if (!containsMarkdownPipeTable(value)) {
+    if (emphasis) return <em>{value}</em>;
+    return inline ? <>{value}</> : <p>{value}</p>;
+  }
+  return (
+    <div className={`report-table-aware-text${emphasis ? " report-table-aware-text--emphasis" : ""}`}>
+      <ReportPipeContent
+        value={value}
+        renderText={(lines, index) => <p key={index}>{lines.filter(Boolean).join("\n")}</p>}
+      />
+    </div>
+  );
 }

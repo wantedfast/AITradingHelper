@@ -59,7 +59,7 @@ SEED_TOP1_PERFORMANCE: tuple[dict[str, Any], ...] = (
     {
         "trade_date": "2026-06-22",
         "code": "600397",
-        "name": "江铃装备",
+        "name": "江钨装备",
         "buy_date": "2026-06-22",
         "buy_price": 21.98,
         "sell_date": "2026-06-23",

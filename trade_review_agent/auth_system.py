@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from email.message import EmailMessage
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 from zoneinfo import ZoneInfo
 
 from trade_review_agent.legal_agreements import (
@@ -27,6 +27,7 @@ CN_TZ = ZoneInfo("Asia/Shanghai")
 PHONE_RE = re.compile(r"^1[3-9]\d{9}$")
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 USERNAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{3,31}$")
+CREDIT_GRANT_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
 SESSION_DAYS = 30
 INITIAL_FREE_CREDITS = 5
 REFERRAL_REWARD_CREDITS = 5
@@ -105,6 +106,20 @@ def init_auth_db(db_path: Path) -> None:
                 related_id TEXT,
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (user_id) REFERENCES users(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS credit_grant_campaigns (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                request_id TEXT NOT NULL UNIQUE,
+                credits INTEGER NOT NULL,
+                reason TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                eligible_count INTEGER NOT NULL DEFAULT 0,
+                granted_count INTEGER NOT NULL DEFAULT 0,
+                created_by INTEGER,
+                created_at TEXT NOT NULL,
+                completed_at TEXT,
+                FOREIGN KEY (created_by) REFERENCES users(id)
             );
 
             CREATE TABLE IF NOT EXISTS referrals (
@@ -249,6 +264,9 @@ def init_auth_db(db_path: Path) -> None:
             );
 
             CREATE INDEX IF NOT EXISTS idx_usage_created ON usage_events(created_at);
+            CREATE INDEX IF NOT EXISTS idx_credit_grant_campaigns_created ON credit_grant_campaigns(created_at);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_credit_ledger_grant_campaign_user
+                ON credit_ledger(user_id, related_id) WHERE reason = 'admin_grant_all';
             CREATE INDEX IF NOT EXISTS idx_feedback_status ON feedback(status);
             CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
             CREATE INDEX IF NOT EXISTS idx_update_notices_status ON update_notices(status, published_at);
@@ -394,6 +412,39 @@ def send_email_code(db_path: Path, *, email: str, purpose: str = "register", ip:
             "provider": provider_result["provider"],
         }
         return payload
+
+
+def send_email_binding_code(
+    db_path: Path, *, user_id: int, email: str, ip: str = "", log_path: Path | None = None
+) -> dict[str, Any]:
+    email = normalize_email(email)
+    with _connect(db_path) as conn:
+        user = _fetch_user_by_id(conn, user_id)
+        if bool(user["email_verified"]):
+            raise AuthError("当前账号已绑定并验证邮箱，不能更换", 409)
+        existing = _fetch_user_by_email(conn, email)
+        if existing and int(existing["id"]) != user_id:
+            raise AuthError("该邮箱已被其他账号使用", 409)
+    return send_email_code(db_path, email=email, purpose="bind_email", ip=ip, log_path=log_path)
+
+
+def bind_user_email(db_path: Path, *, user_id: int, email: str, email_code: str) -> dict[str, Any]:
+    email = normalize_email(email)
+    with _connect(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        user = _fetch_user_by_id(conn, user_id)
+        if bool(user["email_verified"]):
+            raise AuthError("当前账号已绑定并验证邮箱，不能更换", 409)
+        existing = _fetch_user_by_email(conn, email)
+        if existing and int(existing["id"]) != user_id:
+            raise AuthError("该邮箱已被其他账号使用", 409)
+        _verify_email_code(conn, email, email_code, purpose="bind_email")
+        conn.execute(
+            "UPDATE users SET email = ?, email_verified = 1 WHERE id = ?",
+            (email, user_id),
+        )
+        conn.execute("DELETE FROM email_codes WHERE email = ? AND purpose = 'bind_email'", (email,))
+        return _user_payload(conn, _fetch_user_by_id(conn, user_id))
 
 
 def register_user(db_path: Path, *, phone: str, code: str, password: str, invite_code: str = "", ip: str = "") -> dict[str, Any]:
@@ -999,6 +1050,12 @@ def admin_dashboard(db_path: Path, days: int = 14) -> dict[str, Any]:
             "feedback": [_feedback_payload(row) for row in feedback_rows],
             "orders": [_order_payload(row) | {"phone": row["phone"], "username": row["username"], "email": row["email"]} for row in orders],
             "top_users": [dict(row) for row in top_users],
+            "credit_grant_campaigns": [
+                _credit_grant_campaign_payload(row)
+                for row in conn.execute(
+                    "SELECT * FROM credit_grant_campaigns ORDER BY id DESC LIMIT 20"
+                ).fetchall()
+            ],
             "update_notices": [_update_notice_payload(row, conn=conn) for row in _update_notice_rows(conn)],
         }
 
@@ -1145,7 +1202,12 @@ def recover_update_email_queue(db_path: Path) -> int:
         return int(cursor.rowcount)
 
 
-def process_next_update_email(db_path: Path) -> bool:
+def process_next_update_email(
+    db_path: Path,
+    *,
+    sender: Callable[[dict[str, Any]], None] | None = None,
+    smtp_session: "UpdateEmailSMTPSession | None" = None,
+) -> bool:
     now = _now()
     with _connect(db_path) as conn:
         conn.execute("BEGIN IMMEDIATE")
@@ -1176,7 +1238,12 @@ def process_next_update_email(db_path: Path) -> bool:
         delivery = dict(row)
         delivery["attempt_count"] = attempt
     try:
-        _send_update_notice_email(delivery)
+        if sender is not None:
+            sender(delivery)
+        elif smtp_session is not None:
+            _send_update_notice_email(delivery, smtp_session=smtp_session)
+        else:
+            _send_update_notice_email(delivery)
     except Exception as exc:
         with _connect(db_path) as conn:
             if attempt >= UPDATE_EMAIL_MAX_ATTEMPTS:
@@ -1468,6 +1535,71 @@ def grant_user_credits(db_path: Path, *, user_id: int, credits: int, reason: str
     return result
 
 
+def grant_credits_to_all_users(
+    db_path: Path,
+    *,
+    credits: int,
+    reason: str,
+    request_id: str,
+    admin_id: int | None = None,
+) -> dict[str, Any]:
+    """Atomically grant credits to the users present when this campaign starts."""
+    if isinstance(credits, bool) or not isinstance(credits, int):
+        raise AuthError("增加次数必须是正整数", 400)
+    if credits <= 0:
+        raise AuthError("增加次数必须大于 0", 400)
+    if credits > 10000:
+        raise AuthError("单次增加次数过大，请分批处理", 400)
+    reason = (reason or "").strip()
+    if len(reason) < 2:
+        raise AuthError("请填写增加次数的原因", 400)
+    if len(reason) > 300:
+        raise AuthError("增加次数的原因不能超过 300 个字", 400)
+    request_id = (request_id or "").strip()
+    if not CREDIT_GRANT_REQUEST_ID_RE.fullmatch(request_id):
+        raise AuthError("request_id 格式无效", 400)
+
+    now = _now()
+    with _connect(db_path) as conn:
+        inserted = conn.execute(
+            """
+            INSERT OR IGNORE INTO credit_grant_campaigns (
+                request_id, credits, reason, status, eligible_count, granted_count,
+                created_by, created_at
+            ) VALUES (?, ?, ?, 'pending', 0, 0, ?, ?)
+            """,
+            (request_id, credits, reason, admin_id, now),
+        ).rowcount
+        campaign = conn.execute(
+            "SELECT * FROM credit_grant_campaigns WHERE request_id = ?", (request_id,)
+        ).fetchone()
+        if not campaign:
+            raise AuthError("批量增加次数任务创建失败", 500)
+        if not inserted:
+            if int(campaign["credits"]) != credits or str(campaign["reason"]) != reason:
+                raise AuthError("request_id 已用于其他批量增加次数任务", 409)
+            return {"campaign": _credit_grant_campaign_payload(campaign), "idempotent": True}
+
+        user_rows = conn.execute("SELECT id FROM users ORDER BY id").fetchall()
+        campaign_id = int(campaign["id"])
+        related_id = f"credit-campaign:{campaign_id}"
+        for user in user_rows:
+            _add_credits(conn, int(user["id"]), credits, "admin_grant_all", related_id)
+        affected = len(user_rows)
+        conn.execute(
+            """
+            UPDATE credit_grant_campaigns
+            SET status = 'completed', eligible_count = ?, granted_count = ?, completed_at = ?
+            WHERE id = ?
+            """,
+            (affected, affected, now, campaign_id),
+        )
+        completed = conn.execute(
+            "SELECT * FROM credit_grant_campaigns WHERE id = ?", (campaign_id,)
+        ).fetchone()
+        return {"campaign": _credit_grant_campaign_payload(completed), "idempotent": False}
+
+
 def normalize_phone(phone: str) -> str:
     phone = re.sub(r"\D", "", phone or "")
     if not PHONE_RE.match(phone):
@@ -1503,7 +1635,7 @@ def _normalize_sms_purpose(purpose: str) -> str:
 
 def _normalize_email_purpose(purpose: str) -> str:
     value = (purpose or "register").strip().lower()
-    return value if value in {"register"} else "register"
+    return value if value in {"register", "bind_email"} else "register"
 
 
 @contextmanager
@@ -1702,16 +1834,9 @@ def notify_credit_added(db_path: Path, *, user_id: int, credits: int, reason: st
         return {"sent": False, "error": str(exc)}
 
 
-def _send_smtp_message(email: str, *, subject: str, text: str, html: str | None = None) -> None:
-    host = os.getenv("SMTP_HOST", "").strip()
-    port = int(os.getenv("SMTP_PORT", "465").strip() or "465")
-    username = os.getenv("SMTP_USER", "").strip()
-    password = os.getenv("SMTP_PASSWORD", "").strip()
-    sender = os.getenv("SMTP_FROM", username).strip()
+def _smtp_message(email: str, *, subject: str, text: str, html: str | None = None) -> EmailMessage:
+    sender = os.getenv("SMTP_FROM", os.getenv("SMTP_USER", "")).strip()
     sender_name = os.getenv("SMTP_FROM_NAME", "盈航").strip()
-    if not host or not username or not password or not sender:
-        raise AuthError("SMTP 邮件服务未配置完整，请检查 SMTP_HOST/SMTP_USER/SMTP_PASSWORD/SMTP_FROM", 500)
-
     message = EmailMessage()
     message["Subject"] = subject
     message["From"] = f"{sender_name} <{sender}>"
@@ -1719,8 +1844,76 @@ def _send_smtp_message(email: str, *, subject: str, text: str, html: str | None 
     message.set_content(text)
     if html:
         message.add_alternative(html, subtype="html")
+    return message
 
+
+def _smtp_connection_settings() -> tuple[str, int, str, str, str, bool]:
+    host = os.getenv("SMTP_HOST", "").strip()
+    port = int(os.getenv("SMTP_PORT", "465").strip() or "465")
+    username = os.getenv("SMTP_USER", "").strip()
+    password = os.getenv("SMTP_PASSWORD", "").strip()
+    sender = os.getenv("SMTP_FROM", username).strip()
+    if not host or not username or not password or not sender:
+        raise AuthError("SMTP 邮件服务未配置完整，请检查 SMTP_HOST/SMTP_USER/SMTP_PASSWORD/SMTP_FROM", 500)
     use_ssl = os.getenv("SMTP_USE_SSL", "1").strip().lower() not in {"0", "false", "no"}
+    return host, port, username, password, sender, use_ssl
+
+
+class UpdateEmailSMTPSession:
+    """A single worker's reusable SMTP connection.
+
+    Each message still has exactly one ``To`` recipient. If the connection becomes
+    unusable, it is discarded and the message is retried once on a fresh connection;
+    the persistent delivery retry policy remains handled by ``process_next_update_email``.
+    """
+
+    def __init__(self) -> None:
+        self._server: smtplib.SMTP | smtplib.SMTP_SSL | None = None
+
+    def _connect(self) -> smtplib.SMTP | smtplib.SMTP_SSL:
+        host, port, username, password, _sender, use_ssl = _smtp_connection_settings()
+        if use_ssl:
+            server: smtplib.SMTP | smtplib.SMTP_SSL = smtplib.SMTP_SSL(host, port, timeout=15)
+        else:
+            server = smtplib.SMTP(host, port, timeout=15)
+            server.starttls()
+        server.login(username, password)
+        self._server = server
+        return server
+
+    def send(self, email: str, *, subject: str, text: str, html: str | None = None) -> None:
+        message = _smtp_message(email, subject=subject, text=text, html=html)
+        for reconnect_attempt in range(2):
+            try:
+                server = self._server or self._connect()
+                server.send_message(message)
+                return
+            except (smtplib.SMTPServerDisconnected, smtplib.SMTPConnectError, OSError, EOFError):
+                self.close()
+                if reconnect_attempt:
+                    raise
+
+    def send_update_notice(self, delivery: dict[str, Any]) -> None:
+        _send_update_notice_email(delivery, smtp_session=self)
+
+    def close(self) -> None:
+        server, self._server = self._server, None
+        if server is None:
+            return
+        try:
+            server.quit()
+        except Exception:
+            try:
+                server.close()
+            except Exception:
+                pass
+
+
+def _send_smtp_message(email: str, *, subject: str, text: str, html: str | None = None) -> None:
+    host, port, username, password, _sender, use_ssl = _smtp_connection_settings()
+
+    message = _smtp_message(email, subject=subject, text=text, html=html)
+
     if use_ssl:
         with smtplib.SMTP_SSL(host, port, timeout=15) as server:
             server.login(username, password)
@@ -1873,11 +2066,15 @@ def _user_payload(conn: sqlite3.Connection, row: sqlite3.Row | dict[str, Any]) -
     ).fetchone()["count"]
     membership_expires_at = row["membership_expires_at"] if "membership_expires_at" in row.keys() else ""
     membership_active = _has_active_membership(row)
+    email_verified = bool(row["email_verified"]) if "email_verified" in row.keys() else False
+    email_binding_required = row["role"] != "admin" and not email_verified
     return {
         "id": user_id,
         "phone": row["phone"],
         "username": row["username"] if "username" in row.keys() else "",
         "email": row["email"] if "email" in row.keys() else "",
+        "email_verified": email_verified,
+        "email_binding_required": email_binding_required,
         "update_emails_enabled": bool(row["update_emails_enabled"]) if "update_emails_enabled" in row.keys() else True,
         "role": row["role"],
         "invite_code": row["invite_code"],
@@ -1904,6 +2101,21 @@ def _feedback_payload(row: sqlite3.Row) -> dict[str, Any]:
         "admin_note": row["admin_note"],
         "created_at": row["created_at"],
         "reviewed_at": row["reviewed_at"],
+    }
+
+
+def _credit_grant_campaign_payload(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": int(row["id"]),
+        "request_id": str(row["request_id"]),
+        "credits": int(row["credits"]),
+        "reason": str(row["reason"]),
+        "status": str(row["status"]),
+        "eligible_count": int(row["eligible_count"]),
+        "granted_count": int(row["granted_count"]),
+        "created_by": int(row["created_by"]) if row["created_by"] is not None else None,
+        "created_at": str(row["created_at"]),
+        "completed_at": str(row["completed_at"] or ""),
     }
 
 
@@ -2024,7 +2236,9 @@ def _refresh_email_campaign_status(conn: sqlite3.Connection, campaign_id: int) -
     )
 
 
-def _send_update_notice_email(delivery: dict[str, Any]) -> None:
+def _send_update_notice_email(
+    delivery: dict[str, Any], *, smtp_session: UpdateEmailSMTPSession | None = None
+) -> None:
     try:
         items = json.loads(str(delivery.get("items_json") or "[]"))
     except Exception:
@@ -2049,7 +2263,8 @@ def _send_update_notice_email(delivery: dict[str, Any]) -> None:
       </div>
     </body></html>
     """
-    _send_smtp_message(str(delivery["email"]), subject=f"盈航产品更新｜{title}", text=text, html=html)
+    send = smtp_session.send if smtp_session is not None else _send_smtp_message
+    send(str(delivery["email"]), subject=f"盈航产品更新｜{title}", text=text, html=html)
 
 
 def _order_payload(row: sqlite3.Row) -> dict[str, Any]:

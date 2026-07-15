@@ -45,7 +45,20 @@ type DashboardPayload = {
     created_at: string;
   }>;
   top_users: Array<{ id: number; phone: string; username?: string; email?: string; role: string; used_count: number; credits: number; created_at: string }>;
+  credit_grant_campaigns: CreditGrantCampaign[];
   update_notices: UpdateNotice[];
+};
+
+type CreditGrantCampaign = {
+  id: number;
+  request_id: string;
+  credits: number;
+  reason: string;
+  status: "completed";
+  eligible_count: number;
+  granted_count: number;
+  created_at: string;
+  completed_at: string;
 };
 
 type GrantDraft = {
@@ -97,6 +110,10 @@ export default function AdminPage() {
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState("");
   const [grantDrafts, setGrantDrafts] = useState<Record<number, GrantDraft>>({});
+  const [bulkGrantDraft, setBulkGrantDraft] = useState<GrantDraft>({ credits: "10", reason: "" });
+  const [bulkGrantIntent, setBulkGrantIntent] = useState(false);
+  const [bulkGrantRequestId, setBulkGrantRequestId] = useState("");
+  const [bulkGrantSubmitting, setBulkGrantSubmitting] = useState(false);
   const [noticeDraft, setNoticeDraft] = useState<NoticeDraft>(emptyNoticeDraft);
   const [editingNoticeId, setEditingNoticeId] = useState<number | null>(null);
   const [publishIntent, setPublishIntent] = useState<PublishIntent | null>(null);
@@ -177,6 +194,46 @@ export default function AdminPage() {
       setMessage(notice?.sent ? "次数已增加，并已发送邮件提醒。" : `次数已增加，但邮件提醒未发送：${notice?.error || "未知原因"}`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "增加次数失败");
+    }
+  }
+
+  function requestBulkGrantConfirmation() {
+    const credits = Number(bulkGrantDraft.credits);
+    if (!Number.isInteger(credits) || credits <= 0) {
+      setMessage("增加次数必须是正整数");
+      return;
+    }
+    if (bulkGrantDraft.reason.trim().length < 2) {
+      setMessage("请填写增加次数的原因");
+      return;
+    }
+    setMessage("");
+    setBulkGrantRequestId(createCreditGrantRequestId());
+    setBulkGrantIntent(true);
+  }
+
+  async function confirmBulkGrant() {
+    if (!bulkGrantIntent || bulkGrantSubmitting || !bulkGrantRequestId) return;
+    setBulkGrantSubmitting(true);
+    setMessage("");
+    try {
+      const result = await apiFetch<{ campaign: CreditGrantCampaign; idempotent: boolean }>("/api/admin/credits/grant-all", {
+        method: "POST",
+        body: JSON.stringify({
+          credits: Number(bulkGrantDraft.credits),
+          reason: bulkGrantDraft.reason.trim(),
+          request_id: bulkGrantRequestId,
+        }),
+      });
+      setBulkGrantIntent(false);
+      setBulkGrantRequestId("");
+      setBulkGrantDraft({ credits: "10", reason: "" });
+      await loadDashboard();
+      setMessage(`批量发放完成：${result.campaign.granted_count} 位现有用户各增加 ${result.campaign.credits} 次。`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "批量增加次数失败");
+    } finally {
+      setBulkGrantSubmitting(false);
     }
   }
 
@@ -327,6 +384,47 @@ export default function AdminPage() {
               <Metric icon={Gift} label="系统剩余次数" value={data.totals.credits} />
               <Metric icon={MessageSquare} label="待审核反馈" value={data.totals.feedback_pending} />
               <Metric icon={CreditCard} label="已支付订单" value={data.totals.orders_paid} />
+            </section>
+
+            <section className="admin-panel admin-bulk-credit-panel">
+              <div className="admin-panel-head">
+                <Gift />
+                <h2>给所有现有用户增加次数</h2>
+              </div>
+              <p>仅包含确认发放时已经注册的账号。整批在一个事务中完成，失败不会只发给部分用户。</p>
+              <div className="admin-bulk-credit-form">
+                <label>
+                  每人增加次数
+                  <input
+                    type="number"
+                    min="1"
+                    max="10000"
+                    step="1"
+                    value={bulkGrantDraft.credits}
+                    onChange={(event) => setBulkGrantDraft((current) => ({ ...current, credits: event.target.value }))}
+                  />
+                </label>
+                <label>
+                  发放原因
+                  <input
+                    maxLength={300}
+                    value={bulkGrantDraft.reason}
+                    onChange={(event) => setBulkGrantDraft((current) => ({ ...current, reason: event.target.value }))}
+                    placeholder="例如：平台更新福利"
+                  />
+                </label>
+                <button type="button" onClick={requestBulkGrantConfirmation}>确认发放范围</button>
+              </div>
+              {!!data.credit_grant_campaigns?.length && (
+                <div className="admin-bulk-credit-history">
+                  <b>最近发放记录</b>
+                  {data.credit_grant_campaigns.slice(0, 5).map((campaign) => (
+                    <span key={campaign.id}>
+                      {formatDate(campaign.completed_at || campaign.created_at)} · {campaign.granted_count} 人 × {campaign.credits} 次 · {campaign.reason}
+                    </span>
+                  ))}
+                </div>
+              )}
             </section>
 
             <section className="admin-grid">
@@ -564,6 +662,22 @@ export default function AdminPage() {
           </section>
         </div>
       )}
+      {bulkGrantIntent && (
+        <div className="admin-publish-backdrop" role="presentation" onMouseDown={() => !bulkGrantSubmitting && setBulkGrantIntent(false)}>
+          <section className="admin-publish-dialog" role="dialog" aria-modal="true" aria-labelledby="bulk-grant-dialog-title" onMouseDown={(event) => event.stopPropagation()}>
+            <Gift />
+            <h2 id="bulk-grant-dialog-title">确认给所有现有用户发放？</h2>
+            <p>每位现有用户将增加 {bulkGrantDraft.credits} 次使用机会。原因：{bulkGrantDraft.reason.trim()}</p>
+            <p>本操作会一次性写入全部账号，提交后不能在此处撤销。</p>
+            <div>
+              <button type="button" onClick={confirmBulkGrant} disabled={bulkGrantSubmitting}>
+                {bulkGrantSubmitting ? "正在发放..." : "确认发放"}
+              </button>
+              <button type="button" onClick={() => setBulkGrantIntent(false)} disabled={bulkGrantSubmitting}>取消</button>
+            </div>
+          </section>
+        </div>
+      )}
     </main>
   );
 }
@@ -623,5 +737,11 @@ function createPublishRequestId() {
   const randomUuid = globalThis.crypto?.randomUUID;
   if (typeof randomUuid === "function") return randomUuid.call(globalThis.crypto);
   return `notice-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 14)}`;
+}
+
+function createCreditGrantRequestId() {
+  const randomUuid = globalThis.crypto?.randomUUID;
+  if (typeof randomUuid === "function") return `credit-${randomUuid.call(globalThis.crypto)}`;
+  return `credit-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 14)}`;
 }
 
