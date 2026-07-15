@@ -5,6 +5,7 @@ export type UserProfile = {
   phone: string;
   username?: string | null;
   email?: string | null;
+  update_emails_enabled?: boolean;
   role: "user" | "admin";
   invite_code: string;
   credits: number;

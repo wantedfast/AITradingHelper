@@ -47,17 +47,21 @@ from trade_review_agent.auth_system import (
     mark_order_paid_by_order_no,
     mark_order_paid,
     membership_plans,
+    process_next_update_email,
     publish_update_notice,
     register_password_user,
     require_admin,
     require_user,
     reject_membership_order,
     review_feedback,
+    retry_update_email_campaign,
+    recover_update_email_queue,
     send_email_code,
     submit_membership_payment,
     submit_feedback,
     unpublish_update_notice,
     update_update_notice,
+    set_update_email_preference,
 )
 from trade_review_agent.legal_agreements import registration_agreement_payload
 from trade_review_agent.watch.alerts import AlertPlan, evaluate_plans, event_dedupe_key, load_plans, save_plans
@@ -93,6 +97,7 @@ WEBHOOK_EVENTS_PATH = BASE_DIR / "work" / "webhook_events.jsonl"
 AUCTION_STRENGTH_PATH = BASE_DIR / "work" / "auction_strength_reports.jsonl"
 AUCTION_TOP1_PERFORMANCE_PATH = BASE_DIR / "work" / "auction_top1_performance.jsonl"
 API_ERROR_LOG = BASE_DIR / "work" / "api_errors.log"
+UPDATE_EMAIL_QUEUE_WAKE = threading.Event()
 AUTH_DB = BASE_DIR / "work" / "auth.sqlite"
 CN_TZ = ZoneInfo("Asia/Shanghai")
 ALLOWED_SUFFIXES = {".xls", ".xlsx", ".csv", ".txt", ".png", ".jpg", ".jpeg", ".webp"}
@@ -236,6 +241,9 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             if path == "/api/auth/logout":
                 self._auth_logout()
                 return
+            if path == "/api/auth/email-preferences":
+                self._auth_email_preferences()
+                return
             if path == "/api/feedback":
                 self._submit_feedback()
                 return
@@ -271,6 +279,9 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/admin/update-notices" or path.startswith("/api/admin/update-notices/"):
                 self._admin_update_notice_action(path)
+                return
+            if path.startswith("/api/admin/update-email-campaigns/"):
+                self._admin_retry_update_email_campaign(path)
                 return
             if path == "/api/reports":
                 self._create_reports()
@@ -801,6 +812,16 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
         user = get_current_user(AUTH_DB, self._bearer_token())
         self._json({"user": user})
 
+    def _auth_email_preferences(self) -> None:
+        user = self._require_user()
+        payload = self._read_json_body()
+        if "update_emails_enabled" not in payload or type(payload["update_emails_enabled"]) is not bool:
+            raise AuthError("update_emails_enabled 必须是布尔值", 400)
+        updated = set_update_email_preference(
+            AUTH_DB, user_id=int(user["id"]), enabled=payload["update_emails_enabled"]
+        )
+        self._json({"user": updated})
+
     def _submit_feedback(self) -> None:
         user = self._require_user()
         payload = self._read_json_body()
@@ -1003,15 +1024,30 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
         if len(parts) == 4:
             payload = self._read_json_body()
             items = _notice_items_from_payload(payload)
+            status = str(payload.get("status") or "draft")
+            if status == "published":
+                send_email, request_id = _publish_email_options(payload)
             notice = create_update_notice(
                 AUTH_DB,
                 title=str(payload.get("title") or ""),
                 version=str(payload.get("version") or ""),
                 items=items,
                 admin_id=int(admin["id"]),
-                status=str(payload.get("status") or "draft"),
+                status="draft" if status == "published" else status,
             )
-            self._json({"notice": notice}, status=201)
+            if status == "published":
+                result = publish_update_notice(
+                    AUTH_DB,
+                    notice_id=int(notice["id"]),
+                    send_email=send_email,
+                    request_id=request_id,
+                    admin_id=int(admin["id"]),
+                )
+                if send_email:
+                    UPDATE_EMAIL_QUEUE_WAKE.set()
+                self._json(result, status=201)
+            else:
+                self._json({"notice": notice, "email_campaign": None}, status=201)
             return
         if len(parts) not in {5, 6}:
             self._json({"error": "not found"}, status=404)
@@ -1027,13 +1063,35 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                 items=_notice_items_from_payload(payload),
             )
         elif parts[5] == "publish":
-            notice = publish_update_notice(AUTH_DB, notice_id=notice_id)
+            payload = self._read_json_body()
+            send_email, request_id = _publish_email_options(payload)
+            result = publish_update_notice(
+                AUTH_DB,
+                notice_id=notice_id,
+                send_email=send_email,
+                request_id=request_id,
+                admin_id=int(admin["id"]),
+            )
+            if send_email:
+                UPDATE_EMAIL_QUEUE_WAKE.set()
+            self._json(result)
+            return
         elif parts[5] == "unpublish":
             notice = unpublish_update_notice(AUTH_DB, notice_id=notice_id)
         else:
             self._json({"error": "not found"}, status=404)
             return
         self._json({"notice": notice})
+
+    def _admin_retry_update_email_campaign(self, path: str) -> None:
+        self._require_admin()
+        parts = path.split("/")
+        if len(parts) != 6 or parts[5] != "retry":
+            self._json({"error": "not found"}, status=404)
+            return
+        campaign = retry_update_email_campaign(AUTH_DB, campaign_id=int(parts[4]))
+        UPDATE_EMAIL_QUEUE_WAKE.set()
+        self._json({"email_campaign": campaign})
 
     def _admin_review_feedback(self, path: str) -> None:
         self._require_admin()
@@ -3694,6 +3752,15 @@ def _notice_items_from_payload(payload: dict) -> list[str]:
     return [line.strip() for line in text.splitlines() if line.strip()]
 
 
+def _publish_email_options(payload: dict) -> tuple[bool, str]:
+    if "send_email" not in payload or type(payload["send_email"]) is not bool:
+        raise AuthError("发布公告时必须明确选择是否发送邮件", 400)
+    request_id = str(payload.get("request_id") or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{8,100}", request_id):
+        raise AuthError("发布公告 request_id 无效", 400)
+    return payload["send_email"], request_id
+
+
 def _optional_float(value: object) -> float | None:
     if value in {None, ""}:
         return None
@@ -3783,6 +3850,31 @@ def _start_auction_top1_refresh_clock() -> None:
     thread.start()
 
 
+def _update_email_queue_worker() -> None:
+    recover_update_email_queue(AUTH_DB)
+    while True:
+        UPDATE_EMAIL_QUEUE_WAKE.wait(timeout=5)
+        UPDATE_EMAIL_QUEUE_WAKE.clear()
+        try:
+            while process_next_update_email(AUTH_DB):
+                time.sleep(1)
+        except Exception as exc:
+            _write_api_error(
+                request_id="update-email-worker",
+                method="WORKER",
+                path="/api/admin/update-email-campaigns",
+                run_id="",
+                stage="update_email_queue",
+                exc=exc,
+                recovered=True,
+            )
+
+
+def _start_update_email_queue_worker() -> None:
+    thread = threading.Thread(target=_update_email_queue_worker, name="update-email-queue", daemon=True)
+    thread.start()
+
+
 def run(host: str = "0.0.0.0", port: int = 8600) -> None:
     load_env(BASE_DIR / ".env")
     _assert_port_available(host, port)
@@ -3795,6 +3887,7 @@ def run(host: str = "0.0.0.0", port: int = 8600) -> None:
     _prune_ai_research_reports()
     WATCH_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
     _start_auction_top1_refresh_clock()
+    _start_update_email_queue_worker()
     server = SingleInstanceThreadingHTTPServer((host, port), TradeReviewHandler)
     print(f"Trade Review API listening on http://{host}:{port}", flush=True)
     server.serve_forever()

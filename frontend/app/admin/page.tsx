@@ -62,7 +62,21 @@ type UpdateNotice = {
   created_at: string;
   updated_at: string;
   published_at?: string | null;
+  email_campaign?: EmailCampaign | null;
 };
+
+type EmailCampaign = {
+  id: number;
+  status: "pending" | "sending" | "completed" | "partial_failed" | "failed";
+  total: number;
+  pending: number;
+  sending: number;
+  sent: number;
+  failed: number;
+  skipped: number;
+};
+
+type PublishIntent = { source: "form"; noticeId: number | null } | { source: "list"; noticeId: number };
 
 type NoticeDraft = {
   title: string;
@@ -85,6 +99,8 @@ export default function AdminPage() {
   const [grantDrafts, setGrantDrafts] = useState<Record<number, GrantDraft>>({});
   const [noticeDraft, setNoticeDraft] = useState<NoticeDraft>(emptyNoticeDraft);
   const [editingNoticeId, setEditingNoticeId] = useState<number | null>(null);
+  const [publishIntent, setPublishIntent] = useState<PublishIntent | null>(null);
+  const [publishing, setPublishing] = useState(false);
 
   useEffect(() => {
     refreshCurrentUser()
@@ -164,29 +180,71 @@ export default function AdminPage() {
     }
   }
 
-  async function saveUpdateNotice(status: "draft" | "published" = "draft") {
+  async function saveUpdateNotice() {
     setMessage("");
     try {
       const body = JSON.stringify({
         title: noticeDraft.title,
         version: noticeDraft.version,
         items_text: noticeDraft.itemsText,
-        status,
+        status: "draft",
       });
       if (editingNoticeId) {
         await apiFetch(`/api/admin/update-notices/${editingNoticeId}`, { method: "POST", body });
-        if (status === "published") {
-          await apiFetch(`/api/admin/update-notices/${editingNoticeId}/publish`, { method: "POST" });
-        }
       } else {
         await apiFetch("/api/admin/update-notices", { method: "POST", body });
       }
       setNoticeDraft(emptyNoticeDraft);
       setEditingNoticeId(null);
       await loadDashboard();
-      setMessage(status === "published" ? "更新公告已发布" : "更新公告已保存");
+      setMessage("更新公告已保存");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "保存更新公告失败");
+    }
+  }
+
+  async function confirmPublish(sendEmail: boolean) {
+    if (!publishIntent || publishing) return;
+    setPublishing(true);
+    setMessage("");
+    const requestId = crypto.randomUUID();
+    try {
+      let result: { email_campaign?: EmailCampaign | null } = {};
+      if (publishIntent.source === "form") {
+        const body = JSON.stringify({
+          title: noticeDraft.title,
+          version: noticeDraft.version,
+          items_text: noticeDraft.itemsText,
+          status: publishIntent.noticeId ? "draft" : "published",
+          send_email: sendEmail,
+          request_id: requestId,
+        });
+        if (publishIntent.noticeId) {
+          await apiFetch(`/api/admin/update-notices/${publishIntent.noticeId}`, { method: "POST", body });
+          result = await apiFetch(`/api/admin/update-notices/${publishIntent.noticeId}/publish`, {
+            method: "POST",
+            body: JSON.stringify({ send_email: sendEmail, request_id: requestId }),
+          });
+        } else {
+          result = await apiFetch("/api/admin/update-notices", { method: "POST", body });
+        }
+        setNoticeDraft(emptyNoticeDraft);
+        setEditingNoticeId(null);
+      } else {
+        result = await apiFetch(`/api/admin/update-notices/${publishIntent.noticeId}/publish`, {
+          method: "POST",
+          body: JSON.stringify({ send_email: sendEmail, request_id: requestId }),
+        });
+      }
+      setPublishIntent(null);
+      await loadDashboard();
+      setMessage(sendEmail
+        ? `公告已发布，邮件任务已创建${result.email_campaign ? `（待发送 ${result.email_campaign.pending}，跳过 ${result.email_campaign.skipped}）` : ""}。`
+        : "公告已发布，本次未发送邮件。");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "发布更新公告失败");
+    } finally {
+      setPublishing(false);
     }
   }
 
@@ -200,8 +258,13 @@ export default function AdminPage() {
   }
 
   async function publishUpdateNotice(id: number) {
-    await apiFetch(`/api/admin/update-notices/${id}/publish`, { method: "POST" });
+    setPublishIntent({ source: "list", noticeId: id });
+  }
+
+  async function retryEmailCampaign(id: number) {
+    await apiFetch(`/api/admin/update-email-campaigns/${id}/retry`, { method: "POST" });
     await loadDashboard();
+    setMessage("失败邮件已重新加入发送队列。");
   }
 
   async function unpublishUpdateNotice(id: number) {
@@ -422,10 +485,10 @@ export default function AdminPage() {
                     rows={5}
                   />
                   <div className="admin-notice-actions">
-                    <button type="button" onClick={() => saveUpdateNotice("draft")}>
+                    <button type="button" onClick={saveUpdateNotice}>
                       {editingNoticeId ? "保存修改" : "保存草稿"}
                     </button>
-                    <button type="button" onClick={() => saveUpdateNotice("published")}>
+                    <button type="button" onClick={() => setPublishIntent({ source: "form", noticeId: editingNoticeId })}>
                       保存并发布
                     </button>
                     {editingNoticeId && (
@@ -457,6 +520,15 @@ export default function AdminPage() {
                       </header>
                       <p>{notice.version} · {formatDate(notice.published_at || notice.updated_at)}</p>
                       <small>{notice.items.join(" / ")}</small>
+                      {notice.email_campaign && (
+                        <div className="admin-email-campaign">
+                          <b>邮件：{emailCampaignLabel(notice.email_campaign.status)}</b>
+                          <span>成功 {notice.email_campaign.sent} · 待发送 {notice.email_campaign.pending + notice.email_campaign.sending} · 失败 {notice.email_campaign.failed} · 跳过 {notice.email_campaign.skipped}</span>
+                          {notice.email_campaign.failed > 0 && (
+                            <button type="button" onClick={() => retryEmailCampaign(notice.email_campaign!.id)}>重试失败邮件</button>
+                          )}
+                        </div>
+                      )}
                       <button type="button" onClick={() => editUpdateNotice(notice)}>
                         编辑
                       </button>
@@ -478,6 +550,20 @@ export default function AdminPage() {
           </>
         )}
       </section>
+      {publishIntent && (
+        <div className="admin-publish-backdrop" role="presentation" onMouseDown={() => !publishing && setPublishIntent(null)}>
+          <section className="admin-publish-dialog" role="dialog" aria-modal="true" aria-labelledby="publish-dialog-title" onMouseDown={(event) => event.stopPropagation()}>
+            <Megaphone />
+            <h2 id="publish-dialog-title">如何发布本次更新？</h2>
+            <p>网站更新弹窗会立即发布。邮件任务在后台发送，失败不会阻止公告上线。</p>
+            <div>
+              <button type="button" onClick={() => confirmPublish(false)} disabled={publishing}>仅发布网站弹窗</button>
+              <button type="button" onClick={() => confirmPublish(true)} disabled={publishing}>网站弹窗 + 邮件推送</button>
+              <button type="button" onClick={() => setPublishIntent(null)} disabled={publishing}>取消</button>
+            </div>
+          </section>
+        </div>
+      )}
     </main>
   );
 }
@@ -497,6 +583,14 @@ function featureLabel(value: string) {
   if (value === "watch_plan") return "AI 盯盘";
   if (value === "membership_free") return "会员免扣";
   return value;
+}
+
+function emailCampaignLabel(value: EmailCampaign["status"]) {
+  if (value === "pending") return "等待发送";
+  if (value === "sending") return "发送中";
+  if (value === "completed") return "已完成";
+  if (value === "partial_failed") return "部分失败";
+  return "发送失败";
 }
 
 function orderStatusLabel(value: string) {
