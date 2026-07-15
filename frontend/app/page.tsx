@@ -2,8 +2,8 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { FormEvent, useEffect, useState } from "react";
-import { BellRing, ChevronDown, Copy, CreditCard, FileSearch, FileText, Gift, Info, LogOut, Megaphone, MessageSquare, ShieldCheck, Sparkles, TrendingUp, Trophy, UserRound, X } from "lucide-react";
+import { FormEvent, useEffect, useRef, useState } from "react";
+import { BellRing, ChevronDown, Copy, CreditCard, FileSearch, FileText, Gift, Info, LogOut, Megaphone, Menu, MessageSquare, ShieldCheck, Sparkles, TrendingUp, Trophy, UserRound, X } from "lucide-react";
 import { AuctionStrengthPerformanceTicker, useAuctionStrengthPerformance } from "@/components/auction-strength-performance-ticker";
 import { GoldMagicCube } from "@/components/gold-magic-cube";
 import { HomeMusic } from "@/components/home-music";
@@ -72,11 +72,14 @@ export default function Page() {
   const [feedbackMessage, setFeedbackMessage] = useState("");
   const [showProductGuide, setShowProductGuide] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
+  const [showMobileMenu, setShowMobileMenu] = useState(false);
   const [showAuctionTooltip, setShowAuctionTooltip] = useState(false);
   const [inviteCopied, setInviteCopied] = useState(false);
   const [updateNotice, setUpdateNotice] = useState<UpdateNotice | null>(null);
   const [showUpdateNotice, setShowUpdateNotice] = useState(false);
   const [savingEmailPreference, setSavingEmailPreference] = useState(false);
+  const mobileMenuButtonRef = useRef<HTMLButtonElement>(null);
+  const mobileMenuRef = useRef<HTMLElement>(null);
   const auctionPerformance = useAuctionStrengthPerformance();
   const recentAuctionTop1Rows = auctionPerformance.rows.slice(-5).reverse();
 
@@ -90,6 +93,56 @@ export default function Page() {
     window.addEventListener("ai-trade-auth", handleAuth);
     return () => window.removeEventListener("ai-trade-auth", handleAuth);
   }, []);
+
+  useEffect(() => {
+    if (!showMobileMenu) return;
+    const previousOverflow = document.body.style.overflow;
+    const menuTrigger = mobileMenuButtonRef.current;
+    document.body.style.overflow = "hidden";
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setShowMobileMenu(false);
+      if (event.key !== "Tab") return;
+      const focusable = Array.from(
+        mobileMenuRef.current?.querySelectorAll<HTMLElement>('a[href], button:not([disabled]), input:not([disabled])') || [],
+      );
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    window.requestAnimationFrame(() => mobileMenuRef.current?.querySelector<HTMLElement>("button, a[href]")?.focus());
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", handleKeyDown);
+      menuTrigger?.focus();
+    };
+  }, [showMobileMenu]);
+
+  useEffect(() => {
+    if (!showProductGuide && !showUpdateNotice) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setShowProductGuide(false);
+      if (showUpdateNotice && updateNotice) {
+        window.localStorage.setItem(UPDATE_NOTICE_SEEN_KEY, String(updateNotice.id));
+        setShowUpdateNotice(false);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [showProductGuide, showUpdateNotice, updateNotice]);
 
   useEffect(() => {
     apiFetch<{ notice: UpdateNotice | null }>("/api/update-notices/latest")
@@ -142,6 +195,11 @@ export default function Page() {
     setUser(null);
     setShowUserMenu(false);
     setInviteCopied(false);
+  }
+
+  function mobileLogout() {
+    logout();
+    setShowMobileMenu(false);
   }
 
   async function toggleUpdateEmails() {
@@ -268,7 +326,95 @@ export default function Page() {
               </Link>
             )}
           </nav>
+          <div className="home-mobile-actions">
+            {hydrated && !user ? (
+              <Link className="home-mobile-login" href="/auth">
+                登录
+              </Link>
+            ) : null}
+            <button
+              aria-controls="home-mobile-menu"
+              aria-expanded={showMobileMenu}
+              aria-label={showMobileMenu ? "关闭导航菜单" : "打开导航菜单"}
+              className="home-mobile-menu-button"
+              onClick={() => setShowMobileMenu((value) => !value)}
+              ref={mobileMenuButtonRef}
+              type="button"
+            >
+              {showMobileMenu ? <X aria-hidden="true" /> : <Menu aria-hidden="true" />}
+            </button>
+          </div>
         </header>
+
+        {showMobileMenu ? (
+          <div className="home-mobile-menu-backdrop" role="presentation" onMouseDown={() => setShowMobileMenu(false)}>
+            <nav
+              aria-label="手机导航"
+              className="home-mobile-menu"
+              id="home-mobile-menu"
+              onMouseDown={(event) => event.stopPropagation()}
+              ref={mobileMenuRef}
+            >
+              <div className="home-mobile-menu-head">
+                <span>导航与账户</span>
+                <button aria-label="关闭导航菜单" onClick={() => setShowMobileMenu(false)} type="button">
+                  <X aria-hidden="true" />
+                </button>
+              </div>
+              <div className="home-mobile-feature-links">
+                {features.map((feature) => {
+                  const Icon = feature.icon;
+                  return (
+                    <Link href={feature.href} key={feature.href} onClick={() => setShowMobileMenu(false)}>
+                      <Icon aria-hidden="true" />
+                      <span>{feature.title}</span>
+                    </Link>
+                  );
+                })}
+              </div>
+              <div className="home-mobile-menu-secondary">
+                <button type="button" onClick={() => { setShowMobileMenu(false); openProductGuide(); }}>
+                  <Info aria-hidden="true" />
+                  功能说明
+                </button>
+                <button type="button" onClick={() => { setShowMobileMenu(false); scrollToFeedback(); }}>
+                  <MessageSquare aria-hidden="true" />
+                  反馈建议
+                </button>
+                {hydrated && user?.role === "admin" ? (
+                  <Link href="/admin" onClick={() => setShowMobileMenu(false)}>
+                    <ShieldCheck aria-hidden="true" />
+                    管理台
+                  </Link>
+                ) : null}
+              </div>
+              {hydrated && user ? (
+                <div className="home-mobile-account">
+                  <div>
+                    <UserRound aria-hidden="true" />
+                    <span>
+                      <small>当前账号</small>
+                      <b>{user.username || user.email || user.phone}</b>
+                    </span>
+                  </div>
+                  <p>{userBalanceText(user)}</p>
+                  <Link href="/billing" onClick={() => setShowMobileMenu(false)}>
+                    <CreditCard aria-hidden="true" />
+                    购买次数
+                  </Link>
+                  <button type="button" onClick={mobileLogout}>
+                    <LogOut aria-hidden="true" />
+                    退出登录
+                  </button>
+                </div>
+              ) : (
+                <Link className="home-mobile-account-login" href="/auth" onClick={() => setShowMobileMenu(false)}>
+                  登录或注册
+                </Link>
+              )}
+            </nav>
+          </div>
+        ) : null}
 
         <FinancialDisclaimer />
 

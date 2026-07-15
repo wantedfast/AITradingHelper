@@ -2,9 +2,10 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { BarChart3, CheckCircle2, CreditCard, Gift, LogOut, Megaphone, MessageSquare, RefreshCw, Users } from "lucide-react";
 import { apiFetch, clearAuth, getStoredUser, refreshCurrentUser, type UserProfile } from "@/lib/auth-client";
+import { useModalAccessibility } from "@/lib/modal-accessibility";
 
 type DashboardPayload = {
   totals: {
@@ -118,6 +119,17 @@ export default function AdminPage() {
   const [editingNoticeId, setEditingNoticeId] = useState<number | null>(null);
   const [publishIntent, setPublishIntent] = useState<PublishIntent | null>(null);
   const [publishing, setPublishing] = useState(false);
+  const activeDialogRef = useRef<HTMLElement>(null);
+
+  useModalAccessibility(
+    Boolean(publishIntent) || bulkGrantIntent,
+    () => {
+      if (!publishing) setPublishIntent(null);
+      if (!bulkGrantSubmitting) setBulkGrantIntent(false);
+    },
+    activeDialogRef,
+    !publishing && !bulkGrantSubmitting,
+  );
 
   useEffect(() => {
     refreshCurrentUser()
@@ -650,7 +662,7 @@ export default function AdminPage() {
       </section>
       {publishIntent && (
         <div className="admin-publish-backdrop" role="presentation" onMouseDown={() => !publishing && setPublishIntent(null)}>
-          <section className="admin-publish-dialog" role="dialog" aria-modal="true" aria-labelledby="publish-dialog-title" onMouseDown={(event) => event.stopPropagation()}>
+          <section className="admin-publish-dialog" role="dialog" aria-modal="true" aria-labelledby="publish-dialog-title" ref={activeDialogRef} tabIndex={-1} onMouseDown={(event) => event.stopPropagation()}>
             <Megaphone />
             <h2 id="publish-dialog-title">如何发布本次更新？</h2>
             <p>网站更新弹窗会立即发布。邮件任务在后台发送，失败不会阻止公告上线。</p>
@@ -664,7 +676,7 @@ export default function AdminPage() {
       )}
       {bulkGrantIntent && (
         <div className="admin-publish-backdrop" role="presentation" onMouseDown={() => !bulkGrantSubmitting && setBulkGrantIntent(false)}>
-          <section className="admin-publish-dialog" role="dialog" aria-modal="true" aria-labelledby="bulk-grant-dialog-title" onMouseDown={(event) => event.stopPropagation()}>
+          <section className="admin-publish-dialog" role="dialog" aria-modal="true" aria-labelledby="bulk-grant-dialog-title" ref={activeDialogRef} tabIndex={-1} onMouseDown={(event) => event.stopPropagation()}>
             <Gift />
             <h2 id="bulk-grant-dialog-title">确认给所有现有用户发放？</h2>
             <p>每位现有用户将增加 {bulkGrantDraft.credits} 次使用机会。原因：{bulkGrantDraft.reason.trim()}</p>

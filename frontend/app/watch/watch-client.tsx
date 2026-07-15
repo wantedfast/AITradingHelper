@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 import { getAuthToken, storeUser, type UserProfile } from "@/lib/auth-client";
 import { MainSidebar } from "@/components/main-sidebar";
+import { useModalAccessibility } from "@/lib/modal-accessibility";
 import { FinancialDisclaimer } from "@/components/financial-disclaimer";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || (process.env.NODE_ENV === "development" ? "http://127.0.0.1:8600" : "");
@@ -362,6 +363,16 @@ export default function WatchClient({ mode }: { mode: Mode }) {
   const calendarInputRef = useRef<HTMLInputElement>(null);
   const playedKeys = useRef<Set<string>>(new Set());
   const toastTimer = useRef<number>();
+  const activeSheetRef = useRef<HTMLElement>(null);
+
+  useModalAccessibility(
+    settingsOpen || planListOpen,
+    () => {
+      setSettingsOpen(false);
+      setPlanListOpen(false);
+    },
+    activeSheetRef,
+  );
 
   const selectedPlan = useMemo(() => {
     if (!plans.length) return null;
@@ -721,8 +732,9 @@ export default function WatchClient({ mode }: { mode: Mode }) {
 
         {(settingsOpen || planListOpen) ? <div className="watch-sheet-backdrop" onClick={() => { setSettingsOpen(false); setPlanListOpen(false); }} /> : null}
 
-        <VoiceSettingsSheet
+        {settingsOpen ? <VoiceSettingsSheet
           open={settingsOpen}
+          sheetRef={activeSheetRef}
           voiceSettings={voiceSettings}
           setVoiceSettings={setVoiceSettings}
           voiceOptions={voiceOptions}
@@ -731,10 +743,11 @@ export default function WatchClient({ mode }: { mode: Mode }) {
           handlePreviewVoice={handlePreviewVoice}
           handleSaveVoiceSettings={handleSaveVoiceSettings}
           close={() => setSettingsOpen(false)}
-        />
+        /> : null}
 
-        <PlanListSheet
+        {planListOpen ? <PlanListSheet
           open={planListOpen}
+          sheetRef={activeSheetRef}
           plans={plans}
           selectedPlan={selectedPlan}
           goToPlan={goToPlan}
@@ -742,7 +755,7 @@ export default function WatchClient({ mode }: { mode: Mode }) {
           handleClearPlans={handleClearPlans}
           showToast={showToast}
           close={() => setPlanListOpen(false)}
-        />
+        /> : null}
 
         {toast ? <div className="watch-toast">{toast}</div> : null}
       </section>
@@ -1116,6 +1129,7 @@ function Stat({ label, value }: { label: string; value: string }) {
 
 function VoiceSettingsSheet(props: {
   open: boolean;
+  sheetRef: RefObject<HTMLElement>;
   voiceSettings: VoiceSettings;
   setVoiceSettings: Dispatch<SetStateAction<VoiceSettings>>;
   voiceOptions: VoiceSettingsPayload["options"];
@@ -1126,10 +1140,10 @@ function VoiceSettingsSheet(props: {
   close: () => void;
 }) {
   return (
-    <aside className={`watch-sheet ${props.open ? "open" : ""}`} role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
+    <aside className={`watch-sheet ${props.open ? "open" : ""}`} role="dialog" aria-modal="true" aria-labelledby="watch-settings-title" ref={props.sheetRef} tabIndex={-1} onClick={(event) => event.stopPropagation()}>
       <div className="watch-sheet-head">
         <div>
-          <h3>通知设置</h3>
+          <h3 id="watch-settings-title">通知设置</h3>
           <p>调整语音播报方式、试听文案和浏览器回退音色。</p>
         </div>
         <button type="button" aria-label="关闭设置" onClick={props.close}>
@@ -1177,6 +1191,7 @@ function VoiceSelect(props: { label: string; value: string; options: VoiceOption
 
 function PlanListSheet(props: {
   open: boolean;
+  sheetRef: RefObject<HTMLElement>;
   plans: WatchPlan[];
   selectedPlan: WatchPlan | null;
   goToPlan: (planId: string) => void;
@@ -1186,10 +1201,10 @@ function PlanListSheet(props: {
   close: () => void;
 }) {
   return (
-    <aside className={`watch-sheet ${props.open ? "open" : ""}`} role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
+    <aside className={`watch-sheet ${props.open ? "open" : ""}`} role="dialog" aria-modal="true" aria-labelledby="watch-plan-list-title" ref={props.sheetRef} tabIndex={-1} onClick={(event) => event.stopPropagation()}>
       <div className="watch-sheet-head">
         <div>
-          <h3>我的预案列表</h3>
+          <h3 id="watch-plan-list-title">我的预案列表</h3>
           <p>这里会保留已经生成的预案，方便你随时切换查看。</p>
         </div>
         <button type="button" aria-label="关闭预案列表" onClick={props.close}>
