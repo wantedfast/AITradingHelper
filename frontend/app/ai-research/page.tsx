@@ -41,7 +41,6 @@ export default function AiResearchPage() {
 function AiResearchPageContent() {
   const router = useRouter();
   const [selectedDate, setSelectedDate] = useState(todayIsoDate());
-  const [availableDates, setAvailableDates] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
   const [summary, setSummary] = useState<AiResearchSummary | null>(null);
@@ -145,7 +144,6 @@ function AiResearchPageContent() {
       const payload = await readJson<DatedListPayload>(response);
       if (!response.ok) throw new Error(formatError(payload, "读取 AI 研报失败"));
       if (requestId !== requestRef.current) return;
-      setAvailableDates(payload.available_dates || []);
       const nextBillingStatus = payload.billing_status || "no_data";
       setBillingStatus(nextBillingStatus);
       setBillingCost(payload.billing_cost || 0);
@@ -200,8 +198,7 @@ function AiResearchPageContent() {
           <div className="auction-topbar-actions">
             <label className="auction-date-picker">
               <CalendarDays />
-              <input type="date" value={selectedDate} max={todayIsoDate()} list="ai-research-available-dates" onChange={(event) => handleDateChange(event.target.value)} />
-              <datalist id="ai-research-available-dates">{availableDates.map((date) => <option value={date} key={date} />)}</datalist>
+              <input type="date" value={selectedDate} max={todayIsoDate()} onChange={(event) => handleDateChange(event.target.value)} />
             </label>
             <button type="button" onClick={() => void loadReports()} disabled={loading}>{loading ? <Loader2 className="spin-icon" /> : <RefreshCcw />}<span>刷新研报</span></button>
           </div>
