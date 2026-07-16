@@ -600,6 +600,8 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
         self._json(
             {
                 "ok": True,
+                "success": True,
+                "stored": True,
                 "run_id": run_id,
                 "market_date": report["market_date"],
                 "status": "done",
@@ -702,7 +704,16 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                     recovered=True,
                 )
         self._json(
-            {"ok": True, "report": _ai_research_public_report(report), "email_campaign": email_campaign},
+            {
+                "ok": True,
+                "success": True,
+                "stored": True,
+                "run_id": run_id,
+                "research_date": report["research_date"],
+                "status": "done",
+                "report": _ai_research_public_report(report),
+                "email_campaign": email_campaign,
+            },
             status=202,
         )
 
