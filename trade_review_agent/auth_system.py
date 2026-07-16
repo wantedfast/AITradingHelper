@@ -1330,6 +1330,61 @@ def admin_dashboard(db_path: Path, days: int = 14) -> dict[str, Any]:
             }
             for row in frequent_rows
         ]
+        recent_usage_rows = conn.execute(
+            """
+            WITH ranked_events AS (
+                SELECT e.*,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY e.user_id, e.feature,
+                               CASE
+                                   WHEN TRIM(COALESCE(e.related_id, '')) = '' THEN printf('event:%d', e.id)
+                                   ELSE 'related:' || e.related_id
+                               END
+                           ORDER BY e.created_at ASC, e.id ASC
+                       ) AS use_rank
+                FROM usage_events e
+                WHERE e.status IN (?, ?)
+            )
+            SELECT e.id, e.user_id, e.feature, e.credits_spent, e.status,
+                   e.related_id, e.created_at,
+                   u.username, u.email, u.phone
+            FROM ranked_events e
+            JOIN users u ON u.id = e.user_id
+            WHERE e.use_rank = 1
+              AND u.role = 'user'
+              AND e.created_at >= ?
+              AND e.created_at < ?
+            ORDER BY e.created_at DESC, e.id DESC
+            LIMIT 200
+            """,
+            (*successful_statuses, start_date, end_exclusive),
+        ).fetchall()
+        recent_usage_events = []
+        for row in recent_usage_rows:
+            created_at = str(row["created_at"] or "")
+            time_text = created_at[11:19] if len(created_at) >= 19 else ""
+            feature = str(row["feature"] or "")
+            username = str(row["username"] or "").strip()
+            email = str(row["email"] or "").strip()
+            phone = str(row["phone"] or "").strip()
+            recent_usage_events.append(
+                {
+                    "id": int(row["id"]),
+                    "user_id": int(row["user_id"]),
+                    "username": username,
+                    "email": email,
+                    "phone": phone,
+                    "display_name": username or email or phone or f"用户 {int(row['user_id'])}",
+                    "feature": feature,
+                    "credits_spent": int(row["credits_spent"] or 0),
+                    "status": str(row["status"] or ""),
+                    "related_id": str(row["related_id"] or ""),
+                    "used_at": created_at,
+                    "market_session": (
+                        "before_open" if time_text and time_text < "09:30:00" else "after_open"
+                    ) if feature == "auction_strength_view" else None,
+                }
+            )
         daily_top5_campaign_rows = conn.execute(
             "SELECT id FROM daily_top5_email_campaigns ORDER BY trade_date DESC, id DESC LIMIT 20"
         ).fetchall()
@@ -1370,6 +1425,7 @@ def admin_dashboard(db_path: Path, days: int = 14) -> dict[str, Any]:
                     "by_day": growth_by_day,
                 },
                 "high_frequency_users": high_frequency_users,
+                "recent_usage_events": recent_usage_events,
             },
             "credit_grant_campaigns": [
                 _credit_grant_campaign_payload(row)

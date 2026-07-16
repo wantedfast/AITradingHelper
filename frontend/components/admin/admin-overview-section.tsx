@@ -1,10 +1,10 @@
 "use client";
 
 import type { EChartsOption } from "echarts";
-import { BarChart3, CreditCard, Gift, MessageSquare, PieChart, TrendingUp, Users } from "lucide-react";
-import { useMemo } from "react";
+import { BarChart3, Clock3, CreditCard, Gift, MessageSquare, PieChart, TrendingUp, Users } from "lucide-react";
+import { useMemo, useState } from "react";
 import { AdminAnalyticsChart } from "./admin-analytics-chart";
-import type { FeatureUsagePoint, FeatureUsageTotal, UserGrowthPoint } from "./admin-analytics-types";
+import type { FeatureUsagePoint, FeatureUsageTotal, RecentUsageEvent, UserGrowthPoint } from "./admin-analytics-types";
 import type { AdminSection } from "./admin-navigation";
 
 type OverviewProps = {
@@ -19,11 +19,13 @@ type OverviewProps = {
   failedDailyTop5Emails: number;
   onNavigate: (section: AdminSection) => void;
   featureLabel: (value: string) => string;
+  recentUsageEvents: RecentUsageEvent[];
 };
 
 const chartColors = ["#f5d77a", "#55d6a8", "#79a9ff", "#f39a72", "#c897e8", "#88c7d8", "#e3b85d"];
 
 export function AdminOverviewSection(props: OverviewProps) {
+  const [usageFeature, setUsageFeature] = useState("all");
   const featureTrendOption = useMemo(
     () => buildFeatureTrendOption(props.featureUsage.byDay, props.featureLabel),
     [props.featureUsage.byDay, props.featureLabel],
@@ -39,6 +41,9 @@ export function AdminOverviewSection(props: OverviewProps) {
   const featureTotal = props.featureUsage.totals.reduce((sum, item) => sum + item.count, 0);
   const hasFeatureUsage = featureTotal > 0;
   const hasUserGrowth = props.userGrowth.byDay.some((item) => item.new_users > 0 || item.cumulative_users > 0);
+  const filteredUsageEvents = usageFeature === "all"
+    ? props.recentUsageEvents
+    : props.recentUsageEvents.filter((item) => item.feature === usageFeature);
 
   return (
     <section className={`admin-section admin-section--overview${props.active ? " is-active" : ""}`}>
@@ -102,8 +107,56 @@ export function AdminOverviewSection(props: OverviewProps) {
           />
         </article>
       </section>
+
+      <article className="admin-panel admin-usage-timeline">
+        <div className="admin-panel-head admin-usage-timeline-head">
+          <Clock3 />
+          <div>
+            <h2>最近功能使用时间</h2>
+            <p>记录用户首次成功使用的北京时间；重复刷新不会重复计算。</p>
+          </div>
+          <label>
+            <span>筛选功能</span>
+            <select value={usageFeature} onChange={(event) => setUsageFeature(event.target.value)}>
+              <option value="all">全部功能</option>
+              {props.featureUsage.totals.map((item) => (
+                <option value={item.feature} key={item.feature}>{props.featureLabel(item.feature)}</option>
+              ))}
+            </select>
+          </label>
+        </div>
+        <div className="admin-usage-timeline-table">
+          <div className="admin-usage-timeline-row admin-usage-timeline-row--head" aria-hidden="true">
+            <span>用户</span><span>功能</span><span>使用时间</span><span>状态</span>
+          </div>
+          {filteredUsageEvents.map((item) => (
+            <div className="admin-usage-timeline-row" key={item.id}>
+              <span data-label="用户"><b>{item.display_name}</b><small>用户 ID {item.user_id}</small></span>
+              <span data-label="功能"><b>{props.featureLabel(item.feature)}</b>{item.market_session ? <em className={item.market_session}>{item.market_session === "before_open" ? "开盘前" : "开盘后"}</em> : null}</span>
+              <span data-label="使用时间"><b>{formatUsageTime(item.used_at)}</b></span>
+              <span data-label="状态"><b>{item.status === "membership_free" ? "会员免扣" : `扣 ${item.credits_spent} 次`}</b></span>
+            </div>
+          ))}
+          {!filteredUsageEvents.length ? <div className="admin-filter-empty">当前周期内暂无该功能的成功使用记录。</div> : null}
+        </div>
+      </article>
     </section>
   );
+}
+
+function formatUsageTime(value: string) {
+  if (!value) return "--";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(date);
 }
 
 function PriorityCard({ label, count, onClick }: { label: string; count: number; onClick: () => void }) {

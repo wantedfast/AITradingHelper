@@ -9,7 +9,7 @@ import { useModalAccessibility } from "@/lib/modal-accessibility";
 import { AdminNavigation, adminSections, type AdminSection } from "@/components/admin/admin-navigation";
 import { AdminOverviewSection } from "@/components/admin/admin-overview-section";
 import { AdminFeedbackSection, AdminOrdersSection, AdminUpdatesSection, AdminUsersSection } from "@/components/admin/admin-sections";
-import type { AdminAnalytics, FeatureUsagePoint, FeatureUsageTotal, HighFrequencyUser, UserGrowthPoint } from "@/components/admin/admin-analytics-types";
+import type { AdminAnalytics, FeatureUsagePoint, FeatureUsageTotal, HighFrequencyUser, RecentUsageEvent, UserGrowthPoint } from "@/components/admin/admin-analytics-types";
 
 type DashboardPayload = {
   totals: {
@@ -475,7 +475,7 @@ export default function AdminPage() {
 
         {data && (
           <>
-            <AdminOverviewSection active={section === "overview"} totals={data.totals} featureUsage={analytics!.featureUsage} userGrowth={analytics!.userGrowth} days={days} pendingOrders={pendingMembershipOrders.length} pendingFeedback={pendingFeedback.length} failedEmails={failedEmailTasks.length} failedDailyTop5Emails={failedDailyTop5EmailCount} onNavigate={changeSection} featureLabel={featureLabel} />
+            <AdminOverviewSection active={section === "overview"} totals={data.totals} featureUsage={analytics!.featureUsage} userGrowth={analytics!.userGrowth} recentUsageEvents={analytics!.recentUsageEvents} days={days} pendingOrders={pendingMembershipOrders.length} pendingFeedback={pendingFeedback.length} failedEmails={failedEmailTasks.length} failedDailyTop5Emails={failedDailyTop5EmailCount} onNavigate={changeSection} featureLabel={featureLabel} />
 
             <AdminUsersSection
               active={section === "users"}
@@ -582,6 +582,7 @@ function normalizeDashboardAnalytics(data: DashboardPayload): {
   featureUsage: { totals: FeatureUsageTotal[]; byDay: FeatureUsagePoint[] };
   userGrowth: { startingUsers: number; totalUsers: number; byDay: UserGrowthPoint[] };
   highFrequencyUsers: HighFrequencyUser[];
+  recentUsageEvents: RecentUsageEvent[];
 } {
   const featureByDay = data.analytics?.feature_usage?.by_day || data.usage_by_day || [];
   const featureTotals = data.analytics?.feature_usage?.totals || deriveFeatureTotals(featureByDay);
@@ -626,6 +627,7 @@ function normalizeDashboardAnalytics(data: DashboardPayload): {
       byDay: userGrowth,
     },
     highFrequencyUsers,
+    recentUsageEvents: data.analytics?.recent_usage_events || [],
   };
 }
 
