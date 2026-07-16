@@ -1923,28 +1923,22 @@ def notify_admin_membership_payment(*, order: dict[str, Any], user: dict[str, An
             f"付款备注：{order.get('payer_note') or ''}\n"
             f"管理后台：{admin_url}\n"
         )
-        html = f"""
-        <html>
-          <body style="font-family:Arial,'Microsoft YaHei',sans-serif;background:#050505;color:#f4f0e8;padding:24px;">
-            <div style="max-width:640px;margin:auto;border:1px solid #c9a64655;border-radius:16px;padding:24px;background:#111;">
-              <h2 style="margin:0 0 16px;color:#f5d77a;">用户已付款待确认</h2>
-              <p>请核对支付宝/微信到账后，再到管理台确认开通会员。</p>
-              <p><strong>订单号：</strong>{_html_escape(str(order.get('order_no') or ''))}</p>
-              <p><strong>用户：</strong>{_html_escape(str(user_label))}</p>
-              <p><strong>账号：</strong>{_html_escape(str(user.get('phone') or ''))}</p>
-              <p><strong>邮箱：</strong>{_html_escape(str(user.get('email') or ''))}</p>
-              <p><strong>套餐：</strong>{_html_escape(str(order.get('plan_name') or ''))}</p>
-              <p><strong>应付金额：</strong>¥{amount:.2f}</p>
-              <p><strong>支付方式：</strong>{_html_escape(payment_method)}</p>
-              <p><strong>付款人：</strong>{_html_escape(str(order.get('payer_name') or ''))}</p>
-              <p><strong>付款时间：</strong>{_html_escape(str(order.get('payer_paid_at') or ''))}</p>
-              <p><strong>实付金额：</strong>¥{submitted_amount:.2f}</p>
-              <p><strong>付款备注：</strong>{_html_escape(str(order.get('payer_note') or ''))}</p>
-              <p><strong>管理后台：</strong>{_html_escape(admin_url)}</p>
-            </div>
-          </body>
-        </html>
-        """
+        html = _light_email_document(f"""
+          <h1 style="margin:0 0 20px;color:#1f2328;font-size:24px;line-height:1.35;">用户已付款待确认</h1>
+          <p style="margin:0 0 20px;color:#1f2328;line-height:1.7;">请核对支付宝/微信到账后，再到管理台确认开通会员。</p>
+          <p style="margin:8px 0;color:#1f2328;"><strong>订单号：</strong>{_html_escape(str(order.get('order_no') or ''))}</p>
+          <p style="margin:8px 0;color:#1f2328;"><strong>用户：</strong>{_html_escape(str(user_label))}</p>
+          <p style="margin:8px 0;color:#1f2328;"><strong>账号：</strong>{_html_escape(str(user.get('phone') or ''))}</p>
+          <p style="margin:8px 0;color:#1f2328;"><strong>邮箱：</strong>{_html_escape(str(user.get('email') or ''))}</p>
+          <p style="margin:8px 0;color:#1f2328;"><strong>套餐：</strong>{_html_escape(str(order.get('plan_name') or ''))}</p>
+          <p style="margin:8px 0;color:#1f2328;"><strong>应付金额：</strong>¥{amount:.2f}</p>
+          <p style="margin:8px 0;color:#1f2328;"><strong>支付方式：</strong>{_html_escape(payment_method)}</p>
+          <p style="margin:8px 0;color:#1f2328;"><strong>付款人：</strong>{_html_escape(str(order.get('payer_name') or ''))}</p>
+          <p style="margin:8px 0;color:#1f2328;"><strong>付款时间：</strong>{_html_escape(str(order.get('payer_paid_at') or ''))}</p>
+          <p style="margin:8px 0;color:#1f2328;"><strong>实付金额：</strong>¥{submitted_amount:.2f}</p>
+          <p style="margin:8px 0;color:#1f2328;"><strong>付款备注：</strong>{_html_escape(str(order.get('payer_note') or ''))}</p>
+          <p style="margin:20px 0 0;color:#1f2328;"><strong>管理后台：</strong><a href="{_html_escape(admin_url)}" style="color:#0969da;text-decoration:underline;">{_html_escape(admin_url)}</a></p>
+        """, max_width=640)
         provider = os.getenv("EMAIL_PROVIDER", "smtp").strip().lower() or "smtp"
         if provider in {"log", "debug", "local"}:
             _write_email_debug_log(admin_email, text, None)
@@ -2275,18 +2269,12 @@ def _send_email_code(email: str, code: str, log_path: Path | None) -> dict[str, 
 def _send_smtp_email(email: str, code: str) -> None:
     subject = "盈航登录注册验证码"
     text = f"你的盈航验证码是：{code}\n\n验证码 {EMAIL_CODE_TTL_MINUTES} 分钟内有效。若不是你本人操作，请忽略这封邮件。\n"
-    html = f"""
-        <html>
-          <body style="font-family:Arial,'Microsoft YaHei',sans-serif;background:#050505;color:#f4f0e8;padding:24px;">
-            <div style="max-width:520px;margin:auto;border:1px solid #c9a64655;border-radius:16px;padding:24px;background:#111;">
-              <h2 style="margin:0 0 16px;color:#f5d77a;">盈航验证码</h2>
-              <p>你的验证码是：</p>
-              <p style="font-size:32px;letter-spacing:6px;font-weight:800;color:#f5d77a;">{code}</p>
-              <p>验证码 {EMAIL_CODE_TTL_MINUTES} 分钟内有效。若不是你本人操作，请忽略这封邮件。</p>
-            </div>
-          </body>
-        </html>
-        """
+    html = _light_email_document(f"""
+      <h1 style="margin:0 0 20px;color:#1f2328;font-size:24px;line-height:1.35;">盈航验证码</h1>
+      <p style="margin:0 0 12px;color:#1f2328;line-height:1.7;">你的验证码是：</p>
+      <p style="margin:0 0 20px;color:#1f2328;font-size:32px;line-height:1.3;letter-spacing:6px;font-weight:700;">{_html_escape(code)}</p>
+      <p style="margin:0;color:#1f2328;line-height:1.7;">验证码 {EMAIL_CODE_TTL_MINUTES} 分钟内有效。若不是你本人操作，请忽略这封邮件。</p>
+    """, max_width=520)
     _send_smtp_message(email, subject=subject, text=text, html=html)
 
 
@@ -2307,20 +2295,14 @@ def notify_credit_added(db_path: Path, *, user_id: int, credits: int, reason: st
             f"当前剩余次数：{balance} 次。\n\n"
             "如有疑问，请联系平台管理员。\n"
         )
-        html = f"""
-        <html>
-          <body style="font-family:Arial,'Microsoft YaHei',sans-serif;background:#050505;color:#f4f0e8;padding:24px;">
-            <div style="max-width:560px;margin:auto;border:1px solid #c9a64655;border-radius:16px;padding:24px;background:#111;">
-              <h2 style="margin:0 0 16px;color:#f5d77a;">盈航使用次数已增加</h2>
-              <p>{username}，你好：</p>
-              <p>你的盈航账号已增加 <strong style="color:#f5d77a;font-size:20px;">{credits}</strong> 次使用机会。</p>
-              <p><strong>增加原因：</strong>{_html_escape(reason)}</p>
-              <p><strong>当前剩余次数：</strong>{balance} 次。</p>
-              <p style="color:#aaa;font-size:13px;">如有疑问，请联系平台管理员。</p>
-            </div>
-          </body>
-        </html>
-        """
+        html = _light_email_document(f"""
+          <h1 style="margin:0 0 20px;color:#1f2328;font-size:24px;line-height:1.35;">盈航使用次数已增加</h1>
+          <p style="margin:0 0 16px;color:#1f2328;line-height:1.7;">{_html_escape(username)}，你好：</p>
+          <p style="margin:0 0 16px;color:#1f2328;line-height:1.7;">你的盈航账号已增加 <strong style="color:#1f2328;font-size:20px;">{credits}</strong> 次使用机会。</p>
+          <p style="margin:8px 0;color:#1f2328;"><strong>增加原因：</strong>{_html_escape(reason)}</p>
+          <p style="margin:8px 0;color:#1f2328;"><strong>当前剩余次数：</strong>{balance} 次。</p>
+          <p style="margin:20px 0 0;color:#57606a;font-size:13px;line-height:1.6;">如有疑问，请联系平台管理员。</p>
+        """, max_width=560)
         _send_smtp_message(email, subject="盈航使用次数已增加", text=text, html=html)
         return {"sent": True, "email": _mask_email(email)}
     except Exception as exc:
@@ -2426,6 +2408,35 @@ def _html_escape(value: str) -> str:
         .replace(">", "&gt;")
         .replace('"', "&quot;")
     )
+
+
+def _light_email_document(content_html: str, *, max_width: int = 640) -> str:
+    """Wrap HTML email content in a conservative, explicitly light document."""
+    return f"""<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <meta name="supported-color-schemes" content="light">
+    <style>:root {{ color-scheme: light; supported-color-schemes: light; }}</style>
+  </head>
+  <body bgcolor="#ffffff" style="margin:0;padding:0;background-color:#ffffff;color:#1f2328;font-family:Arial,'Microsoft YaHei',sans-serif;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#ffffff" style="width:100%;background-color:#ffffff;color:#1f2328;">
+      <tr>
+        <td align="center" bgcolor="#ffffff" style="padding:24px 16px;background-color:#ffffff;color:#1f2328;">
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#ffffff" style="width:100%;max-width:{int(max_width)}px;background-color:#ffffff;color:#1f2328;">
+            <tr>
+              <td bgcolor="#ffffff" style="padding:0;background-color:#ffffff;color:#1f2328;font-size:16px;line-height:1.6;">
+                {content_html}
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>"""
 
 
 def _mask_email(email: str) -> str:
@@ -2857,18 +2868,18 @@ def _send_update_notice_email(
         raise AuthError("PUBLIC_SITE_URL 未配置", 500)
     text_items = "\n".join(f"- {item}" for item in items)
     text = f"盈航产品更新：{title}\n\n版本/日期：{version}\n\n{text_items}\n\n查看网站：{site_url}\n"
-    html_items = "".join(f"<li style='margin:8px 0'>{_html_escape(item)}</li>" for item in items)
-    html = f"""
-    <html><body style="font-family:Arial,'Microsoft YaHei',sans-serif;background:#050505;color:#f4f0e8;padding:24px;">
-      <div style="max-width:600px;margin:auto;border:1px solid #c9a64655;border-radius:16px;padding:24px;background:#111;">
-        <div style="color:#f5d77a;font-size:13px;letter-spacing:2px;">盈航 · 产品更新</div>
-        <h2 style="color:#f5d77a;">{_html_escape(title)}</h2>
-        <p style="color:#aaa;">{_html_escape(version)}</p><ul>{html_items}</ul>
-        <p><a href="{_html_escape(site_url)}" style="color:#f5d77a;">打开盈航查看</a></p>
-        <p style="color:#888;font-size:12px;">你可以登录盈航，在账户菜单中关闭产品更新邮件。</p>
-      </div>
-    </body></html>
-    """
+    html_items = "".join(
+        f'<li style="margin:8px 0;color:#1f2328;line-height:1.7;">{_html_escape(item)}</li>' for item in items
+    )
+    html = _light_email_document(f"""
+      <p style="margin:0 0 8px;color:#57606a;font-size:13px;">盈航 · 产品更新</p>
+      <h1 style="margin:0 0 12px;color:#1f2328;font-size:24px;line-height:1.35;">{_html_escape(title)}</h1>
+      <p style="margin:0 0 20px;color:#57606a;font-size:14px;">{_html_escape(version)}</p>
+      <ul style="margin:0 0 20px;padding-left:24px;color:#1f2328;">{html_items}</ul>
+      <p style="margin:0 0 8px;color:#1f2328;"><a href="{_html_escape(site_url)}" style="color:#0969da;text-decoration:underline;">打开盈航查看</a></p>
+      <p style="margin:0 0 20px;color:#57606a;font-size:13px;word-break:break-all;">{_html_escape(site_url)}</p>
+      <p style="margin:0;color:#57606a;font-size:12px;line-height:1.6;">你可以登录盈航，在账户菜单中关闭产品更新邮件。</p>
+    """, max_width=600)
     send = smtp_session.send if smtp_session is not None else _send_smtp_message
     send(str(delivery["email"]), subject=f"盈航产品更新｜{title}", text=text, html=html)
 
@@ -2910,7 +2921,7 @@ def _send_daily_top5_email(
 
     if is_full:
         text_rows = []
-        html_rows = []
+        html_stock_sections = []
         for index, stock in enumerate(strong_stocks, start=1):
             if not isinstance(stock, dict):
                 continue
@@ -2925,13 +2936,15 @@ def _send_daily_top5_email(
                 f"{rank}. {name}（{code}）｜题材：{theme}｜竞价涨幅：{change}\n"
                 f"   入选理由：{reason}\n   9:30 后观察：{observe}"
             )
-            html_rows.append(
-                "<tr>"
-                f"<td>{_html_escape(rank)}</td><td><strong>{_html_escape(name)}</strong><br>{_html_escape(code)}</td>"
-                f"<td>{_html_escape(theme)}</td><td>{_html_escape(change)}</td>"
-                f"<td>{_html_escape(reason)}</td><td>{_html_escape(observe)}</td>"
-                "</tr>"
-            )
+            html_stock_sections.append(f"""
+              <div style="margin:0 0 24px;color:#1f2328;">
+                <h3 style="margin:0 0 10px;color:#1f2328;font-size:18px;line-height:1.5;">{_html_escape(rank)}. {_html_escape(name)}（{_html_escape(code)}）</h3>
+                <p style="margin:6px 0;color:#1f2328;line-height:1.7;"><strong>题材：</strong>{_html_escape(theme)}</p>
+                <p style="margin:6px 0;color:#1f2328;line-height:1.7;"><strong>竞价涨幅：</strong>{_html_escape(change)}</p>
+                <p style="margin:6px 0;color:#1f2328;line-height:1.7;"><strong>入选理由：</strong>{_html_escape(reason)}</p>
+                <p style="margin:6px 0;color:#1f2328;line-height:1.7;"><strong>9:30 后观察：</strong>{_html_escape(observe)}</p>
+              </div>
+            """)
         conclusion_items = [
             ("最强个股", conclusion.get("strongest_stock_at_925")),
             ("最强题材", conclusion.get("strongest_theme_cluster")),
@@ -2942,7 +2955,7 @@ def _send_daily_top5_email(
         ]
         text_conclusion = "\n".join(f"- {label}：{value or '-'}" for label, value in conclusion_items)
         html_conclusion = "".join(
-            f"<li style='margin:8px 0'><strong>{_html_escape(label)}：</strong>{_html_escape(value or '-')}</li>"
+            f'<li style="margin:8px 0;color:#1f2328;line-height:1.7;"><strong>{_html_escape(label)}：</strong>{_html_escape(value or "-")}</li>'
             for label, value in conclusion_items
         )
         text = (
@@ -2952,13 +2965,11 @@ def _send_daily_top5_email(
             "可登录盈航，在账户菜单中关闭邮件推送。"
         )
         body_html = f"""
-          <p style="color:#ddd;line-height:1.7">{_html_escape(teaser)}</p>
-          <h3 style="color:#f5d77a">今日强势标的</h3>
-          <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">
-            <thead><tr style="background:#262113;color:#f5d77a"><th>排名</th><th>标的</th><th>题材</th><th>竞价涨幅</th><th>入选理由</th><th>9:30 后观察</th></tr></thead>
-            <tbody>{''.join(html_rows)}</tbody>
-          </table></div>
-          <h3 style="color:#f5d77a">全局结论</h3><ul style="padding-left:20px">{html_conclusion}</ul>
+          <p style="margin:0 0 24px;color:#1f2328;line-height:1.7;">{_html_escape(teaser)}</p>
+          <h2 style="margin:0 0 16px;color:#1f2328;font-size:20px;line-height:1.4;">今日强势标的</h2>
+          {''.join(html_stock_sections)}
+          <h2 style="margin:28px 0 12px;color:#1f2328;font-size:20px;line-height:1.4;">全局结论</h2>
+          <ul style="margin:0 0 20px;padding-left:24px;color:#1f2328;">{html_conclusion}</ul>
         """
     else:
         text = (
@@ -2968,26 +2979,21 @@ def _send_daily_top5_email(
             "可登录盈航，在账户菜单中关闭邮件推送。"
         )
         body_html = f"""
-          <p style="font-size:20px;color:#f5d77a;font-weight:bold">今日 TOP5 已生成</p>
-          <p style="color:#ddd;line-height:1.7">{_html_escape(teaser)}</p>
-          <div style="margin:18px 0;padding:14px;border:1px solid #c9a64655;border-radius:10px;color:#f5d77a">
-            开通会员后，可在邮件中直接查看完整 5 只强势标的与全局结论。
-          </div>
+          <h2 style="margin:0 0 12px;color:#1f2328;font-size:20px;line-height:1.4;">今日 TOP5 已生成</h2>
+          <p style="margin:0 0 16px;color:#1f2328;line-height:1.7;">{_html_escape(teaser)}</p>
+          <p style="margin:0 0 20px;color:#1f2328;line-height:1.7;">开通会员后，可在邮件中直接查看完整 5 只强势标的与全局结论。</p>
         """
 
-    html = f"""
-    <html><body style="margin:0;background:#050505;color:#f4f0e8;font-family:Arial,'Microsoft YaHei',sans-serif;padding:20px">
-      <div style="max-width:720px;margin:auto;border:1px solid #c9a64655;border-radius:16px;padding:24px;background:#111">
-        <div style="color:#f5d77a;font-size:13px;letter-spacing:2px">盈航 · DAILY TOP 5</div>
-        <h2 style="margin-bottom:6px;color:#f5d77a">每日 TOP5｜{_html_escape(trade_date)}</h2>
-        <p style="color:#999;font-size:13px">生成时间：{_html_escape(analysis_time or '-')}</p>
-        {body_html}
-        <p style="margin:24px 0"><a href="{_html_escape(report_url)}" style="display:inline-block;background:#e3bd4f;color:#080808;text-decoration:none;font-weight:bold;padding:12px 18px;border-radius:8px">打开盈航查看</a></p>
-        <p style="color:#888;font-size:12px;line-height:1.6">{_html_escape(disclaimer)}</p>
-        <p style="color:#777;font-size:12px">可登录盈航，在账户菜单中关闭“邮件推送（产品更新与每日 TOP5）”。</p>
-      </div>
-    </body></html>
-    """
+    html = _light_email_document(f"""
+      <p style="margin:0 0 8px;color:#57606a;font-size:13px;">盈航 · DAILY TOP 5</p>
+      <h1 style="margin:0 0 8px;color:#1f2328;font-size:24px;line-height:1.35;">每日 TOP5｜{_html_escape(trade_date)}</h1>
+      <p style="margin:0 0 24px;color:#57606a;font-size:13px;">生成时间：{_html_escape(analysis_time or '-')}</p>
+      {body_html}
+      <p style="margin:24px 0 8px;color:#1f2328;"><a href="{_html_escape(report_url)}" style="color:#0969da;text-decoration:underline;">打开盈航查看</a></p>
+      <p style="margin:0 0 20px;color:#57606a;font-size:13px;word-break:break-all;">{_html_escape(report_url)}</p>
+      <p style="margin:0 0 12px;color:#57606a;font-size:12px;line-height:1.6;">{_html_escape(disclaimer)}</p>
+      <p style="margin:0;color:#57606a;font-size:12px;line-height:1.6;">可登录盈航，在账户菜单中关闭“邮件推送（产品更新与每日 TOP5）”。</p>
+    """, max_width=720)
     send = smtp_session.send if smtp_session is not None else _send_smtp_message
     send(str(delivery["email"]), subject=f"盈航每日 TOP5｜{trade_date}", text=text, html=html)
 
