@@ -567,6 +567,32 @@ test.describe("dated report access controls", () => {
     await expectNoGlobalHorizontalOverflow(page, "Daily TOP5 waiting action");
   });
 
+  test("Daily TOP5 email links open the requested date without charging", async ({ page }) => {
+    await installStableApiFixtures(page);
+    const requestedDates: string[] = [];
+    let acknowledgementCount = 0;
+    await page.route("**/api/auction-strength/ack", (route) => {
+      acknowledgementCount += 1;
+      return json(route, { ok: true });
+    });
+    await page.route("**/api/auction-strength?**", (route) => {
+      requestedDates.push(new URL(route.request().url()).searchParams.get("date") || "");
+      return json(route, {
+        latest: null,
+        reports: [],
+        count: 0,
+        total: 0,
+        billing_status: "no_data",
+        billing_cost: 0,
+        user: fixtureUser,
+      });
+    });
+    await page.goto("/auction-strength?date=2026-07-14", { waitUntil: "domcontentloaded" });
+    await expect(page.locator('.auction-date-picker input[type="date"]')).toHaveValue("2026-07-14");
+    await expect.poll(() => requestedDates).toContain("2026-07-14");
+    expect(acknowledgementCount).toBe(0);
+  });
+
   test("AI report date fields use the native calendar without suggestion dropdowns", async ({ page }) => {
     await installStableApiFixtures(page);
     for (const path of ["/market-day", "/ai-research"]) {
@@ -660,6 +686,32 @@ test.describe("independent admin access", () => {
     await expect(page.getByText("这段时间还没有功能使用记录。")).toBeVisible();
     await expect(page.getByText("暂无可统计的功能使用。")).toBeVisible();
     await expect(page.getByText("这段时间还没有用户增长数据。")).toBeVisible();
+  });
+
+  test("admin shows Daily TOP5 mail delivery counts and retries failures", async ({ page }) => {
+    await installStableApiFixtures(page);
+    let retriedCampaignId = "";
+    await page.route("**/api/admin/daily-top5-email-campaigns/*/retry", (route) => {
+      retriedCampaignId = new URL(route.request().url()).pathname.split("/").at(-2) || "";
+      return json(route, { email_campaign: { id: 17, status: "pending" } });
+    });
+    await page.route("**/api/admin/dashboard**", (route) => json(route, {
+      totals: { users: 2, credits: 20, feedback_pending: 0, orders_paid: 0 },
+      usage_by_day: [], new_users_by_day: [], feedback: [], orders: [], top_users: [], credit_grant_campaigns: [], update_notices: [],
+      daily_top5_email_failed_count: 1,
+      daily_top5_email_campaigns: [{
+        id: 17, trade_date: "2026-07-16", report_id: "report-17", status: "partial_failed",
+        total: 6, pending: 0, sending: 0, sent: 4, failed: 1, skipped: 1, full: 2, teaser: 4,
+        created_at: "2026-07-16T09:26:00+08:00", started_at: null, finished_at: null,
+      }],
+    }));
+    await page.goto("/admin?section=updates&days=30", { waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("heading", { name: "每日 TOP5 邮件推送" })).toBeVisible();
+    await expect(page.getByText("会员完整版 2 · 普通用户摘要版 4")).toBeVisible();
+    await expect(page.getByText("成功 4 · 待发送 0 · 失败 1 · 跳过 1")).toBeVisible();
+    await page.getByRole("button", { name: "重试失败邮件" }).click();
+    await expect.poll(() => retriedCampaignId).toBe("17");
+    await expectNoGlobalHorizontalOverflow(page, "Daily TOP5 email campaigns");
   });
 
   test("update notice actions use a spaced equal-width mobile layout", async ({ page }) => {

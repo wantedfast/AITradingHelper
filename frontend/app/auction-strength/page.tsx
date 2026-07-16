@@ -147,6 +147,15 @@ function todayIsoDate() {
   return `${today.getFullYear()}-${`${today.getMonth() + 1}`.padStart(2, "0")}-${`${today.getDate()}`.padStart(2, "0")}`;
 }
 
+function isValidIsoDate(value: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const [year, month, day] = value.split("-").map(Number);
+  const candidate = new Date(Date.UTC(year, month - 1, day));
+  return candidate.getUTCFullYear() === year
+    && candidate.getUTCMonth() === month - 1
+    && candidate.getUTCDate() === day;
+}
+
 function normalizeChangeNumber(value: string | number | undefined) {
   if (typeof value === "number") return value;
   if (!value) return Number.NaN;
@@ -191,6 +200,7 @@ export default function AuctionStrengthPage() {
   const [reports, setReports] = useState<AuctionReport[]>([]);
   const [selectedId, setSelectedId] = useState("");
   const [selectedDate, setSelectedDate] = useState(todayIsoDate());
+  const [dateQueryReady, setDateQueryReady] = useState(false);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState("");
   const [billingStatus, setBillingStatus] = useState<BillingStatus>("no_data");
@@ -228,7 +238,9 @@ export default function AuctionStrengthPage() {
   const excludedCount = themeGate?.excluded_theme_count ?? excludedThemes.length;
 
   function handleDateChange(value: string) {
-    setSelectedDate(value);
+    const nextDate = isValidIsoDate(value) ? value : todayIsoDate();
+    setSelectedDate(nextDate);
+    router.replace(`/auction-strength?date=${nextDate}`, { scroll: false });
     setLatest(null);
     setReports([]);
     setSelectedId("");
@@ -310,14 +322,26 @@ export default function AuctionStrengthPage() {
   }, [router, selectedDate]);
 
   useEffect(() => {
-    loadReports();
-  }, [loadReports]);
+    const params = new URLSearchParams(window.location.search);
+    const queryDate = params.get("date");
+    const nextDate = queryDate && isValidIsoDate(queryDate) ? queryDate : todayIsoDate();
+    setSelectedDate(nextDate);
+    setDateQueryReady(true);
+    if (queryDate && queryDate !== nextDate) {
+      router.replace(`/auction-strength?date=${nextDate}`, { scroll: false });
+    }
+  }, [router]);
 
   useEffect(() => {
-    if (!isToday) return;
+    if (!dateQueryReady) return;
+    loadReports();
+  }, [dateQueryReady, loadReports]);
+
+  useEffect(() => {
+    if (!dateQueryReady || !isToday) return;
     const timer = window.setInterval(() => loadReports(true), 10000);
     return () => window.clearInterval(timer);
-  }, [isToday, loadReports]);
+  }, [dateQueryReady, isToday, loadReports]);
 
   return (
     <main className="review-workbench-page auction-page">

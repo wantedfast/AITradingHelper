@@ -16,6 +16,7 @@ type OverviewProps = {
   pendingOrders: number;
   pendingFeedback: number;
   failedEmails: number;
+  failedDailyTop5Emails: number;
   onNavigate: (section: AdminSection) => void;
   featureLabel: (value: string) => string;
 };
@@ -45,6 +46,7 @@ export function AdminOverviewSection(props: OverviewProps) {
         <PriorityCard label="待确认会员订单" count={props.pendingOrders} onClick={() => props.onNavigate("orders")} />
         <PriorityCard label="待处理反馈" count={props.pendingFeedback} onClick={() => props.onNavigate("feedback")} />
         <PriorityCard label="失败邮件任务" count={props.failedEmails} onClick={() => props.onNavigate("updates")} />
+        <PriorityCard label="失败 TOP5 邮件" count={props.failedDailyTop5Emails} onClick={() => props.onNavigate("updates")} />
       </section>
       <section className="admin-metrics">
         <Metric icon={Users} label="普通用户" value={props.totals.users} />
