@@ -2,13 +2,14 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ExternalLink, Gift, LogOut, Megaphone, MessageSquare, RefreshCw } from "lucide-react";
 import { apiFetch, clearAuth, getAuthToken, getStoredUser, refreshCurrentUser, type UserProfile } from "@/lib/auth-client";
 import { useModalAccessibility } from "@/lib/modal-accessibility";
 import { AdminNavigation, adminSections, type AdminSection } from "@/components/admin/admin-navigation";
 import { AdminOverviewSection } from "@/components/admin/admin-overview-section";
 import { AdminFeedbackSection, AdminOrdersSection, AdminUpdatesSection, AdminUsersSection } from "@/components/admin/admin-sections";
+import type { AdminAnalytics, FeatureUsagePoint, FeatureUsageTotal, HighFrequencyUser, UserGrowthPoint } from "@/components/admin/admin-analytics-types";
 
 type DashboardPayload = {
   totals: {
@@ -19,6 +20,7 @@ type DashboardPayload = {
   };
   usage_by_day: Array<{ day: string; feature: string; count: number; credits: number }>;
   new_users_by_day: Array<{ day: string; count: number }>;
+  analytics?: AdminAnalytics;
   feedback: Array<{
     id: number;
     phone: string;
@@ -123,6 +125,7 @@ export default function AdminPage() {
   const [publishIntent, setPublishIntent] = useState<PublishIntent | null>(null);
   const [publishing, setPublishing] = useState(false);
   const [section, setSection] = useState<AdminSection>("overview");
+  const [days, setDays] = useState(30);
   const [orderFilter, setOrderFilter] = useState("submitted");
   const [feedbackFilter, setFeedbackFilter] = useState("pending");
   const [feedbackRewardIntent, setFeedbackRewardIntent] = useState<number | null>(null);
@@ -139,9 +142,29 @@ export default function AdminPage() {
     !publishing && !bulkGrantSubmitting,
   );
 
+  const loadDashboard = useCallback(async (windowDays: number) => {
+    setLoading(true);
+    setMessage("");
+    try {
+      const payload = await apiFetch<DashboardPayload>(`/api/admin/dashboard?days=${windowDays}`);
+      setData(payload);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "读取统计失败");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
-    const querySection = new URLSearchParams(window.location.search).get("section");
+    const params = new URLSearchParams(window.location.search);
+    const querySection = params.get("section");
+    const queryDays = parseAnalyticsDays(params.get("days"));
+    const initialSection = isAdminSection(querySection) ? querySection : "overview";
     if (isAdminSection(querySection)) setSection(querySection);
+    setDays(queryDays);
+    if (querySection !== initialSection || params.get("days") !== String(queryDays)) {
+      router.replace(`/admin?section=${initialSection}&days=${queryDays}`, { scroll: false });
+    }
     if (!getAuthToken()) {
       setLoading(false);
       router.replace("/admin/login?redirect=/admin");
@@ -150,7 +173,7 @@ export default function AdminPage() {
     refreshCurrentUser()
       .then((nextUser) => {
         setUser(nextUser);
-        if (nextUser?.role === "admin") return loadDashboard();
+        if (nextUser?.role === "admin") return loadDashboard(queryDays);
         setLoading(false);
       })
       .catch(() => {
@@ -158,24 +181,18 @@ export default function AdminPage() {
         setLoading(false);
         router.replace("/admin/login?redirect=/admin");
       });
-  }, [router]);
+  }, [loadDashboard, router]);
 
   function changeSection(nextSection: AdminSection) {
     setSection(nextSection);
-    router.replace(`/admin?section=${nextSection}`, { scroll: false });
+    router.replace(`/admin?section=${nextSection}&days=${days}`, { scroll: false });
   }
 
-  async function loadDashboard() {
-    setLoading(true);
-    setMessage("");
-    try {
-      const payload = await apiFetch<DashboardPayload>("/api/admin/dashboard?days=14");
-      setData(payload);
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "读取统计失败");
-    } finally {
-      setLoading(false);
-    }
+  function changeDays(nextDays: number) {
+    if (nextDays === days) return;
+    setDays(nextDays);
+    router.replace(`/admin?section=${section}&days=${nextDays}`, { scroll: false });
+    void loadDashboard(nextDays);
   }
 
   async function acceptFeedback(id: number) {
@@ -183,13 +200,13 @@ export default function AdminPage() {
       method: "POST",
       body: JSON.stringify({ status: "accepted", admin_note: "反馈已采纳，奖励 10 次免费机会" }),
     });
-    await loadDashboard();
+    await loadDashboard(days);
     setFeedbackRewardIntent(null);
   }
 
   async function markPaid(id: number) {
     await apiFetch(`/api/admin/orders/${id}/paid`, { method: "POST" });
-    await loadDashboard();
+    await loadDashboard(days);
   }
 
   async function confirmMembership(id: number) {
@@ -197,7 +214,7 @@ export default function AdminPage() {
       method: "POST",
       body: JSON.stringify({ admin_note: "已人工核对到账，开通会员" }),
     });
-    await loadDashboard();
+    await loadDashboard(days);
   }
 
   async function rejectMembership(id: number) {
@@ -207,7 +224,7 @@ export default function AdminPage() {
       method: "POST",
       body: JSON.stringify({ admin_note: reason }),
     });
-    await loadDashboard();
+    await loadDashboard(days);
   }
 
   function updateGrantDraft(userId: number, patch: Partial<GrantDraft>) {
@@ -227,7 +244,7 @@ export default function AdminPage() {
       });
       const notice = result.email_notification;
       setGrantDrafts((current) => ({ ...current, [userId]: { credits: "", reason: "" } }));
-      await loadDashboard();
+      await loadDashboard(days);
       setMessage(notice?.sent ? "次数已增加，并已发送邮件提醒。" : `次数已增加，但邮件提醒未发送：${notice?.error || "未知原因"}`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "增加次数失败");
@@ -265,7 +282,7 @@ export default function AdminPage() {
       setBulkGrantIntent(false);
       setBulkGrantRequestId("");
       setBulkGrantDraft({ credits: "10", reason: "" });
-      await loadDashboard();
+      await loadDashboard(days);
       setMessage(`批量发放完成：${result.campaign.granted_count} 位现有用户各增加 ${result.campaign.credits} 次。`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "批量增加次数失败");
@@ -290,7 +307,7 @@ export default function AdminPage() {
       }
       setNoticeDraft(emptyNoticeDraft);
       setEditingNoticeId(null);
-      await loadDashboard();
+      await loadDashboard(days);
       setMessage("更新公告已保存");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "保存更新公告失败");
@@ -331,7 +348,7 @@ export default function AdminPage() {
         });
       }
       setPublishIntent(null);
-      await loadDashboard();
+      await loadDashboard(days);
       setMessage(sendEmail
         ? `公告已发布，邮件任务已创建${result.email_campaign ? `（待发送 ${result.email_campaign.pending}，跳过 ${result.email_campaign.skipped}）` : ""}。`
         : "公告已发布，本次未发送邮件。");
@@ -357,13 +374,13 @@ export default function AdminPage() {
 
   async function retryEmailCampaign(id: number) {
     await apiFetch(`/api/admin/update-email-campaigns/${id}/retry`, { method: "POST" });
-    await loadDashboard();
+    await loadDashboard(days);
     setMessage("失败邮件已重新加入发送队列。");
   }
 
   async function unpublishUpdateNotice(id: number) {
     await apiFetch(`/api/admin/update-notices/${id}/unpublish`, { method: "POST" });
-    await loadDashboard();
+    await loadDashboard(days);
   }
 
   const filteredOrders = useMemo(
@@ -377,6 +394,7 @@ export default function AdminPage() {
   const pendingMembershipOrders = (data?.orders || []).filter((item) => item.product_type === "membership" && item.status === "submitted");
   const pendingFeedback = (data?.feedback || []).filter((item) => item.status === "pending");
   const failedEmailTasks = (data?.update_notices || []).filter((item) => (item.email_campaign?.failed || 0) > 0);
+  const analytics = useMemo(() => (data ? normalizeDashboardAnalytics(data) : null), [data]);
 
   if (!loading && user?.role !== "admin") {
     return (
@@ -403,7 +421,7 @@ export default function AdminPage() {
             <h1>{adminSections.find((item) => item.key === section)?.label || "运营管理台"}</h1>
           </div>
           <div className="admin-actions">
-            <button type="button" onClick={loadDashboard}>
+            <button type="button" onClick={() => void loadDashboard(days)}>
               <RefreshCw />
               刷新
             </button>
@@ -422,6 +440,15 @@ export default function AdminPage() {
           </div>
         </header>
 
+        <div className="admin-analytics-window" aria-label="数据统计周期">
+          <span>统计周期</span>
+          {[7, 30, 90].map((value) => (
+            <button key={value} type="button" className={days === value ? "active" : ""} onClick={() => changeDays(value)} disabled={loading}>
+              {value} 天
+            </button>
+          ))}
+        </div>
+
         <div className="admin-mobile-section-switcher"><AdminNavigation active={section} onChange={changeSection} /></div>
 
         {message && <div className="admin-alert">{message}</div>}
@@ -429,7 +456,7 @@ export default function AdminPage() {
 
         {data && (
           <>
-            <AdminOverviewSection active={section === "overview"} totals={data.totals} usage={data.usage_by_day} newUsers={data.new_users_by_day} pendingOrders={pendingMembershipOrders.length} pendingFeedback={pendingFeedback.length} failedEmails={failedEmailTasks.length} onNavigate={changeSection} featureLabel={featureLabel} />
+            <AdminOverviewSection active={section === "overview"} totals={data.totals} featureUsage={analytics!.featureUsage} userGrowth={analytics!.userGrowth} days={days} pendingOrders={pendingMembershipOrders.length} pendingFeedback={pendingFeedback.length} failedEmails={failedEmailTasks.length} onNavigate={changeSection} featureLabel={featureLabel} />
 
             <AdminUsersSection
               active={section === "users"}
@@ -438,6 +465,8 @@ export default function AdminPage() {
               onRequestBulkGrant={requestBulkGrantConfirmation}
               campaigns={data.credit_grant_campaigns || []}
               users={data.top_users}
+              highFrequencyUsers={analytics!.highFrequencyUsers}
+              days={days}
               grantDrafts={grantDrafts}
               onGrantDraftChange={updateGrantDraft}
               onGrantCredits={grantCredits}
@@ -516,8 +545,78 @@ function isAdminSection(value: string | null): value is AdminSection {
 function featureLabel(value: string) {
   if (value === "review_report") return "AI 复盘";
   if (value === "watch_plan") return "AI 盯盘";
+  if (value === "auction_strength_view") return "每日 TOP5";
+  if (value === "market_day_report") return "AI 当日行情";
+  if (value === "ai_research_view") return "AI 研报";
   if (value === "membership_free") return "会员免扣";
   return value;
+}
+
+function parseAnalyticsDays(value: string | null) {
+  const days = Number(value);
+  return days === 7 || days === 90 ? days : 30;
+}
+
+function normalizeDashboardAnalytics(data: DashboardPayload): {
+  featureUsage: { totals: FeatureUsageTotal[]; byDay: FeatureUsagePoint[] };
+  userGrowth: { startingUsers: number; totalUsers: number; byDay: UserGrowthPoint[] };
+  highFrequencyUsers: HighFrequencyUser[];
+} {
+  const featureByDay = data.analytics?.feature_usage?.by_day || data.usage_by_day || [];
+  const featureTotals = data.analytics?.feature_usage?.totals || deriveFeatureTotals(featureByDay);
+  const growthRows = data.analytics?.user_growth?.by_day;
+  const legacyNewUsers = data.new_users_by_day || [];
+  const legacyNewTotal = legacyNewUsers.reduce((sum, item) => sum + Number(item.count || 0), 0);
+  const startingUsers = Number(data.analytics?.user_growth?.starting_users ?? Math.max(0, data.totals.users - legacyNewTotal));
+  let runningUsers = startingUsers;
+  const userGrowth = growthRows?.map((item) => ({
+    day: item.day,
+    new_users: Number(item.new_users || 0),
+    cumulative_users: Number(item.cumulative_users || 0),
+  })) || legacyNewUsers.map((item) => {
+    runningUsers += Number(item.count || 0);
+    return { day: item.day, new_users: Number(item.count || 0), cumulative_users: runningUsers };
+  });
+  const analyticsHighFrequencyUsers = (data.analytics?.high_frequency_users || []).map((item) => ({
+    id: Number(item.id || 0),
+    phone: item.phone,
+    username: item.username,
+    email: item.email,
+    total_uses: Number(item.total_uses || 0),
+    credits_spent: Number(item.credits_spent || 0),
+    active_days: Number(item.active_days || 0),
+    usage_by_day: (item.usage_by_day || []).map((point) => ({ day: point.day, count: Number(point.count || 0), credits: Number(point.credits || 0) })),
+  })).filter((item) => item.id > 0);
+  const highFrequencyUsers = analyticsHighFrequencyUsers.length ? analyticsHighFrequencyUsers : data.top_users.map((item) => ({
+    id: item.id,
+    phone: item.phone,
+    username: item.username,
+    email: item.email,
+    total_uses: Number(item.used_count || 0),
+    credits_spent: 0,
+    active_days: 0,
+    usage_by_day: [],
+  }));
+  return {
+    featureUsage: { totals: featureTotals, byDay: featureByDay },
+    userGrowth: {
+      startingUsers,
+      totalUsers: Number(data.analytics?.user_growth?.total_users ?? data.totals.users),
+      byDay: userGrowth,
+    },
+    highFrequencyUsers,
+  };
+}
+
+function deriveFeatureTotals(points: FeatureUsagePoint[]): FeatureUsageTotal[] {
+  const totals = new Map<string, { count: number; credits: number }>();
+  points.forEach((item) => {
+    const current = totals.get(item.feature) || { count: 0, credits: 0 };
+    current.count += Number(item.count || 0);
+    current.credits += Number(item.credits || 0);
+    totals.set(item.feature, current);
+  });
+  return Array.from(totals, ([feature, values]) => ({ feature, ...values })).sort((a, b) => b.count - a.count);
 }
 
 function todayDateInputValue() {

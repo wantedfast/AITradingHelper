@@ -1,12 +1,18 @@
-import { BarChart3, CreditCard, Gift, MessageSquare, Users } from "lucide-react";
-import type { ReactNode } from "react";
+"use client";
+
+import type { EChartsOption } from "echarts";
+import { BarChart3, CreditCard, Gift, MessageSquare, PieChart, TrendingUp, Users } from "lucide-react";
+import { useMemo } from "react";
+import { AdminAnalyticsChart } from "./admin-analytics-chart";
+import type { FeatureUsagePoint, FeatureUsageTotal, UserGrowthPoint } from "./admin-analytics-types";
 import type { AdminSection } from "./admin-navigation";
 
 type OverviewProps = {
   active: boolean;
   totals: { users: number; credits: number; feedback_pending: number; orders_paid: number };
-  usage: Array<{ day: string; feature: string; count: number }>;
-  newUsers: Array<{ day: string; count: number }>;
+  featureUsage: { totals: FeatureUsageTotal[]; byDay: FeatureUsagePoint[] };
+  userGrowth: { startingUsers: number; totalUsers: number; byDay: UserGrowthPoint[] };
+  days: number;
   pendingOrders: number;
   pendingFeedback: number;
   failedEmails: number;
@@ -14,9 +20,25 @@ type OverviewProps = {
   featureLabel: (value: string) => string;
 };
 
+const chartColors = ["#f5d77a", "#55d6a8", "#79a9ff", "#f39a72", "#c897e8", "#88c7d8", "#e3b85d"];
+
 export function AdminOverviewSection(props: OverviewProps) {
-  const usageMax = Math.max(1, ...props.usage.map((item) => item.count));
-  const userMax = Math.max(1, ...props.newUsers.map((item) => item.count));
+  const featureTrendOption = useMemo(
+    () => buildFeatureTrendOption(props.featureUsage.byDay, props.featureLabel),
+    [props.featureUsage.byDay, props.featureLabel],
+  );
+  const featureShareOption = useMemo(
+    () => buildFeatureShareOption(props.featureUsage.totals, props.featureLabel),
+    [props.featureUsage.totals, props.featureLabel],
+  );
+  const userGrowthOption = useMemo(
+    () => buildUserGrowthOption(props.userGrowth.byDay),
+    [props.userGrowth.byDay],
+  );
+  const featureTotal = props.featureUsage.totals.reduce((sum, item) => sum + item.count, 0);
+  const hasFeatureUsage = featureTotal > 0;
+  const hasUserGrowth = props.userGrowth.byDay.some((item) => item.new_users > 0 || item.cumulative_users > 0);
+
   return (
     <section className={`admin-section admin-section--overview${props.active ? " is-active" : ""}`}>
       <section className="admin-priority-grid">
@@ -30,13 +52,53 @@ export function AdminOverviewSection(props: OverviewProps) {
         <Metric icon={MessageSquare} label="待审核反馈" value={props.totals.feedback_pending} />
         <Metric icon={CreditCard} label="已支付订单" value={props.totals.orders_paid} />
       </section>
-      <section className="admin-grid">
-        <Trend title="近 14 日功能使用" icon={<BarChart3 />} empty="暂无使用记录。">
-          {props.usage.map((item) => <div key={`${item.day}-${item.feature}`}><span>{item.day.slice(5)} · {props.featureLabel(item.feature)}</span><i style={{ width: `${Math.max(8, item.count / usageMax * 100)}%` }} /><b>{item.count}</b></div>)}
-        </Trend>
-        <Trend title="近 14 日新增用户" icon={<Users />} empty="暂无新增用户。">
-          {props.newUsers.map((item) => <div key={item.day}><span>{item.day.slice(5)}</span><i style={{ width: `${Math.max(8, item.count / userMax * 100)}%` }} /><b>{item.count}</b></div>)}
-        </Trend>
+
+      <section className="admin-analytics-grid">
+        <article className="admin-panel admin-analytics-panel admin-analytics-panel--wide">
+          <PanelHeading icon={BarChart3} title={`近 ${props.days} 天功能使用趋势`} subtitle="按天查看五项功能的使用次数，可点击图例隐藏或显示曲线。" />
+          <AdminAnalyticsChart
+            option={featureTrendOption}
+            ariaLabel={`近 ${props.days} 天各功能每日使用次数折线图`}
+            empty={!hasFeatureUsage ? "这段时间还没有功能使用记录。" : undefined}
+            className="admin-echart--trend"
+          />
+        </article>
+
+        <article className="admin-panel admin-analytics-panel">
+          <PanelHeading icon={PieChart} title="功能使用构成" subtitle={`合计 ${featureTotal.toLocaleString()} 次使用`} />
+          <div className="admin-feature-share-layout">
+            <AdminAnalyticsChart
+              option={featureShareOption}
+              ariaLabel={`近 ${props.days} 天功能使用占比环形图`}
+              empty={!hasFeatureUsage ? "暂无可统计的功能使用。" : undefined}
+              className="admin-echart--donut"
+            />
+            {hasFeatureUsage && (
+              <div className="admin-feature-ranking" aria-label="功能使用排名">
+                {props.featureUsage.totals.map((item, index) => {
+                  const share = item.share ?? (featureTotal ? item.count / featureTotal : 0);
+                  return (
+                    <div key={item.feature}>
+                      <i style={{ background: chartColors[index % chartColors.length] }} />
+                      <span><b>{props.featureLabel(item.feature)}</b><small>{item.credits} 次额度消耗</small></span>
+                      <strong>{item.count}<small>{formatShare(share)}</small></strong>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </article>
+
+        <article className="admin-panel admin-analytics-panel">
+          <PanelHeading icon={TrendingUp} title="用户增长" subtitle={`期初 ${props.userGrowth.startingUsers} 人 · 当前 ${props.userGrowth.totalUsers} 人`} />
+          <AdminAnalyticsChart
+            option={userGrowthOption}
+            ariaLabel={`近 ${props.days} 天每日新增用户柱状图与累计用户折线图`}
+            empty={!hasUserGrowth ? "这段时间还没有用户增长数据。" : undefined}
+            className="admin-echart--growth"
+          />
+        </article>
       </section>
     </section>
   );
@@ -47,9 +109,114 @@ function PriorityCard({ label, count, onClick }: { label: string; count: number;
 }
 
 function Metric({ icon: Icon, label, value }: { icon: typeof Users; label: string; value: number }) {
-  return <article><Icon /><span>{label}</span><b>{value}</b></article>;
+  return <article><Icon /><span>{label}</span><b>{value.toLocaleString()}</b></article>;
 }
 
-function Trend({ title, icon, children, empty }: { title: string; icon: ReactNode; children: ReactNode[]; empty: string }) {
-  return <article className="admin-panel admin-chart-panel"><div className="admin-panel-head">{icon}<h2>{title}</h2></div><div className="admin-chart">{children.length ? children : <p>{empty}</p>}</div></article>;
+function PanelHeading({ icon: Icon, title, subtitle }: { icon: typeof Users; title: string; subtitle: string }) {
+  return <div className="admin-panel-head admin-analytics-heading"><Icon /><div><h2>{title}</h2><p>{subtitle}</p></div></div>;
+}
+
+function buildFeatureTrendOption(points: FeatureUsagePoint[], featureLabel: (value: string) => string): EChartsOption {
+  const days = unique(points.map((item) => item.day)).sort();
+  const features = unique(points.map((item) => item.feature));
+  return baseCartesianOption({
+    legend: analyticsLegend(features.map(featureLabel)),
+    xAxis: categoryAxis(days.map(shortDay), false),
+    yAxis: valueAxis("使用次数"),
+    series: features.map((feature, index) => ({
+      name: featureLabel(feature),
+      type: "line",
+      data: days.map((day) => points.find((item) => item.day === day && item.feature === feature)?.count || 0),
+      smooth: days.length > 2 ? 0.25 : false,
+      symbol: days.length === 1 ? "circle" : "none",
+      symbolSize: 8,
+      lineStyle: { width: 2, color: chartColors[index % chartColors.length] },
+      itemStyle: { color: chartColors[index % chartColors.length] },
+      emphasis: { focus: "series" },
+    })),
+  });
+}
+
+function buildFeatureShareOption(totals: FeatureUsageTotal[], featureLabel: (value: string) => string): EChartsOption {
+  return {
+    color: chartColors,
+    animationDuration: 450,
+    tooltip: { trigger: "item", formatter: "{b}<br/>{c} 次 · {d}%" },
+    series: [{
+      type: "pie",
+      radius: ["54%", "78%"],
+      center: ["50%", "50%"],
+      avoidLabelOverlap: true,
+      label: { show: false },
+      emphasis: { label: { show: true, color: "#f4f0e8", fontWeight: 800, formatter: "{d}%" } },
+      itemStyle: { borderColor: "#090c0b", borderWidth: 3, borderRadius: 4 },
+      data: totals.map((item) => ({ name: featureLabel(item.feature), value: item.count })),
+    }],
+  };
+}
+
+function buildUserGrowthOption(points: UserGrowthPoint[]): EChartsOption {
+  const days = points.map((item) => item.day);
+  return baseCartesianOption({
+    legend: analyticsLegend(["每日新增", "累计用户"]),
+    xAxis: categoryAxis(days.map(shortDay), true),
+    yAxis: [
+      valueAxis("新增"),
+      { ...valueAxis("累计"), splitLine: { show: false } },
+    ],
+    series: [
+      { name: "每日新增", type: "bar", data: points.map((item) => item.new_users), barMaxWidth: 22, itemStyle: { color: "rgba(245,215,122,.72)", borderRadius: [5, 5, 0, 0] } },
+      { name: "累计用户", type: "line", yAxisIndex: 1, data: points.map((item) => item.cumulative_users), smooth: points.length > 2 ? 0.25 : false, symbol: points.length === 1 ? "circle" : "none", symbolSize: 8, lineStyle: { color: "#55d6a8", width: 2 }, itemStyle: { color: "#55d6a8" } },
+    ],
+  });
+}
+
+function baseCartesianOption(option: EChartsOption): EChartsOption {
+  return {
+    color: chartColors,
+    animationDuration: 450,
+    textStyle: { color: "#aab1ad", fontFamily: "Inter, Microsoft YaHei, sans-serif" },
+    tooltip: { trigger: "axis", backgroundColor: "rgba(7,10,9,.96)", borderColor: "rgba(245,215,122,.25)", textStyle: { color: "#f4f0e8" } },
+    grid: { top: 52, right: 24, bottom: 28, left: 50, containLabel: false },
+    ...option,
+  };
+}
+
+function analyticsLegend(data: string[]) {
+  return { top: 0, type: "scroll" as const, data, textStyle: { color: "#aab1ad" }, pageTextStyle: { color: "#aab1ad" } };
+}
+
+function categoryAxis(data: string[], boundaryGap: boolean) {
+  return {
+    type: "category" as const,
+    data,
+    boundaryGap,
+    axisLine: { lineStyle: { color: "rgba(244,240,232,.15)" } },
+    axisLabel: { color: "#89918c", hideOverlap: true },
+    axisTick: { show: false },
+  };
+}
+
+function valueAxis(name: string) {
+  return {
+    type: "value" as const,
+    minInterval: 1,
+    name,
+    axisLabel: { color: "#89918c" },
+    nameTextStyle: { color: "#727b75" },
+    splitLine: { lineStyle: { color: "rgba(244,240,232,.07)" } },
+  };
+}
+
+function unique(values: string[]) {
+  return Array.from(new Set(values));
+}
+
+function shortDay(value: string) {
+  return value.length >= 10 ? value.slice(5) : value;
+}
+
+function formatShare(value: number) {
+  const percent = value > 1 ? value : value * 100;
+  return `${percent.toFixed(percent >= 10 ? 0 : 1)}%`;
 }
