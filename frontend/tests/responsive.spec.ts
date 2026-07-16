@@ -173,7 +173,17 @@ async function installStableApiFixtures(
         orders: [],
         top_users: [],
         credit_grant_campaigns: [],
-        update_notices: [],
+        update_notices: [{
+          id: 1,
+          title: "盈航功能更新：会员服务与 AI 研报正式上线",
+          version: "2026-07-15",
+          items: ["新增月度会员服务", "新增 AI 研报功能"],
+          status: "published",
+          created_at: "2026-07-15T08:30:00+08:00",
+          updated_at: "2026-07-15T08:51:00+08:00",
+          published_at: "2026-07-15T08:51:00+08:00",
+          email_campaign: null,
+        }],
         analytics: {
           window: { days: 30, start_date: "2026-06-16", end_date: "2026-07-15" },
           feature_usage: {
@@ -375,7 +385,7 @@ for (const viewport of viewports) {
 test.describe("homepage guest acquisition", () => {
   test.use({ viewport: { width: 390, height: 844 } });
 
-  test("hero emphasizes registration and keeps guest login in the menu", async ({ page }) => {
+  test("guest start action opens the combined login and registration page", async ({ page }) => {
     await page.route("**/api/update-notices/latest", (route) => json(route, { notice: null }));
     await page.route("**/api/auction-strength/performance", (route) => json(route, { rows: [] }));
     await page.route("**/api/legal/registration-agreement", (route) =>
@@ -394,18 +404,37 @@ test.describe("homepage guest acquisition", () => {
     await page.goto("/", { waitUntil: "domcontentloaded" });
 
     const heroActions = page.locator(".hero .actions");
-    const registerLink = heroActions.locator('a[href="/auth?mode=register"]');
-    await expect(registerLink).toBeVisible();
-    await expect(heroActions.locator('a[href="/auth"]')).toHaveCount(0);
+    const startLink = heroActions.getByRole("link", { name: "现在开始" });
+    await expect(startLink).toBeVisible();
+    await expect(startLink).toHaveAttribute("href", "/auth");
     await page.locator(".home-mobile-menu-button").click();
     await expect(page.locator(".home-mobile-account-login")).toBeVisible();
     await page.locator(".home-mobile-menu-head button").click();
     await expect(page.locator("audio, .music-toggle")).toHaveCount(0);
 
-    await registerLink.click();
-    await expect(page).toHaveURL(/\/auth\?mode=register$/);
-    await expect(page.locator(".account-mode-switch button").nth(1)).toHaveClass(/active/);
-    await expect(page.locator('input[placeholder="name@example.com"]')).toBeVisible();
+    await startLink.click();
+    await expect(page).toHaveURL(/\/auth$/);
+    await expect(page.locator(".account-mode-switch button")).toHaveCount(2);
+    await expect(page.locator(".account-mode-switch button").nth(0)).toHaveClass(/active/);
+  });
+
+  test("signed-in start action opens Daily TOP5", async ({ page }) => {
+    await page.addInitScript((user) => {
+      window.localStorage.setItem("ai_trade_token", "homepage-start-token");
+      window.localStorage.setItem("ai_trade_user", JSON.stringify(user));
+    }, { ...fixtureUser, role: "user" });
+    await page.route("**/api/**", (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path === "/api/auth/me") return json(route, { user: { ...fixtureUser, role: "user" } });
+      if (path === "/api/update-notices/latest") return json(route, { notice: null });
+      if (path === "/api/auction-strength/performance") return json(route, { rows: [] });
+      return json(route, {});
+    });
+
+    await page.goto("/", { waitUntil: "domcontentloaded" });
+    const startLink = page.locator(".hero .actions").getByRole("link", { name: "现在开始" });
+    await expect(startLink).toBeVisible();
+    await expect(startLink).toHaveAttribute("href", "/auction-strength");
   });
 
   test("360px topbar keeps membership, registration and menu in the required order", async ({ page }) => {
@@ -588,6 +617,30 @@ test.describe("independent admin access", () => {
     await expect(page.getByText("这段时间还没有功能使用记录。")).toBeVisible();
     await expect(page.getByText("暂无可统计的功能使用。")).toBeVisible();
     await expect(page.getByText("这段时间还没有用户增长数据。")).toBeVisible();
+  });
+
+  test("update notice actions use a spaced equal-width mobile layout", async ({ page }) => {
+    await installStableApiFixtures(page);
+    await page.goto("/admin?section=updates&days=30", { waitUntil: "domcontentloaded" });
+    const actions = page.locator(".admin-notice-item-actions").first();
+    await expect(actions).toBeVisible();
+    await expect(actions.getByRole("button", { name: "编辑" })).toBeVisible();
+    await expect(actions.getByRole("button", { name: "下线" })).toBeVisible();
+    const layout = await actions.evaluate((element) => {
+      const style = getComputedStyle(element);
+      const buttons = Array.from(element.querySelectorAll("button")).map((button) => button.getBoundingClientRect());
+      return {
+        display: style.display,
+        gap: parseFloat(style.columnGap),
+        widths: buttons.map((button) => button.width),
+        horizontalSpace: buttons.length === 2 ? buttons[1].left - buttons[0].right : 0,
+      };
+    });
+    expect(layout.display).toBe("grid");
+    expect(layout.gap).toBeGreaterThanOrEqual(8);
+    expect(Math.abs(layout.widths[0] - layout.widths[1])).toBeLessThan(1);
+    expect(layout.horizontalSpace).toBeGreaterThanOrEqual(8);
+    await expectNoGlobalHorizontalOverflow(page, "update notice actions");
   });
 
   test("admin login uses the dedicated endpoint and rejects external redirects", async ({ page }) => {
