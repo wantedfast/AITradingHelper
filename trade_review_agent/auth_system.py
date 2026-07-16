@@ -262,6 +262,37 @@ def init_auth_db(db_path: Path) -> None:
                 UNIQUE (campaign_id, user_id)
             );
 
+            CREATE TABLE IF NOT EXISTS ai_report_email_campaigns (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                report_type TEXT NOT NULL,
+                run_id TEXT NOT NULL,
+                report_date TEXT NOT NULL,
+                report_json TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT NOT NULL,
+                started_at TEXT,
+                finished_at TEXT,
+                UNIQUE (report_type, run_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS ai_report_email_deliveries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                campaign_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                email TEXT NOT NULL DEFAULT '',
+                content_variant TEXT NOT NULL DEFAULT 'teaser',
+                membership_active INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'pending',
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                next_attempt_at TEXT,
+                last_error TEXT,
+                sent_at TEXT,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (campaign_id) REFERENCES ai_report_email_campaigns(id),
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                UNIQUE (campaign_id, user_id)
+            );
+
             CREATE TABLE IF NOT EXISTS sms_codes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 phone TEXT NOT NULL,
@@ -309,6 +340,10 @@ def init_auth_db(db_path: Path) -> None:
             CREATE INDEX IF NOT EXISTS idx_update_email_deliveries_queue ON update_email_deliveries(status, next_attempt_at, id);
             CREATE INDEX IF NOT EXISTS idx_daily_top5_email_deliveries_queue
                 ON daily_top5_email_deliveries(status, next_attempt_at, id);
+            CREATE INDEX IF NOT EXISTS idx_ai_report_email_deliveries_queue
+                ON ai_report_email_deliveries(status, next_attempt_at, id);
+            CREATE INDEX IF NOT EXISTS idx_ai_report_email_campaigns_date
+                ON ai_report_email_campaigns(report_type, report_date, id);
             CREATE INDEX IF NOT EXISTS idx_sms_codes_phone ON sms_codes(phone, purpose, created_at);
             CREATE INDEX IF NOT EXISTS idx_email_codes_email ON email_codes(email, purpose, created_at);
             CREATE INDEX IF NOT EXISTS idx_agreement_acceptances_user ON agreement_acceptances(user_id, accepted_at);
@@ -1307,6 +1342,18 @@ def admin_dashboard(db_path: Path, days: int = 14) -> dict[str, Any]:
                 "SELECT COUNT(*) AS count FROM daily_top5_email_deliveries WHERE status = 'failed'"
             ).fetchone()["count"]
         )
+        ai_report_campaign_rows = conn.execute(
+            "SELECT id FROM ai_report_email_campaigns ORDER BY report_date DESC, id DESC LIMIT 30"
+        ).fetchall()
+        ai_report_email_campaigns = [
+            _ai_report_email_campaign_payload(conn, int(row["id"]))
+            for row in ai_report_campaign_rows
+        ]
+        ai_report_email_failed_count = int(
+            conn.execute(
+                "SELECT COUNT(*) AS count FROM ai_report_email_deliveries WHERE status = 'failed'"
+            ).fetchone()["count"]
+        )
         return {
             "totals": totals,
             "usage_by_day": [dict(row) for row in usage_rows],
@@ -1333,6 +1380,8 @@ def admin_dashboard(db_path: Path, days: int = 14) -> dict[str, Any]:
             "update_notices": [_update_notice_payload(row, conn=conn) for row in _update_notice_rows(conn)],
             "daily_top5_email_campaigns": daily_top5_email_campaigns,
             "daily_top5_email_failed_count": daily_top5_email_failed_count,
+            "ai_report_email_campaigns": ai_report_email_campaigns,
+            "ai_report_email_failed_count": ai_report_email_failed_count,
         }
 
 
@@ -1567,6 +1616,124 @@ def retry_daily_top5_email_campaign(db_path: Path, *, campaign_id: int) -> dict[
         return _daily_top5_email_campaign_payload(conn, campaign_id)
 
 
+AI_REPORT_EMAIL_TYPES = {"market_day", "ai_research"}
+
+
+def create_ai_report_email_campaign(
+    db_path: Path,
+    *,
+    report_type: str,
+    report: dict[str, Any],
+) -> dict[str, Any]:
+    """Persist an idempotent recipient and membership snapshot for an AI report."""
+    report_type = str(report_type or "").strip()
+    if report_type not in AI_REPORT_EMAIL_TYPES:
+        raise AuthError("AI 报告邮件类型无效", 400)
+    if not isinstance(report, dict):
+        raise AuthError("AI 报告内容无效", 400)
+    run_id = str(report.get("run_id") or "").strip()
+    if report_type == "market_day":
+        market_body = report.get("report") if isinstance(report.get("report"), dict) else {}
+        report_date = str(
+            report.get("market_date") or report.get("marketDate") or market_body.get("marketDate") or ""
+        ).strip()
+    else:
+        report_date = str(report.get("research_date") or "").strip()
+    if not run_id or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,95}", run_id):
+        raise AuthError("AI 报告 run_id 无效", 400)
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", report_date):
+        raise AuthError("AI 报告日期无效", 400)
+    if not _is_complete_ai_email_report(report_type, report):
+        raise AuthError("AI 报告内容尚未完整，暂不发送邮件", 409)
+
+    report_json = json.dumps(report, ensure_ascii=False, separators=(",", ":"))
+    now = _now()
+    with _connect(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        existing = conn.execute(
+            "SELECT id FROM ai_report_email_campaigns WHERE report_type = ? AND run_id = ?",
+            (report_type, run_id),
+        ).fetchone()
+        if existing:
+            return _ai_report_email_campaign_payload(conn, int(existing["id"]))
+        campaign_id = int(
+            conn.execute(
+                """
+                INSERT INTO ai_report_email_campaigns
+                    (report_type, run_id, report_date, report_json, status, created_at)
+                VALUES (?, ?, ?, ?, 'pending', ?)
+                """,
+                (report_type, run_id, report_date, report_json, now),
+            ).lastrowid
+        )
+        users = conn.execute(
+            """
+            SELECT id, email, email_verified, update_emails_enabled,
+                   membership_status, membership_expires_at
+            FROM users
+            WHERE role = 'user'
+            ORDER BY id
+            """
+        ).fetchall()
+        for user in users:
+            email = str(user["email"] or "").strip().lower()
+            verified = int(user["email_verified"] or 0) == 1
+            opted_in = int(user["update_emails_enabled"] or 0) == 1
+            eligible = bool(email and verified and opted_in)
+            membership_active = _has_active_membership(user)
+            reason = None
+            if not email or not verified:
+                reason = "邮箱未验证"
+            elif not opted_in:
+                reason = "用户已关闭邮件推送"
+            conn.execute(
+                """
+                INSERT INTO ai_report_email_deliveries (
+                    campaign_id, user_id, email, content_variant, membership_active,
+                    status, attempt_count, next_attempt_at, last_error, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+                """,
+                (
+                    campaign_id,
+                    int(user["id"]),
+                    email,
+                    "full" if membership_active else "teaser",
+                    1 if membership_active else 0,
+                    "pending" if eligible else "skipped",
+                    now if eligible else None,
+                    reason,
+                    now,
+                ),
+            )
+        _refresh_ai_report_email_campaign_status(conn, campaign_id)
+        return _ai_report_email_campaign_payload(conn, campaign_id)
+
+
+def retry_ai_report_email_campaign(db_path: Path, *, campaign_id: int) -> dict[str, Any]:
+    with _connect(db_path) as conn:
+        existing = conn.execute(
+            "SELECT id FROM ai_report_email_campaigns WHERE id = ?", (campaign_id,)
+        ).fetchone()
+        if not existing:
+            raise AuthError("AI 报告邮件任务不存在", 404)
+        now = _now()
+        cursor = conn.execute(
+            """
+            UPDATE ai_report_email_deliveries
+            SET status = 'pending', attempt_count = 0, next_attempt_at = ?,
+                last_error = NULL, updated_at = ?
+            WHERE campaign_id = ? AND status = 'failed'
+            """,
+            (now, now, campaign_id),
+        )
+        if cursor.rowcount:
+            conn.execute(
+                "UPDATE ai_report_email_campaigns SET status = 'pending', finished_at = NULL WHERE id = ?",
+                (campaign_id,),
+            )
+        return _ai_report_email_campaign_payload(conn, campaign_id)
+
+
 def recover_update_email_queue(db_path: Path) -> int:
     cutoff = (datetime.now(CN_TZ) - timedelta(minutes=10)).isoformat()
     with _connect(db_path) as conn:
@@ -1587,6 +1754,20 @@ def recover_daily_top5_email_queue(db_path: Path) -> int:
         cursor = conn.execute(
             """
             UPDATE daily_top5_email_deliveries
+            SET status = 'pending', next_attempt_at = ?, updated_at = ?
+            WHERE status = 'sending' AND updated_at < ?
+            """,
+            (_now(), _now(), cutoff),
+        )
+        return int(cursor.rowcount)
+
+
+def recover_ai_report_email_queue(db_path: Path) -> int:
+    cutoff = (datetime.now(CN_TZ) - timedelta(minutes=10)).isoformat()
+    with _connect(db_path) as conn:
+        cursor = conn.execute(
+            """
+            UPDATE ai_report_email_deliveries
             SET status = 'pending', next_attempt_at = ?, updated_at = ?
             WHERE status = 'sending' AND updated_at < ?
             """,
@@ -1735,6 +1916,89 @@ def process_next_daily_top5_email(
                 (_now(), _now(), delivery["id"]),
             )
             _refresh_daily_top5_email_campaign_status(conn, int(delivery["campaign_id"]))
+    return True
+
+
+def process_next_ai_report_email(
+    db_path: Path,
+    *,
+    report_type: str | None = None,
+    sender: Callable[[dict[str, Any]], None] | None = None,
+    smtp_session: "UpdateEmailSMTPSession | None" = None,
+) -> bool:
+    if report_type is not None and report_type not in AI_REPORT_EMAIL_TYPES:
+        raise AuthError("AI 报告邮件类型无效", 400)
+    now = _now()
+    with _connect(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        query = """
+            SELECT d.id, d.campaign_id, d.email, d.content_variant,
+                   d.membership_active, d.attempt_count,
+                   c.report_type, c.run_id, c.report_date, c.report_json
+            FROM ai_report_email_deliveries d
+            JOIN ai_report_email_campaigns c ON c.id = d.campaign_id
+            WHERE d.status = 'pending'
+              AND (d.next_attempt_at IS NULL OR d.next_attempt_at <= ?)
+        """
+        params: list[object] = [now]
+        if report_type is not None:
+            query += " AND c.report_type = ?"
+            params.append(report_type)
+        query += """
+            ORDER BY d.id
+            LIMIT 1
+        """
+        row = conn.execute(query, params).fetchone()
+        if not row:
+            return False
+        attempt = int(row["attempt_count"]) + 1
+        conn.execute(
+            "UPDATE ai_report_email_deliveries SET status = 'sending', attempt_count = ?, updated_at = ? WHERE id = ?",
+            (attempt, now, row["id"]),
+        )
+        conn.execute(
+            "UPDATE ai_report_email_campaigns SET status = 'sending', started_at = COALESCE(started_at, ?) WHERE id = ?",
+            (now, row["campaign_id"]),
+        )
+        delivery = dict(row)
+        delivery["attempt_count"] = attempt
+    try:
+        if sender is not None:
+            sender(delivery)
+        elif smtp_session is not None:
+            _send_ai_report_email(delivery, smtp_session=smtp_session)
+        else:
+            _send_ai_report_email(delivery)
+    except Exception as exc:
+        with _connect(db_path) as conn:
+            if attempt >= UPDATE_EMAIL_MAX_ATTEMPTS:
+                conn.execute(
+                    "UPDATE ai_report_email_deliveries SET status = 'failed', last_error = ?, updated_at = ? WHERE id = ?",
+                    (str(exc)[:500], _now(), delivery["id"]),
+                )
+            else:
+                delay = UPDATE_EMAIL_RETRY_MINUTES[min(attempt - 1, len(UPDATE_EMAIL_RETRY_MINUTES) - 1)]
+                next_attempt = (datetime.now(CN_TZ) + timedelta(minutes=delay)).isoformat()
+                conn.execute(
+                    """
+                    UPDATE ai_report_email_deliveries
+                    SET status = 'pending', next_attempt_at = ?, last_error = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (next_attempt, str(exc)[:500], _now(), delivery["id"]),
+                )
+            _refresh_ai_report_email_campaign_status(conn, int(delivery["campaign_id"]))
+    else:
+        with _connect(db_path) as conn:
+            conn.execute(
+                """
+                UPDATE ai_report_email_deliveries
+                SET status = 'sent', sent_at = ?, last_error = NULL, updated_at = ?
+                WHERE id = ?
+                """,
+                (_now(), _now(), delivery["id"]),
+            )
+            _refresh_ai_report_email_campaign_status(conn, int(delivery["campaign_id"]))
     return True
 
 
@@ -2853,6 +3117,93 @@ def _refresh_daily_top5_email_campaign_status(conn: sqlite3.Connection, campaign
     )
 
 
+def _ai_report_email_campaign_payload(conn: sqlite3.Connection, campaign_id: int) -> dict[str, Any]:
+    row = conn.execute(
+        "SELECT * FROM ai_report_email_campaigns WHERE id = ?", (campaign_id,)
+    ).fetchone()
+    if not row:
+        raise AuthError("AI 报告邮件任务不存在", 404)
+    counts = {
+        str(item["status"]): int(item["count"])
+        for item in conn.execute(
+            "SELECT status, COUNT(*) AS count FROM ai_report_email_deliveries WHERE campaign_id = ? GROUP BY status",
+            (campaign_id,),
+        ).fetchall()
+    }
+    variants = {
+        str(item["content_variant"]): int(item["count"])
+        for item in conn.execute(
+            """
+            SELECT content_variant, COUNT(*) AS count
+            FROM ai_report_email_deliveries
+            WHERE campaign_id = ? AND status != 'skipped'
+            GROUP BY content_variant
+            """,
+            (campaign_id,),
+        ).fetchall()
+    }
+    return {
+        "id": int(row["id"]),
+        "report_type": str(row["report_type"]),
+        "run_id": str(row["run_id"]),
+        "report_date": str(row["report_date"]),
+        "status": str(row["status"]),
+        "total": sum(counts.values()),
+        "pending": counts.get("pending", 0),
+        "sending": counts.get("sending", 0),
+        "sent": counts.get("sent", 0),
+        "failed": counts.get("failed", 0),
+        "skipped": counts.get("skipped", 0),
+        "full": variants.get("full", 0),
+        "teaser": variants.get("teaser", 0),
+        "created_at": row["created_at"],
+        "started_at": row["started_at"],
+        "finished_at": row["finished_at"],
+    }
+
+
+def _refresh_ai_report_email_campaign_status(conn: sqlite3.Connection, campaign_id: int) -> None:
+    counts = {
+        str(row["status"]): int(row["count"])
+        for row in conn.execute(
+            "SELECT status, COUNT(*) AS count FROM ai_report_email_deliveries WHERE campaign_id = ? GROUP BY status",
+            (campaign_id,),
+        ).fetchall()
+    }
+    if counts.get("sending"):
+        status, finished = "sending", None
+    elif counts.get("pending"):
+        status, finished = "pending", None
+    elif counts.get("failed"):
+        status, finished = ("partial_failed" if counts.get("sent") else "failed"), _now()
+    else:
+        status, finished = "completed", _now()
+    conn.execute(
+        "UPDATE ai_report_email_campaigns SET status = ?, finished_at = ? WHERE id = ?",
+        (status, finished, campaign_id),
+    )
+
+
+def _is_complete_ai_email_report(report_type: str, report: dict[str, Any]) -> bool:
+    if report_type == "market_day":
+        body = report.get("report") if isinstance(report.get("report"), dict) else report
+        conclusion = str(body.get("oneLineConclusion") or "").strip()
+        detail_keys = (
+            "mainline", "marketMood", "marketBreadth", "strongestStocks", "secondaryLines",
+            "rotationLines", "fakeOrWeakLines", "watchPoints", "keyRisks", "indices",
+        )
+        return bool(conclusion and any(body.get(key) for key in detail_keys))
+    if report_type == "ai_research":
+        title = str(report.get("title") or "").strip()
+        summary = str(report.get("summary") or "").strip()
+        detail_keys = (
+            "markdown", "sections", "decision_cards", "evidence_table", "watchlist",
+            "scenario_plan", "risk_calendar", "institutional_research", "sources",
+        )
+        return bool(title and summary and any(report.get(key) for key in detail_keys))
+    return False
+
+
 def _send_update_notice_email(
     delivery: dict[str, Any], *, smtp_session: UpdateEmailSMTPSession | None = None
 ) -> None:
@@ -2878,7 +3229,7 @@ def _send_update_notice_email(
       <ul style="margin:0 0 20px;padding-left:24px;color:#1f2328;">{html_items}</ul>
       <p style="margin:0 0 8px;color:#1f2328;"><a href="{_html_escape(site_url)}" style="color:#0969da;text-decoration:underline;">打开盈航查看</a></p>
       <p style="margin:0 0 20px;color:#57606a;font-size:13px;word-break:break-all;">{_html_escape(site_url)}</p>
-      <p style="margin:0;color:#57606a;font-size:12px;line-height:1.6;">你可以登录盈航，在账户菜单中关闭产品更新邮件。</p>
+      <p style="margin:0;color:#57606a;font-size:12px;line-height:1.6;">你可以登录盈航，在账户菜单中关闭邮件推送。</p>
     """, max_width=600)
     send = smtp_session.send if smtp_session is not None else _send_smtp_message
     send(str(delivery["email"]), subject=f"盈航产品更新｜{title}", text=text, html=html)
@@ -2992,10 +3343,208 @@ def _send_daily_top5_email(
       <p style="margin:24px 0 8px;color:#1f2328;"><a href="{_html_escape(report_url)}" style="color:#0969da;text-decoration:underline;">打开盈航查看</a></p>
       <p style="margin:0 0 20px;color:#57606a;font-size:13px;word-break:break-all;">{_html_escape(report_url)}</p>
       <p style="margin:0 0 12px;color:#57606a;font-size:12px;line-height:1.6;">{_html_escape(disclaimer)}</p>
-      <p style="margin:0;color:#57606a;font-size:12px;line-height:1.6;">可登录盈航，在账户菜单中关闭“邮件推送（产品更新与每日 TOP5）”。</p>
+      <p style="margin:0;color:#57606a;font-size:12px;line-height:1.6;">可登录盈航，在账户菜单中关闭“邮件推送（产品更新与每日 AI 报告）”。</p>
     """, max_width=720)
     send = smtp_session.send if smtp_session is not None else _send_smtp_message
     send(str(delivery["email"]), subject=f"盈航每日 TOP5｜{trade_date}", text=text, html=html)
+
+
+_AI_REPORT_EMAIL_LABELS = {
+    "oneLineConclusion": "一句话结论",
+    "marketMood": "市场情绪",
+    "marketStage": "市场阶段",
+    "marketBreadth": "市场广度",
+    "indices": "主要指数",
+    "mainline": "最强主线",
+    "strongestStocks": "强势个股",
+    "secondaryLines": "次主线",
+    "rotationLines": "轮动方向",
+    "fakeOrWeakLines": "偏弱方向",
+    "watchPoints": "后续观察",
+    "keyRisks": "风险提示",
+    "previousDayComparison": "与前一交易日对比",
+    "informationCutoff": "信息截止时间",
+    "audit": "数据审计",
+    "sources": "信息来源",
+    "markdown": "完整研报",
+    "sections": "重点章节",
+    "decision_cards": "决策卡片",
+    "evidence_table": "证据与影响",
+    "watchlist": "观察清单",
+    "scenario_plan": "情景预案",
+    "risk_calendar": "风险日历",
+    "data_gaps": "数据缺口",
+    "institutional_research": "海外及机构观点",
+    "tags": "主题标签",
+}
+
+
+def _send_ai_report_email(
+    delivery: dict[str, Any], *, smtp_session: UpdateEmailSMTPSession | None = None
+) -> None:
+    try:
+        report = json.loads(str(delivery.get("report_json") or "{}"))
+    except Exception as exc:
+        raise AuthError("AI 报告邮件快照损坏", 500) from exc
+    if not isinstance(report, dict):
+        raise AuthError("AI 报告邮件快照损坏", 500)
+    report_type = str(delivery.get("report_type") or "")
+    if report_type not in AI_REPORT_EMAIL_TYPES:
+        raise AuthError("AI 报告邮件类型无效", 500)
+    report_date = str(delivery.get("report_date") or "")
+    site_url = os.getenv("PUBLIC_SITE_URL", "").strip().rstrip("/")
+    if not site_url:
+        raise AuthError("PUBLIC_SITE_URL 未配置", 500)
+    if report_type == "market_day":
+        product_name = "AI 当日行情"
+        route = "/market-day"
+        teaser = "今日市场行情总结已生成，可登录盈航查看市场主线、强弱方向与后续关注重点。"
+    else:
+        product_name = "AI 研报"
+        route = "/ai-research"
+        teaser = "今日 AI 研报已生成，可登录盈航查看国内外重要信息及其对 A 股的影响。"
+    report_url = f"{site_url}{route}?date={report_date}"
+    is_full = str(delivery.get("content_variant") or "teaser") == "full"
+    disclaimer = (
+        "风险提示：本邮件内容由 AI 基于公开信息整理，仅供学习、研究与信息参考，"
+        "不构成投资建议、证券推荐或收益承诺。信息可能存在延迟、遗漏或错误，投资有风险，请独立判断。"
+    )
+
+    if is_full:
+        title, summary, sections = _ai_report_email_content(report_type, report)
+        text_sections = "\n\n".join(
+            f"{label}\n{_email_value_text(value)}" for label, value in sections if _email_value_text(value)
+        )
+        html_sections = "".join(
+            f'<h2 style="margin:24px 0 10px;color:#1f2328;font-size:19px;line-height:1.4;">{_html_escape(label)}</h2>'
+            f'{_email_value_html(value)}'
+            for label, value in sections
+            if _email_value_text(value)
+        )
+        text = (
+            f"盈航{product_name}｜{report_date}\n\n{title}\n\n{summary}\n\n{text_sections}\n\n"
+            f"打开网站：{report_url}\n\n{disclaimer}\n可登录盈航，在账户菜单中关闭邮件推送。"
+        )
+        body_html = f"""
+          <h2 style="margin:0 0 10px;color:#1f2328;font-size:20px;line-height:1.4;">{_html_escape(title)}</h2>
+          <p style="margin:0 0 20px;color:#1f2328;line-height:1.7;">{_html_escape(summary)}</p>
+          {html_sections}
+        """
+    else:
+        text = (
+            f"盈航{product_name}｜{report_date}\n\n{teaser}\n\n"
+            f"开通会员后，可直接在邮件中阅读完整报告。\n打开网站：{report_url}\n\n{disclaimer}\n"
+            "可登录盈航，在账户菜单中关闭邮件推送。"
+        )
+        body_html = f"""
+          <h2 style="margin:0 0 12px;color:#1f2328;font-size:20px;line-height:1.4;">{_html_escape(product_name)}已生成</h2>
+          <p style="margin:0 0 16px;color:#1f2328;line-height:1.7;">{_html_escape(teaser)}</p>
+          <p style="margin:0 0 20px;color:#1f2328;line-height:1.7;">开通会员后，可直接在邮件中阅读完整报告。</p>
+        """
+
+    html = _light_email_document(f"""
+      <p style="margin:0 0 8px;color:#57606a;font-size:13px;">盈航 · {_html_escape(product_name)}</p>
+      <h1 style="margin:0 0 8px;color:#1f2328;font-size:24px;line-height:1.35;">{_html_escape(product_name)}｜{_html_escape(report_date)}</h1>
+      <p style="margin:0 0 24px;color:#57606a;font-size:13px;">报告已生成</p>
+      {body_html}
+      <p style="margin:24px 0 8px;color:#1f2328;"><a href="{_html_escape(report_url)}" style="color:#0969da;text-decoration:underline;">打开盈航查看</a></p>
+      <p style="margin:0 0 20px;color:#57606a;font-size:13px;word-break:break-all;">{_html_escape(report_url)}</p>
+      <p style="margin:0 0 12px;color:#57606a;font-size:12px;line-height:1.6;">{_html_escape(disclaimer)}</p>
+      <p style="margin:0;color:#57606a;font-size:12px;line-height:1.6;">可登录盈航，在账户菜单中关闭邮件推送。</p>
+    """, max_width=720)
+    send = smtp_session.send if smtp_session is not None else _send_smtp_message
+    send(
+        str(delivery["email"]),
+        subject=f"盈航{product_name}｜{report_date}",
+        text=text,
+        html=html,
+    )
+
+
+def _ai_report_email_content(
+    report_type: str, report: dict[str, Any]
+) -> tuple[str, str, list[tuple[str, object]]]:
+    if report_type == "market_day":
+        body = report.get("report") if isinstance(report.get("report"), dict) else report
+        title = f"{report.get('market_date') or report.get('marketDate') or body.get('marketDate') or ''} 市场复盘"
+        summary = str(body.get("oneLineConclusion") or "今日市场行情已完成整理。")
+        keys = (
+            "marketMood", "marketStage", "marketBreadth", "indices", "mainline",
+            "strongestStocks", "secondaryLines", "rotationLines", "fakeOrWeakLines",
+            "watchPoints", "keyRisks", "previousDayComparison", "informationCutoff", "audit", "sources",
+        )
+    else:
+        body = report
+        title = str(report.get("title") or "AI 研报")
+        summary = str(report.get("summary") or "今日重要信息已完成整理。")
+        keys = (
+            "tags", "markdown", "sections", "decision_cards", "evidence_table",
+            "watchlist", "scenario_plan", "risk_calendar", "institutional_research",
+            "data_gaps", "sources",
+        )
+    return title, summary, [(_AI_REPORT_EMAIL_LABELS.get(key, key), body.get(key)) for key in keys if body.get(key)]
+
+
+def _email_value_text(value: object, *, depth: int = 0) -> str:
+    if value is None or value == "":
+        return ""
+    if isinstance(value, dict):
+        lines = []
+        for key, item in value.items():
+            if _is_sensitive_ai_email_key(key):
+                continue
+            rendered = _email_value_text(item, depth=depth + 1)
+            if rendered:
+                label = _AI_REPORT_EMAIL_LABELS.get(str(key), str(key))
+                indent = "  " * depth
+                lines.append(f"{indent}{label}：{rendered}")
+        return "\n".join(lines)
+    if isinstance(value, list):
+        lines = []
+        for index, item in enumerate(value, start=1):
+            rendered = _email_value_text(item, depth=depth + 1)
+            if rendered:
+                lines.append(f"{index}. {rendered}")
+        return "\n".join(lines)
+    return str(value)
+
+
+def _is_sensitive_ai_email_key(value: object) -> bool:
+    """Keep ingestion metadata and credentials out of recursively rendered report fields."""
+    key = re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().lower()).strip("_")
+    exact = {
+        "headers",
+        "payload",
+        "raw_payload",
+        "source_ip",
+        "request_id",
+        "authorization",
+        "proxy_authorization",
+        "cookie",
+        "set_cookie",
+        "password",
+        "secret",
+        "token",
+        "credential",
+        "api_key",
+        "access_token",
+        "refresh_token",
+        "client_secret",
+    }
+    if key in exact:
+        return True
+    return bool(
+        key.endswith(("_api_key", "_access_token", "_refresh_token", "_client_secret", "_password", "_secret", "_token", "_credential"))
+        or key.startswith(("api_key_", "access_token_", "refresh_token_", "client_secret_", "password_", "secret_", "credential_"))
+    )
+
+
+def _email_value_html(value: object) -> str:
+    text = _email_value_text(value)
+    return (
+        '<div style="margin:0 0 16px;color:#1f2328;font-size:14px;line-height:1.75;white-space:pre-wrap;word-break:break-word;">'
+        f'{_html_escape(text)}</div>'
+    )
 
 
 def _order_payload(row: sqlite3.Row) -> dict[str, Any]:

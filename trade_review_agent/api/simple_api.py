@@ -33,6 +33,7 @@ from trade_review_agent.auth_system import (
     has_feature_access,
     create_membership_order,
     create_daily_top5_email_campaign,
+    create_ai_report_email_campaign,
     create_update_notice,
     credit_packages,
     create_order,
@@ -53,6 +54,7 @@ from trade_review_agent.auth_system import (
     membership_plans,
     process_next_update_email,
     process_next_daily_top5_email,
+    process_next_ai_report_email,
     publish_update_notice,
     register_password_user,
     require_admin,
@@ -61,8 +63,10 @@ from trade_review_agent.auth_system import (
     review_feedback,
     retry_update_email_campaign,
     retry_daily_top5_email_campaign,
+    retry_ai_report_email_campaign,
     recover_update_email_queue,
     recover_daily_top5_email_queue,
+    recover_ai_report_email_queue,
     send_email_code,
     send_email_binding_code,
     submit_membership_payment,
@@ -307,6 +311,9 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                 return
             if path.startswith("/api/admin/daily-top5-email-campaigns/"):
                 self._admin_retry_daily_top5_email_campaign(path)
+                return
+            if path.startswith("/api/admin/ai-report-email-campaigns/"):
+                self._admin_retry_ai_report_email_campaign(path)
                 return
             if path == "/api/reports":
                 self._create_reports()
@@ -573,6 +580,23 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
         )
         _write_market_day_status_payload(run_dir, status_payload)
         _prune_market_day_reports()
+        email_campaign = None
+        if _is_today_report_date(report["market_date"]):
+            try:
+                email_campaign = create_ai_report_email_campaign(
+                    AUTH_DB, report_type="market_day", report=report
+                )
+                UPDATE_EMAIL_QUEUE_WAKE.set()
+            except Exception as exc:
+                _write_api_error(
+                    request_id=getattr(self, "_request_id", uuid4().hex),
+                    method=self.command,
+                    path=self._request_path(),
+                    run_id=run_id,
+                    stage="market_day_email_campaign",
+                    exc=exc,
+                    recovered=True,
+                )
         self._json(
             {
                 "ok": True,
@@ -581,6 +605,7 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                 "status": "done",
                 "source": "codex_push",
                 "report_url": f"/api/market-day/reports/{run_id}/{MARKET_DAY_REPORT_NAME}",
+                "email_campaign": email_campaign,
             },
             status=202,
         )
@@ -659,7 +684,27 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
         status_payload["report"] = report
         _write_ai_research_status_payload(run_dir, status_payload)
         _prune_ai_research_reports()
-        self._json({"ok": True, "report": _ai_research_public_report(report)}, status=202)
+        email_campaign = None
+        if _is_today_report_date(report["research_date"]):
+            try:
+                email_campaign = create_ai_report_email_campaign(
+                    AUTH_DB, report_type="ai_research", report=report
+                )
+                UPDATE_EMAIL_QUEUE_WAKE.set()
+            except Exception as exc:
+                _write_api_error(
+                    request_id=getattr(self, "_request_id", uuid4().hex),
+                    method=self.command,
+                    path=self._request_path(),
+                    run_id=run_id,
+                    stage="ai_research_email_campaign",
+                    exc=exc,
+                    recovered=True,
+                )
+        self._json(
+            {"ok": True, "report": _ai_research_public_report(report), "email_campaign": email_campaign},
+            status=202,
+        )
 
     def _list_webhooks(self) -> None:
         limit = 30
@@ -1194,6 +1239,16 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             self._json({"error": "not found"}, status=404)
             return
         campaign = retry_daily_top5_email_campaign(AUTH_DB, campaign_id=int(parts[4]))
+        UPDATE_EMAIL_QUEUE_WAKE.set()
+        self._json({"email_campaign": campaign})
+
+    def _admin_retry_ai_report_email_campaign(self, path: str) -> None:
+        self._require_admin()
+        parts = path.split("/")
+        if len(parts) != 6 or parts[5] != "retry":
+            self._json({"error": "not found"}, status=404)
+            return
+        campaign = retry_ai_report_email_campaign(AUTH_DB, campaign_id=int(parts[4]))
         UPDATE_EMAIL_QUEUE_WAKE.set()
         self._json({"email_campaign": campaign})
 
@@ -2076,6 +2131,7 @@ def _run_market_day_generation_task(
         _write_market_day_status(run_id, run_dir, status="running", stage=stage, request_id=request_id)
         report = run_market_day_agent(market_date)
         report["run_id"] = run_id
+        report["market_date"] = market_date
         report["status_url"] = f"/api/market-day/reports/{run_id}/status"
         report["report_url"] = f"/api/market-day/reports/{run_id}/{MARKET_DAY_REPORT_NAME}"
 
@@ -2091,6 +2147,20 @@ def _run_market_day_generation_task(
         done["report"] = report
         _write_market_day_status_payload(run_dir, done)
         _prune_market_day_reports()
+        if _is_today_report_date(market_date):
+            try:
+                create_ai_report_email_campaign(AUTH_DB, report_type="market_day", report=report)
+                UPDATE_EMAIL_QUEUE_WAKE.set()
+            except Exception as exc:
+                _write_api_error(
+                    request_id=request_id,
+                    method="BACKGROUND",
+                    path=f"/api/market-day/reports/{run_id}",
+                    run_id=run_id,
+                    stage="market_day_email_campaign",
+                    exc=exc,
+                    recovered=True,
+                )
     except Exception as exc:
         payload = _market_day_status_payload(run_id, status="error", stage=stage, request_id=request_id)
         payload.update(_api_error_payload(exc, request_id=request_id, run_id=run_id, stage=stage))
@@ -4069,7 +4139,13 @@ def _update_email_queue_worker(worker_index: int) -> None:
                     processed_top5 = process_next_daily_top5_email(
                         AUTH_DB, smtp_session=smtp_session
                     )
-                    if not processed_update and not processed_top5:
+                    processed_market_day = process_next_ai_report_email(
+                        AUTH_DB, report_type="market_day", smtp_session=smtp_session
+                    )
+                    processed_ai_research = process_next_ai_report_email(
+                        AUTH_DB, report_type="ai_research", smtp_session=smtp_session
+                    )
+                    if not any((processed_update, processed_top5, processed_market_day, processed_ai_research)):
                         break
             except Exception as exc:
                 _write_api_error(
@@ -4088,6 +4164,7 @@ def _update_email_queue_worker(worker_index: int) -> None:
 def _start_update_email_queue_worker() -> None:
     recover_update_email_queue(AUTH_DB)
     recover_daily_top5_email_queue(AUTH_DB)
+    recover_ai_report_email_queue(AUTH_DB)
     for worker_index in range(UPDATE_EMAIL_WORKER_COUNT):
         thread = threading.Thread(
             target=_update_email_queue_worker,
