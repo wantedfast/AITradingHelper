@@ -246,6 +246,38 @@ class AdminDashboardAnalyticsTest(unittest.TestCase):
         self.assertEqual(totals["auction_strength_view"]["count"], 1)
         self.assertEqual(totals["auction_strength_view"]["credits"], 2)
 
+    def test_recent_usage_events_include_username_time_and_top5_market_session(self) -> None:
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            with conn:
+                conn.execute(
+                    """
+                    INSERT INTO usage_events (
+                        user_id, feature, credits_spent, status, related_id, ip, created_at
+                    ) VALUES (?, 'auction_strength_view', 2, 'charged', 'top5-before-open', '', ?)
+                    """,
+                    (self.user_ids[0], f"{self.today}T09:26:15+08:00"),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO usage_events (
+                        user_id, feature, credits_spent, status, related_id, ip, created_at
+                    ) VALUES (?, 'auction_strength_view', 0, 'membership_free', 'top5-after-open', '', ?)
+                    """,
+                    (self.user_ids[1], f"{self.today}T09:31:05+08:00"),
+                )
+
+        events = admin_dashboard(self.db_path, days=7)["analytics"]["recent_usage_events"]
+        before_open = next(item for item in events if item["related_id"] == "top5-before-open")
+        after_open = next(item for item in events if item["related_id"] == "top5-after-open")
+
+        self.assertEqual(before_open["display_name"], "analyticsuser0")
+        self.assertEqual(before_open["used_at"], f"{self.today}T09:26:15+08:00")
+        self.assertEqual(before_open["market_session"], "before_open")
+        self.assertEqual(after_open["market_session"], "after_open")
+        self.assertEqual(after_open["status"], "membership_free")
+        self.assertNotIn(self.admin_id, [item["user_id"] for item in events])
+        self.assertFalse(any(item["status"] == "blocked_no_credits" for item in events))
+
 
 if __name__ == "__main__":
     unittest.main()
