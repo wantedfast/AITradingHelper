@@ -93,6 +93,9 @@ class AIReportEmailIngestionTest(unittest.TestCase):
                     getattr(handler, method_name)()
 
                 self.assertEqual([item[0] for item in responses], [202, 202])
+                self.assertTrue(responses[0][1]["success"])
+                self.assertTrue(responses[0][1]["stored"])
+                self.assertEqual(responses[0][1]["run_id"], str(payload["run_id"]))
                 self.assertIsNotNone(responses[0][1]["email_campaign"])
                 self.assertEqual(
                     responses[0][1]["email_campaign"]["id"],
