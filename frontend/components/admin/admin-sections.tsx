@@ -362,8 +362,10 @@ export function AdminUpdatesSection({ active, draft, editingNoticeId, onDraftCha
                   {notice.email_campaign.failed > 0 && <button type="button" onClick={() => onRetryCampaign(notice.email_campaign!.id)}>重试失败邮件</button>}
                 </div>
               )}
-              <button type="button" onClick={() => onEdit(notice)}>编辑</button>
-              {notice.status === "published" ? <button type="button" onClick={() => onUnpublish(notice.id)}>下线</button> : <button type="button" onClick={() => onPublish(notice.id)}>发布</button>}
+              <div className="admin-notice-item-actions">
+                <button type="button" onClick={() => onEdit(notice)}>编辑</button>
+                {notice.status === "published" ? <button type="button" onClick={() => onUnpublish(notice.id)}>下线</button> : <button type="button" onClick={() => onPublish(notice.id)}>发布</button>}
+              </div>
             </div>
           ))}
           {!notices.length && <p>暂无更新公告。</p>}

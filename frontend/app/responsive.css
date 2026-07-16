@@ -1315,12 +1315,13 @@
     gap: 9px;
   }
 
-  .actions > .primary:not(.home-mobile-primary):not(.home-register-primary) {
+  .actions > .primary:not(.home-mobile-primary):not(.home-register-primary):not(.home-start-primary) {
     display: none;
   }
 
   .home-mobile-primary,
-  .home-register-primary {
+  .home-register-primary,
+  .home-start-primary {
     width: 100%;
     min-height: 50px;
     display: inline-flex;
@@ -2021,6 +2022,15 @@
   .admin-user-usage-summary { gap: 6px; }
   .admin-user-usage-summary article { padding: 10px; }
   .admin-user-usage-summary b { font-size: 19px; }
+
+  .admin-notice-item-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .admin-notice-item-actions button {
+    width: 100%;
+  }
 
   .admin-table thead {
     display: none;

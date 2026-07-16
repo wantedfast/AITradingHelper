@@ -3,7 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { FormEvent, useEffect, useRef, useState } from "react";
-import { BellRing, ChevronDown, Copy, Crown, FileSearch, FileText, Gift, Info, LogOut, Megaphone, Menu, MessageSquare, ShieldCheck, Sparkles, TrendingUp, Trophy, UserPlus, UserRound, X } from "lucide-react";
+import { BellRing, ChevronDown, Copy, Crown, FileSearch, FileText, Gift, Info, LogOut, Megaphone, Menu, MessageSquare, ShieldCheck, Sparkles, TrendingUp, Trophy, UserRound, X } from "lucide-react";
 import { AuctionStrengthPerformanceTicker, useAuctionStrengthPerformance } from "@/components/auction-strength-performance-ticker";
 import { GoldMagicCube } from "@/components/gold-magic-cube";
 import { FinancialDisclaimer } from "@/components/financial-disclaimer";
@@ -457,25 +457,10 @@ export default function Page() {
               从交割单开始，AI 自动还原你的交易现场：市场情绪、板块方向、个股强度、产业链位置和下一步执行方案一目了然。
             </p>
             <div className="actions">
-              {user ? (
-                <>
-                  <Link className="primary" href="/review">
-                    <Sparkles className="h-5 w-5" />
-                    开始 AI 复盘
-                  </Link>
-                  <Link className="primary home-mobile-primary" href="/auction-strength">
-                    <Trophy className="h-5 w-5" />
-                    查看今日 TOP5
-                  </Link>
-                </>
-              ) : (
-                <>
-                  <Link className="primary home-register-primary" href="/auth?mode=register">
-                    <UserPlus className="h-5 w-5" />
-                    免费注册，领取 5 次
-                  </Link>
-                </>
-              )}
+              <Link className="primary home-start-primary" href={user ? "/auction-strength" : "/auth"}>
+                {user ? <Trophy className="h-5 w-5" /> : <Sparkles className="h-5 w-5" />}
+                现在开始
+              </Link>
             </div>
             <div
               className={`hero-performance-chip${showAuctionTooltip ? " is-tooltip-open" : ""}`}
