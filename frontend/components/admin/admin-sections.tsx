@@ -67,6 +67,15 @@ type EmailCampaign = {
   skipped: number;
 };
 
+type DailyTop5EmailCampaign = EmailCampaign & {
+  trade_date: string;
+  report_id: string;
+  full: number;
+  teaser: number;
+  created_at: string;
+  finished_at?: string | null;
+};
+
 type UpdateNotice = {
   id: number;
   title: string;
@@ -316,7 +325,7 @@ export function AdminOrdersSection({ active, filter, onFilterChange, items, onCo
   );
 }
 
-export function AdminUpdatesSection({ active, draft, editingNoticeId, onDraftChange, onSave, onRequestFormPublish, onCancelEdit, notices, onRetryCampaign, onEdit, onUnpublish, onPublish }: {
+export function AdminUpdatesSection({ active, draft, editingNoticeId, onDraftChange, onSave, onRequestFormPublish, onCancelEdit, notices, dailyTop5Campaigns, onRetryCampaign, onRetryDailyTop5Campaign, onEdit, onUnpublish, onPublish }: {
   active: boolean;
   draft: NoticeDraft;
   editingNoticeId: number | null;
@@ -325,7 +334,9 @@ export function AdminUpdatesSection({ active, draft, editingNoticeId, onDraftCha
   onRequestFormPublish: () => void;
   onCancelEdit: () => void;
   notices: UpdateNotice[];
+  dailyTop5Campaigns: DailyTop5EmailCampaign[];
   onRetryCampaign: (id: number) => void;
+  onRetryDailyTop5Campaign: (id: number) => void;
   onEdit: (notice: UpdateNotice) => void;
   onUnpublish: (id: number) => void;
   onPublish: (id: number) => void;
@@ -333,6 +344,25 @@ export function AdminUpdatesSection({ active, draft, editingNoticeId, onDraftCha
   const className = `admin-panel ${sectionClass("updates", active)}`;
   return (
     <section className="admin-grid">
+      <article className={className}>
+        <div className="admin-panel-head"><Megaphone /><h2>每日 TOP5 邮件推送</h2></div>
+        <p>完整报告到达后自动创建任务；同一交易日只推送一次，失败不会影响网站报告上线。</p>
+        <div className="admin-list">
+          {dailyTop5Campaigns.map((campaign) => (
+            <div className="admin-list-item" key={campaign.id}>
+              <header><b>{campaign.trade_date} · 每日 TOP5</b><span>{emailCampaignLabel(campaign.status)}</span></header>
+              <p>{formatDate(campaign.created_at)}</p>
+              <div className="admin-email-campaign">
+                <span>会员完整版 {campaign.full} · 普通用户摘要版 {campaign.teaser}</span>
+                <span>成功 {campaign.sent} · 待发送 {campaign.pending + campaign.sending} · 失败 {campaign.failed} · 跳过 {campaign.skipped}</span>
+                {campaign.failed > 0 && <button type="button" onClick={() => onRetryDailyTop5Campaign(campaign.id)}>重试失败邮件</button>}
+              </div>
+            </div>
+          ))}
+          {!dailyTop5Campaigns.length && <p>暂时还没有每日 TOP5 邮件任务。</p>}
+        </div>
+      </article>
+
       <article className={className}>
         <div className="admin-panel-head"><Megaphone /><h2>更新公告</h2></div>
         <div className="admin-notice-form">

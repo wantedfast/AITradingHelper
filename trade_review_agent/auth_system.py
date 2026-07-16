@@ -233,6 +233,35 @@ def init_auth_db(db_path: Path) -> None:
                 UNIQUE (campaign_id, user_id)
             );
 
+            CREATE TABLE IF NOT EXISTS daily_top5_email_campaigns (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                trade_date TEXT NOT NULL UNIQUE,
+                report_id TEXT NOT NULL,
+                report_json TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT NOT NULL,
+                started_at TEXT,
+                finished_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS daily_top5_email_deliveries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                campaign_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                email TEXT NOT NULL DEFAULT '',
+                content_variant TEXT NOT NULL DEFAULT 'teaser',
+                membership_active INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'pending',
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                next_attempt_at TEXT,
+                last_error TEXT,
+                sent_at TEXT,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (campaign_id) REFERENCES daily_top5_email_campaigns(id),
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                UNIQUE (campaign_id, user_id)
+            );
+
             CREATE TABLE IF NOT EXISTS sms_codes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 phone TEXT NOT NULL,
@@ -278,6 +307,8 @@ def init_auth_db(db_path: Path) -> None:
             CREATE INDEX IF NOT EXISTS idx_update_notices_status ON update_notices(status, published_at);
             CREATE INDEX IF NOT EXISTS idx_update_email_campaigns_notice ON update_email_campaigns(notice_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_update_email_deliveries_queue ON update_email_deliveries(status, next_attempt_at, id);
+            CREATE INDEX IF NOT EXISTS idx_daily_top5_email_deliveries_queue
+                ON daily_top5_email_deliveries(status, next_attempt_at, id);
             CREATE INDEX IF NOT EXISTS idx_sms_codes_phone ON sms_codes(phone, purpose, created_at);
             CREATE INDEX IF NOT EXISTS idx_email_codes_email ON email_codes(email, purpose, created_at);
             CREATE INDEX IF NOT EXISTS idx_agreement_acceptances_user ON agreement_acceptances(user_id, accepted_at);
@@ -1264,6 +1295,18 @@ def admin_dashboard(db_path: Path, days: int = 14) -> dict[str, Any]:
             }
             for row in frequent_rows
         ]
+        daily_top5_campaign_rows = conn.execute(
+            "SELECT id FROM daily_top5_email_campaigns ORDER BY trade_date DESC, id DESC LIMIT 20"
+        ).fetchall()
+        daily_top5_email_campaigns = [
+            _daily_top5_email_campaign_payload(conn, int(row["id"]))
+            for row in daily_top5_campaign_rows
+        ]
+        daily_top5_email_failed_count = int(
+            conn.execute(
+                "SELECT COUNT(*) AS count FROM daily_top5_email_deliveries WHERE status = 'failed'"
+            ).fetchone()["count"]
+        )
         return {
             "totals": totals,
             "usage_by_day": [dict(row) for row in usage_rows],
@@ -1288,6 +1331,8 @@ def admin_dashboard(db_path: Path, days: int = 14) -> dict[str, Any]:
                 ).fetchall()
             ],
             "update_notices": [_update_notice_payload(row, conn=conn) for row in _update_notice_rows(conn)],
+            "daily_top5_email_campaigns": daily_top5_email_campaigns,
+            "daily_top5_email_failed_count": daily_top5_email_failed_count,
         }
 
 
@@ -1419,12 +1464,129 @@ def retry_update_email_campaign(db_path: Path, *, campaign_id: int) -> dict[str,
         return _email_campaign_payload(conn, campaign_id)
 
 
+def create_daily_top5_email_campaign(db_path: Path, *, report: dict[str, Any]) -> dict[str, Any]:
+    """Create an idempotent recipient snapshot for one complete trading-day report."""
+    trade_date = str(report.get("trade_date") or "").strip()
+    report_id = str(report.get("id") or report.get("request_id") or "").strip()
+    strong_stocks = report.get("top5_strong_stocks")
+    conclusion = report.get("global_conclusion")
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", trade_date):
+        raise AuthError("每日 TOP5 交易日期无效", 400)
+    if not _has_complete_daily_top5_stocks(strong_stocks):
+        raise AuthError("每日 TOP5 报告尚未包含完整的 5 只强势标的", 409)
+    if not isinstance(conclusion, dict) or not _has_complete_daily_top5_conclusion(conclusion):
+        raise AuthError("每日 TOP5 报告尚未包含全局结论", 409)
+
+    report_json = json.dumps(report, ensure_ascii=False, separators=(",", ":"))
+    now = _now()
+    with _connect(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        existing = conn.execute(
+            "SELECT id FROM daily_top5_email_campaigns WHERE trade_date = ?", (trade_date,)
+        ).fetchone()
+        if existing:
+            return _daily_top5_email_campaign_payload(conn, int(existing["id"]))
+        campaign_id = int(
+            conn.execute(
+                """
+                INSERT INTO daily_top5_email_campaigns
+                    (trade_date, report_id, report_json, status, created_at)
+                VALUES (?, ?, ?, 'pending', ?)
+                """,
+                (trade_date, report_id, report_json, now),
+            ).lastrowid
+        )
+        users = conn.execute(
+            """
+            SELECT id, email, email_verified, update_emails_enabled,
+                   membership_status, membership_expires_at
+            FROM users
+            WHERE role = 'user'
+            ORDER BY id
+            """
+        ).fetchall()
+        for user in users:
+            email = str(user["email"] or "").strip().lower()
+            eligible = bool(
+                email
+                and int(user["email_verified"] or 0) == 1
+                and int(user["update_emails_enabled"] or 0) == 1
+            )
+            membership_active = _has_active_membership(user)
+            if not email or int(user["email_verified"] or 0) != 1:
+                error = "邮箱未验证"
+            elif int(user["update_emails_enabled"] or 0) != 1:
+                error = "用户已关闭邮件推送"
+            else:
+                error = None
+            conn.execute(
+                """
+                INSERT INTO daily_top5_email_deliveries (
+                    campaign_id, user_id, email, content_variant, membership_active,
+                    status, attempt_count, next_attempt_at, last_error, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+                """,
+                (
+                    campaign_id,
+                    user["id"],
+                    email,
+                    "full" if membership_active else "teaser",
+                    1 if membership_active else 0,
+                    "pending" if eligible else "skipped",
+                    now if eligible else None,
+                    error,
+                    now,
+                ),
+            )
+        _refresh_daily_top5_email_campaign_status(conn, campaign_id)
+        return _daily_top5_email_campaign_payload(conn, campaign_id)
+
+
+def retry_daily_top5_email_campaign(db_path: Path, *, campaign_id: int) -> dict[str, Any]:
+    with _connect(db_path) as conn:
+        existing = conn.execute(
+            "SELECT id FROM daily_top5_email_campaigns WHERE id = ?", (campaign_id,)
+        ).fetchone()
+        if not existing:
+            raise AuthError("每日 TOP5 邮件任务不存在", 404)
+        now = _now()
+        cursor = conn.execute(
+            """
+            UPDATE daily_top5_email_deliveries
+            SET status = 'pending', attempt_count = 0, next_attempt_at = ?,
+                last_error = NULL, updated_at = ?
+            WHERE campaign_id = ? AND status = 'failed'
+            """,
+            (now, now, campaign_id),
+        )
+        if cursor.rowcount:
+            conn.execute(
+                "UPDATE daily_top5_email_campaigns SET status = 'pending', finished_at = NULL WHERE id = ?",
+                (campaign_id,),
+            )
+        return _daily_top5_email_campaign_payload(conn, campaign_id)
+
+
 def recover_update_email_queue(db_path: Path) -> int:
     cutoff = (datetime.now(CN_TZ) - timedelta(minutes=10)).isoformat()
     with _connect(db_path) as conn:
         cursor = conn.execute(
             """
             UPDATE update_email_deliveries
+            SET status = 'pending', next_attempt_at = ?, updated_at = ?
+            WHERE status = 'sending' AND updated_at < ?
+            """,
+            (_now(), _now(), cutoff),
+        )
+        return int(cursor.rowcount)
+
+
+def recover_daily_top5_email_queue(db_path: Path) -> int:
+    cutoff = (datetime.now(CN_TZ) - timedelta(minutes=10)).isoformat()
+    with _connect(db_path) as conn:
+        cursor = conn.execute(
+            """
+            UPDATE daily_top5_email_deliveries
             SET status = 'pending', next_attempt_at = ?, updated_at = ?
             WHERE status = 'sending' AND updated_at < ?
             """,
@@ -1497,6 +1659,82 @@ def process_next_update_email(
                 (_now(), _now(), delivery["id"]),
             )
             _refresh_email_campaign_status(conn, int(delivery["campaign_id"]))
+    return True
+
+
+def process_next_daily_top5_email(
+    db_path: Path,
+    *,
+    sender: Callable[[dict[str, Any]], None] | None = None,
+    smtp_session: "UpdateEmailSMTPSession | None" = None,
+) -> bool:
+    now = _now()
+    with _connect(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            """
+            SELECT d.id, d.campaign_id, d.email, d.content_variant,
+                   d.membership_active, d.attempt_count,
+                   c.trade_date, c.report_id, c.report_json
+            FROM daily_top5_email_deliveries d
+            JOIN daily_top5_email_campaigns c ON c.id = d.campaign_id
+            WHERE d.status = 'pending'
+              AND (d.next_attempt_at IS NULL OR d.next_attempt_at <= ?)
+            ORDER BY d.id
+            LIMIT 1
+            """,
+            (now,),
+        ).fetchone()
+        if not row:
+            return False
+        attempt = int(row["attempt_count"]) + 1
+        conn.execute(
+            "UPDATE daily_top5_email_deliveries SET status = 'sending', attempt_count = ?, updated_at = ? WHERE id = ?",
+            (attempt, now, row["id"]),
+        )
+        conn.execute(
+            "UPDATE daily_top5_email_campaigns SET status = 'sending', started_at = COALESCE(started_at, ?) WHERE id = ?",
+            (now, row["campaign_id"]),
+        )
+        delivery = dict(row)
+        delivery["attempt_count"] = attempt
+    try:
+        if sender is not None:
+            sender(delivery)
+        elif smtp_session is not None:
+            _send_daily_top5_email(delivery, smtp_session=smtp_session)
+        else:
+            _send_daily_top5_email(delivery)
+    except Exception as exc:
+        with _connect(db_path) as conn:
+            if attempt >= UPDATE_EMAIL_MAX_ATTEMPTS:
+                conn.execute(
+                    "UPDATE daily_top5_email_deliveries SET status = 'failed', last_error = ?, updated_at = ? WHERE id = ?",
+                    (str(exc)[:500], _now(), delivery["id"]),
+                )
+            else:
+                delay = UPDATE_EMAIL_RETRY_MINUTES[min(attempt - 1, len(UPDATE_EMAIL_RETRY_MINUTES) - 1)]
+                next_attempt = (datetime.now(CN_TZ) + timedelta(minutes=delay)).isoformat()
+                conn.execute(
+                    """
+                    UPDATE daily_top5_email_deliveries
+                    SET status = 'pending', next_attempt_at = ?, last_error = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (next_attempt, str(exc)[:500], _now(), delivery["id"]),
+                )
+            _refresh_daily_top5_email_campaign_status(conn, int(delivery["campaign_id"]))
+    else:
+        with _connect(db_path) as conn:
+            conn.execute(
+                """
+                UPDATE daily_top5_email_deliveries
+                SET status = 'sent', sent_at = ?, last_error = NULL, updated_at = ?
+                WHERE id = ?
+                """,
+                (_now(), _now(), delivery["id"]),
+            )
+            _refresh_daily_top5_email_campaign_status(conn, int(delivery["campaign_id"]))
     return True
 
 
@@ -2500,6 +2738,110 @@ def _refresh_email_campaign_status(conn: sqlite3.Connection, campaign_id: int) -
     )
 
 
+def _daily_top5_email_campaign_payload(conn: sqlite3.Connection, campaign_id: int) -> dict[str, Any]:
+    row = conn.execute(
+        "SELECT * FROM daily_top5_email_campaigns WHERE id = ?", (campaign_id,)
+    ).fetchone()
+    if not row:
+        raise AuthError("每日 TOP5 邮件任务不存在", 404)
+    counts = {
+        str(item["status"]): int(item["count"])
+        for item in conn.execute(
+            """
+            SELECT status, COUNT(*) AS count
+            FROM daily_top5_email_deliveries
+            WHERE campaign_id = ?
+            GROUP BY status
+            """,
+            (campaign_id,),
+        ).fetchall()
+    }
+    variants = {
+        str(item["content_variant"]): int(item["count"])
+        for item in conn.execute(
+            """
+            SELECT content_variant, COUNT(*) AS count
+            FROM daily_top5_email_deliveries
+            WHERE campaign_id = ? AND status != 'skipped'
+            GROUP BY content_variant
+            """,
+            (campaign_id,),
+        ).fetchall()
+    }
+    return {
+        "id": int(row["id"]),
+        "trade_date": str(row["trade_date"]),
+        "report_id": str(row["report_id"]),
+        "status": str(row["status"]),
+        "total": sum(counts.values()),
+        "pending": counts.get("pending", 0),
+        "sending": counts.get("sending", 0),
+        "sent": counts.get("sent", 0),
+        "failed": counts.get("failed", 0),
+        "skipped": counts.get("skipped", 0),
+        "full": variants.get("full", 0),
+        "teaser": variants.get("teaser", 0),
+        "created_at": row["created_at"],
+        "started_at": row["started_at"],
+        "finished_at": row["finished_at"],
+    }
+
+
+def _has_complete_daily_top5_stocks(value: object) -> bool:
+    required_fields = ("name", "code", "theme", "today_open_change", "reason", "observe_after_930")
+    if not isinstance(value, list) or len(value) != 5:
+        return False
+    for stock in value:
+        if not isinstance(stock, dict):
+            return False
+        try:
+            rank = int(stock.get("rank"))
+        except (TypeError, ValueError):
+            return False
+        if rank <= 0 or any(not str(stock.get(field) or "").strip() for field in required_fields):
+            return False
+    return True
+
+
+def _has_complete_daily_top5_conclusion(conclusion: dict[str, Any]) -> bool:
+    fields = (
+        "strongest_stock_at_925",
+        "strongest_theme_cluster",
+        "most_over_expected_stock",
+        "best_capacity_confirmation",
+        "biggest_negative_feedback",
+        "one_sentence_for_930",
+    )
+    return all(str(conclusion.get(field) or "").strip() for field in fields)
+
+
+def _refresh_daily_top5_email_campaign_status(conn: sqlite3.Connection, campaign_id: int) -> None:
+    counts = {
+        str(row["status"]): int(row["count"])
+        for row in conn.execute(
+            """
+            SELECT status, COUNT(*) AS count
+            FROM daily_top5_email_deliveries
+            WHERE campaign_id = ?
+            GROUP BY status
+            """,
+            (campaign_id,),
+        ).fetchall()
+    }
+    if counts.get("sending"):
+        status, finished = "sending", None
+    elif counts.get("pending"):
+        status, finished = "pending", None
+    elif counts.get("failed"):
+        status, finished = ("partial_failed" if counts.get("sent") else "failed"), _now()
+    else:
+        status, finished = "completed", _now()
+    conn.execute(
+        "UPDATE daily_top5_email_campaigns SET status = ?, finished_at = ? WHERE id = ?",
+        (status, finished, campaign_id),
+    )
+
+
 def _send_update_notice_email(
     delivery: dict[str, Any], *, smtp_session: UpdateEmailSMTPSession | None = None
 ) -> None:
@@ -2529,6 +2871,125 @@ def _send_update_notice_email(
     """
     send = smtp_session.send if smtp_session is not None else _send_smtp_message
     send(str(delivery["email"]), subject=f"盈航产品更新｜{title}", text=text, html=html)
+
+
+def _send_daily_top5_email(
+    delivery: dict[str, Any], *, smtp_session: UpdateEmailSMTPSession | None = None
+) -> None:
+    try:
+        report = json.loads(str(delivery.get("report_json") or "{}"))
+    except Exception as exc:
+        raise AuthError("每日 TOP5 邮件报告快照损坏", 500) from exc
+    if not isinstance(report, dict):
+        raise AuthError("每日 TOP5 邮件报告快照损坏", 500)
+    trade_date = str(delivery.get("trade_date") or report.get("trade_date") or "")
+    analysis_time = str(report.get("analysis_time") or report.get("received_at") or "")
+    summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+    conclusion = report.get("global_conclusion") if isinstance(report.get("global_conclusion"), dict) else {}
+    site_url = os.getenv("PUBLIC_SITE_URL", "").strip().rstrip("/")
+    if not site_url:
+        raise AuthError("PUBLIC_SITE_URL 未配置", 500)
+    report_url = f"{site_url}/auction-strength?date={trade_date}"
+    disclaimer = (
+        "风险提示：本邮件内容由 AI 基于公开信息整理，仅供学习、研究与信息参考，"
+        "不构成投资建议、证券推荐或收益承诺。信息可能存在延迟、遗漏或错误，投资有风险，请独立判断。"
+    )
+    teaser = str(summary.get("one_sentence") or "今日集合竞价强弱方向已经整理完成。").strip()
+    is_full = str(delivery.get("content_variant") or "teaser") == "full"
+    strong_stocks = report.get("top5_strong_stocks") if isinstance(report.get("top5_strong_stocks"), list) else []
+    if not is_full:
+        protected_tokens = {
+            str(stock.get(field) or "").strip()
+            for stock in strong_stocks
+            if isinstance(stock, dict)
+            for field in ("name", "code")
+            if str(stock.get(field) or "").strip()
+        }
+        if any(token.casefold() in teaser.casefold() for token in protected_tokens):
+            teaser = "今日集合竞价强弱方向已经整理完成。"
+
+    if is_full:
+        text_rows = []
+        html_rows = []
+        for index, stock in enumerate(strong_stocks, start=1):
+            if not isinstance(stock, dict):
+                continue
+            rank = stock.get("rank") or index
+            name = str(stock.get("name") or "-")
+            code = str(stock.get("code") or "-")
+            theme = str(stock.get("theme") or "-")
+            change = str(stock.get("today_open_change") or "-")
+            reason = str(stock.get("reason") or "-")
+            observe = str(stock.get("observe_after_930") or "-")
+            text_rows.append(
+                f"{rank}. {name}（{code}）｜题材：{theme}｜竞价涨幅：{change}\n"
+                f"   入选理由：{reason}\n   9:30 后观察：{observe}"
+            )
+            html_rows.append(
+                "<tr>"
+                f"<td>{_html_escape(rank)}</td><td><strong>{_html_escape(name)}</strong><br>{_html_escape(code)}</td>"
+                f"<td>{_html_escape(theme)}</td><td>{_html_escape(change)}</td>"
+                f"<td>{_html_escape(reason)}</td><td>{_html_escape(observe)}</td>"
+                "</tr>"
+            )
+        conclusion_items = [
+            ("最强个股", conclusion.get("strongest_stock_at_925")),
+            ("最强题材", conclusion.get("strongest_theme_cluster")),
+            ("超预期标的", conclusion.get("most_over_expected_stock")),
+            ("容量确认", conclusion.get("best_capacity_confirmation")),
+            ("负反馈", conclusion.get("biggest_negative_feedback")),
+            ("9:30 全局结论", conclusion.get("one_sentence_for_930")),
+        ]
+        text_conclusion = "\n".join(f"- {label}：{value or '-'}" for label, value in conclusion_items)
+        html_conclusion = "".join(
+            f"<li style='margin:8px 0'><strong>{_html_escape(label)}：</strong>{_html_escape(value or '-')}</li>"
+            for label, value in conclusion_items
+        )
+        text = (
+            f"盈航每日 TOP5｜{trade_date}\n生成时间：{analysis_time or '-'}\n\n"
+            f"{teaser}\n\n今日强势标的\n" + "\n\n".join(text_rows) +
+            f"\n\n全局结论\n{text_conclusion}\n\n查看网站：{report_url}\n\n{disclaimer}\n"
+            "可登录盈航，在账户菜单中关闭邮件推送。"
+        )
+        body_html = f"""
+          <p style="color:#ddd;line-height:1.7">{_html_escape(teaser)}</p>
+          <h3 style="color:#f5d77a">今日强势标的</h3>
+          <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">
+            <thead><tr style="background:#262113;color:#f5d77a"><th>排名</th><th>标的</th><th>题材</th><th>竞价涨幅</th><th>入选理由</th><th>9:30 后观察</th></tr></thead>
+            <tbody>{''.join(html_rows)}</tbody>
+          </table></div>
+          <h3 style="color:#f5d77a">全局结论</h3><ul style="padding-left:20px">{html_conclusion}</ul>
+        """
+    else:
+        text = (
+            f"盈航每日 TOP5｜{trade_date}\n\n今日 TOP5 已生成。\n{teaser}\n\n"
+            "开通会员后，可在邮件中直接查看完整 5 只强势标的与全局结论。\n"
+            f"打开网站：{report_url}\n\n{disclaimer}\n"
+            "可登录盈航，在账户菜单中关闭邮件推送。"
+        )
+        body_html = f"""
+          <p style="font-size:20px;color:#f5d77a;font-weight:bold">今日 TOP5 已生成</p>
+          <p style="color:#ddd;line-height:1.7">{_html_escape(teaser)}</p>
+          <div style="margin:18px 0;padding:14px;border:1px solid #c9a64655;border-radius:10px;color:#f5d77a">
+            开通会员后，可在邮件中直接查看完整 5 只强势标的与全局结论。
+          </div>
+        """
+
+    html = f"""
+    <html><body style="margin:0;background:#050505;color:#f4f0e8;font-family:Arial,'Microsoft YaHei',sans-serif;padding:20px">
+      <div style="max-width:720px;margin:auto;border:1px solid #c9a64655;border-radius:16px;padding:24px;background:#111">
+        <div style="color:#f5d77a;font-size:13px;letter-spacing:2px">盈航 · DAILY TOP 5</div>
+        <h2 style="margin-bottom:6px;color:#f5d77a">每日 TOP5｜{_html_escape(trade_date)}</h2>
+        <p style="color:#999;font-size:13px">生成时间：{_html_escape(analysis_time or '-')}</p>
+        {body_html}
+        <p style="margin:24px 0"><a href="{_html_escape(report_url)}" style="display:inline-block;background:#e3bd4f;color:#080808;text-decoration:none;font-weight:bold;padding:12px 18px;border-radius:8px">打开盈航查看</a></p>
+        <p style="color:#888;font-size:12px;line-height:1.6">{_html_escape(disclaimer)}</p>
+        <p style="color:#777;font-size:12px">可登录盈航，在账户菜单中关闭“邮件推送（产品更新与每日 TOP5）”。</p>
+      </div>
+    </body></html>
+    """
+    send = smtp_session.send if smtp_session is not None else _send_smtp_message
+    send(str(delivery["email"]), subject=f"盈航每日 TOP5｜{trade_date}", text=text, html=html)
 
 
 def _order_payload(row: sqlite3.Row) -> dict[str, Any]:

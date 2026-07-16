@@ -53,6 +53,8 @@ type DashboardPayload = {
   top_users: Array<{ id: number; phone: string; username?: string; email?: string; role: string; used_count: number; credits: number; created_at: string }>;
   credit_grant_campaigns: CreditGrantCampaign[];
   update_notices: UpdateNotice[];
+  daily_top5_email_campaigns?: DailyTop5EmailCampaign[];
+  daily_top5_email_failed_count?: number;
 };
 
 type CreditGrantCampaign = {
@@ -93,6 +95,15 @@ type EmailCampaign = {
   sent: number;
   failed: number;
   skipped: number;
+};
+
+type DailyTop5EmailCampaign = EmailCampaign & {
+  trade_date: string;
+  report_id: string;
+  full: number;
+  teaser: number;
+  created_at: string;
+  finished_at?: string | null;
 };
 
 type PublishIntent = { source: "form"; noticeId: number | null } | { source: "list"; noticeId: number };
@@ -378,6 +389,12 @@ export default function AdminPage() {
     setMessage("失败邮件已重新加入发送队列。");
   }
 
+  async function retryDailyTop5EmailCampaign(id: number) {
+    await apiFetch(`/api/admin/daily-top5-email-campaigns/${id}/retry`, { method: "POST" });
+    await loadDashboard(days);
+    setMessage("每日 TOP5 失败邮件已重新加入发送队列。");
+  }
+
   async function unpublishUpdateNotice(id: number) {
     await apiFetch(`/api/admin/update-notices/${id}/unpublish`, { method: "POST" });
     await loadDashboard(days);
@@ -394,6 +411,8 @@ export default function AdminPage() {
   const pendingMembershipOrders = (data?.orders || []).filter((item) => item.product_type === "membership" && item.status === "submitted");
   const pendingFeedback = (data?.feedback || []).filter((item) => item.status === "pending");
   const failedEmailTasks = (data?.update_notices || []).filter((item) => (item.email_campaign?.failed || 0) > 0);
+  const failedDailyTop5EmailCount = data?.daily_top5_email_failed_count
+    ?? (data?.daily_top5_email_campaigns || []).reduce((sum, item) => sum + item.failed, 0);
   const analytics = useMemo(() => (data ? normalizeDashboardAnalytics(data) : null), [data]);
 
   if (!loading && user?.role !== "admin") {
@@ -456,7 +475,7 @@ export default function AdminPage() {
 
         {data && (
           <>
-            <AdminOverviewSection active={section === "overview"} totals={data.totals} featureUsage={analytics!.featureUsage} userGrowth={analytics!.userGrowth} days={days} pendingOrders={pendingMembershipOrders.length} pendingFeedback={pendingFeedback.length} failedEmails={failedEmailTasks.length} onNavigate={changeSection} featureLabel={featureLabel} />
+            <AdminOverviewSection active={section === "overview"} totals={data.totals} featureUsage={analytics!.featureUsage} userGrowth={analytics!.userGrowth} days={days} pendingOrders={pendingMembershipOrders.length} pendingFeedback={pendingFeedback.length} failedEmails={failedEmailTasks.length} failedDailyTop5Emails={failedDailyTop5EmailCount} onNavigate={changeSection} featureLabel={featureLabel} />
 
             <AdminUsersSection
               active={section === "users"}
@@ -482,7 +501,9 @@ export default function AdminPage() {
               onRequestFormPublish={() => setPublishIntent({ source: "form", noticeId: editingNoticeId })}
               onCancelEdit={() => { setEditingNoticeId(null); setNoticeDraft(emptyNoticeDraft); }}
               notices={data.update_notices || []}
+              dailyTop5Campaigns={data.daily_top5_email_campaigns || []}
               onRetryCampaign={retryEmailCampaign}
+              onRetryDailyTop5Campaign={retryDailyTop5EmailCampaign}
               onEdit={editUpdateNotice}
               onUnpublish={unpublishUpdateNotice}
               onPublish={publishUpdateNotice}
