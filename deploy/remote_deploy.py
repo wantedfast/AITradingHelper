@@ -100,9 +100,12 @@ else
   COMPOSE='docker-compose'
 fi
 
-docker rm -f trade-review-frontend trade-review-api trade-review-agent trade-review-streamlit 2>/dev/null || true
+# Build while the current containers are still serving traffic. If the build
+# fails, production remains on the previous healthy images instead of leaving
+# Nginx without an upstream for the entire build duration.
+$COMPOSE -f docker-compose.prod.yml build
 rm -rf outputs/streamlit_reports
-$COMPOSE -f docker-compose.prod.yml up -d --build
+$COMPOSE -f docker-compose.prod.yml up -d --force-recreate --remove-orphans
 
 cat >/etc/nginx/sites-available/trade-review-agent <<'NGINX'
 server {{
@@ -150,6 +153,10 @@ for attempt in $(seq 1 60); do
   fi
   sleep 2
 done
+# Remove names from deployments that predate the current Compose services only
+# after the replacement API is healthy. Never remove the active upstreams
+# before their images have finished building.
+docker rm -f trade-review-agent trade-review-streamlit 2>/dev/null || true
 """
     run(ssh, "bash -lc " + shlex.quote(deploy), timeout=None)
     run(ssh, "curl -fsSI --max-time 10 http://127.0.0.1/ | head -n 1")
