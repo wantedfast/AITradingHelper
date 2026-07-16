@@ -545,6 +545,49 @@ test.describe("membership plan selection", () => {
   });
 });
 
+test.describe("dated report access controls", () => {
+  test.use({ viewport: { width: 390, height: 844 } });
+
+  test("Daily TOP5 keeps a disabled waiting action until today's data arrives", async ({ page }) => {
+    await installStableApiFixtures(page);
+    await page.route("**/api/auction-strength?**", (route) => json(route, {
+      latest: null,
+      reports: [],
+      count: 0,
+      total: 0,
+      billing_status: "no_data",
+      billing_cost: 0,
+      user: fixtureUser,
+    }));
+    await page.goto("/auction-strength", { waitUntil: "domcontentloaded" });
+    const waitingButton = page.locator(".auction-waiting-panel").getByRole("button", { name: "等待今日数据" });
+    await expect(waitingButton).toBeVisible();
+    await expect(waitingButton).toBeDisabled();
+    await expect(page.locator(".auction-waiting-panel .auction-confirm-actions span")).toHaveText("页面每 10 秒自动检查一次；无数据时不会扣除使用次数。");
+    await expectNoGlobalHorizontalOverflow(page, "Daily TOP5 waiting action");
+  });
+
+  test("AI report date fields use the native calendar without suggestion dropdowns", async ({ page }) => {
+    await installStableApiFixtures(page);
+    for (const path of ["/market-day", "/ai-research"]) {
+      await test.step(path, async () => {
+        await page.goto(path, { waitUntil: "domcontentloaded" });
+        const input = page.locator('.auction-date-picker input[type="date"]');
+        await expect(input).toBeVisible();
+        await expect(input).not.toHaveAttribute("list", /.+/);
+        await expect(page.locator("datalist")).toHaveCount(0);
+      });
+    }
+  });
+
+  test("an already unlocked AI research report opens directly without another charge button", async ({ page }) => {
+    await installStableApiFixtures(page, { datedBillingStatus: "charged" });
+    await page.goto("/ai-research", { waitUntil: "domcontentloaded" });
+    await expect(page.locator("#ai-research-inline-report")).toBeVisible();
+    await expect(page.getByRole("button", { name: /确认查看并扣除/ })).toHaveCount(0);
+  });
+});
+
 test.describe("independent admin access", () => {
   test.use({ viewport: { width: 390, height: 844 } });
 

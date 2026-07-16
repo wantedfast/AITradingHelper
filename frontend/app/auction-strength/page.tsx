@@ -528,7 +528,15 @@ export default function AuctionStrengthPage() {
               </section>
             </section>
           </>
-        ) : !loading && billingStatus === "no_data" ? <section className="auction-panel auction-empty"><b>暂无数据</b><span>所选日期暂无每日 TOP5，请稍后刷新或选择其他日期。</span></section> : null}
+        ) : !loading && billingStatus === "no_data" ? isToday ? (
+          <section className="auction-panel auction-confirm-panel auction-waiting-panel">
+            <PanelHead icon={<LockKeyhole className="h-5 w-5" />} title="等待今日数据" text="数据到达后，查看按钮会自动变为可用状态。" />
+            <MobileActionDock className="auction-confirm-actions">
+              <button type="button" disabled>等待今日数据</button>
+              <span>页面每 10 秒自动检查一次；无数据时不会扣除使用次数。</span>
+            </MobileActionDock>
+          </section>
+        ) : <section className="auction-panel auction-empty"><b>暂无数据</b><span>所选日期暂无每日 TOP5，请选择其他日期。</span></section> : null}
       </section>
     </main>
   );

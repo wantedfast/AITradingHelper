@@ -50,7 +50,6 @@ type StatusPayload = {
 export default function MarketDayPage() {
   const router = useRouter();
   const [selectedDate, setSelectedDate] = useState(todayIsoDate());
-  const [availableDates, setAvailableDates] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
   const [summary, setSummary] = useState<MarketDaySummary | null>(null);
@@ -156,7 +155,6 @@ export default function MarketDayPage() {
       if (!response.ok) throw new Error(formatError(payload, "读取行情报告失败"));
       if (requestId !== requestRef.current) return;
 
-      setAvailableDates(payload.available_dates || []);
       const nextBillingStatus = payload.billing_status || "no_data";
       setBillingStatus(nextBillingStatus);
       setBillingCost(payload.billing_cost || 0);
@@ -212,8 +210,7 @@ export default function MarketDayPage() {
           <div className="auction-topbar-actions">
             <label className="auction-date-picker">
               <CalendarDays />
-              <input type="date" value={selectedDate} max={todayIsoDate()} list="market-day-available-dates" onChange={(event) => handleDateChange(event.target.value)} />
-              <datalist id="market-day-available-dates">{availableDates.map((date) => <option value={date} key={date} />)}</datalist>
+              <input type="date" value={selectedDate} max={todayIsoDate()} onChange={(event) => handleDateChange(event.target.value)} />
             </label>
             <button type="button" onClick={() => void loadReports()} disabled={loading}>
                 {loading ? <Loader2 className="spin-icon" /> : <RefreshCcw />}<span>刷新报告</span>
