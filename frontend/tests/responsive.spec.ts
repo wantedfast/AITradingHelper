@@ -174,6 +174,36 @@ async function installStableApiFixtures(
         top_users: [],
         credit_grant_campaigns: [],
         update_notices: [],
+        analytics: {
+          window: { days: 30, start_date: "2026-06-16", end_date: "2026-07-15" },
+          feature_usage: {
+            totals: [
+              { feature: "auction_strength_view", count: 8, credits: 16, share: 0.5 },
+              { feature: "market_day_report", count: 5, credits: 5, share: 0.3125 },
+              { feature: "ai_research_view", count: 3, credits: 6, share: 0.1875 },
+            ],
+            by_day: [
+              { day: "2026-07-14", feature: "auction_strength_view", count: 3, credits: 6 },
+              { day: "2026-07-15", feature: "auction_strength_view", count: 5, credits: 10 },
+              { day: "2026-07-14", feature: "market_day_report", count: 2, credits: 2 },
+              { day: "2026-07-15", feature: "market_day_report", count: 3, credits: 3 },
+              { day: "2026-07-15", feature: "ai_research_view", count: 3, credits: 6 },
+            ],
+          },
+          user_growth: {
+            starting_users: 18,
+            total_users: 21,
+            by_day: [
+              { day: "2026-07-14", new_users: 1, cumulative_users: 19 },
+              { day: "2026-07-15", new_users: 2, cumulative_users: 21 },
+            ],
+          },
+          high_frequency_users: [{
+            id: 7, phone: "13800000007", username: "活跃用户", email: "active@example.com",
+            total_uses: 9, credits_spent: 12, active_days: 2,
+            usage_by_day: [{ day: "2026-07-14", count: 4, credits: 5 }, { day: "2026-07-15", count: 5, credits: 7 }],
+          }],
+        },
       });
     }
     if (path === "/api/legal/registration-agreement") {
@@ -518,9 +548,46 @@ test.describe("independent admin access", () => {
     await expect(switcher).toBeVisible();
     await expect(switcher.getByRole("button", { name: "会员订单" })).toHaveAttribute("aria-current", "page");
     await switcher.getByRole("button", { name: "反馈建议" }).click();
-    await expect(page).toHaveURL(/\/admin\?section=feedback$/);
+    await expect(page).toHaveURL(/\/admin\?section=feedback&days=30$/);
     await expect(switcher.getByRole("button", { name: "反馈建议" })).toHaveAttribute("aria-current", "page");
     await expectNoGlobalHorizontalOverflow(page, "admin section switcher");
+  });
+
+  test("admin analytics visualizations and time window remain usable on mobile", async ({ page }) => {
+    await installStableApiFixtures(page);
+    await page.goto("/admin?section=overview&days=30", { waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("heading", { name: "近 30 天功能使用趋势" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "功能使用构成" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "用户增长" })).toBeVisible();
+    await expect(page.locator(".admin-echart canvas").first()).toBeVisible();
+    await page.getByRole("button", { name: "7 天" }).click();
+    await expect(page).toHaveURL(/\/admin\?section=overview&days=7$/);
+    await page.locator(".admin-mobile-section-switcher").getByRole("button", { name: "用户与次数" }).click();
+    await expect(page.getByRole("heading", { name: "高频用户趋势" })).toBeVisible();
+    await expect(page.getByText("总使用次数")).toBeVisible();
+    await expect(page.getByText("活跃天数")).toBeVisible();
+    await expectNoGlobalHorizontalOverflow(page, "admin analytics");
+  });
+
+  test("admin analytics treats zero-filled feature series as empty", async ({ page }) => {
+    await installStableApiFixtures(page);
+    await page.route("**/api/admin/dashboard**", (route) => json(route, {
+      totals: { users: 0, credits: 0, feedback_pending: 0, orders_paid: 0 },
+      usage_by_day: [], new_users_by_day: [], feedback: [], orders: [], top_users: [], credit_grant_campaigns: [], update_notices: [],
+      analytics: {
+        window: { days: 30, start_date: "2026-06-16", end_date: "2026-07-15" },
+        feature_usage: {
+          totals: [{ feature: "auction_strength_view", count: 0, credits: 0, share: 0 }],
+          by_day: [{ day: "2026-07-15", feature: "auction_strength_view", count: 0, credits: 0 }],
+        },
+        user_growth: { starting_users: 0, total_users: 0, by_day: [{ day: "2026-07-15", new_users: 0, cumulative_users: 0 }] },
+        high_frequency_users: [],
+      },
+    }));
+    await page.goto("/admin?section=overview&days=30", { waitUntil: "domcontentloaded" });
+    await expect(page.getByText("这段时间还没有功能使用记录。")).toBeVisible();
+    await expect(page.getByText("暂无可统计的功能使用。")).toBeVisible();
+    await expect(page.getByText("这段时间还没有用户增长数据。")).toBeVisible();
   });
 
   test("admin login uses the dedicated endpoint and rejects external redirects", async ({ page }) => {
@@ -543,7 +610,7 @@ test.describe("independent admin access", () => {
       await page.locator('input[autocomplete="current-password"]').fill("secret");
       await page.locator('button[type="submit"]').click({ noWaitAfter: true });
       await expect.poll(() => loginPath).toBe("/api/auth/admin-login");
-      await expect(page).toHaveURL(/\/admin$/);
+      await expect(page).toHaveURL(/\/admin\?section=overview&days=30$/);
     }
   });
 });

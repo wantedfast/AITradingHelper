@@ -1965,6 +1965,18 @@
 
   .admin-actions svg { width: 18px; }
 
+  .admin-analytics-window {
+    margin: -2px 0 12px;
+    justify-content: flex-start;
+  }
+
+  .admin-analytics-window span { margin-right: auto; }
+
+  .admin-analytics-window button {
+    min-height: 44px;
+    padding-inline: 12px;
+  }
+
   .admin-priority-grid { grid-template-columns: minmax(0, 1fr); gap: 8px; }
   .admin-priority-grid button { min-height: 82px; grid-template-columns: minmax(0,1fr) auto; align-items: center; }
   .admin-priority-grid button small { grid-column: 1 / -1; }
@@ -1994,6 +2006,21 @@
     border-radius: 14px;
     box-shadow: none;
   }
+
+  .admin-analytics-grid { gap: 12px; }
+  .admin-analytics-heading { margin-bottom: 8px; }
+  .admin-analytics-heading h2 { font-size: 18px; }
+  .admin-echart { height: 270px; }
+  .admin-echart--donut { height: 190px; }
+  .admin-echart--growth { height: 260px; }
+  .admin-echart--users { height: 280px; }
+  .admin-feature-share-layout { grid-template-columns: minmax(0,1fr); gap: 0; }
+  .admin-feature-ranking b { white-space: normal; overflow-wrap: anywhere; }
+  .admin-user-series-selector { flex-wrap: nowrap; margin-inline: -2px; padding: 2px; overflow-x: auto; scrollbar-width: thin; }
+  .admin-user-series-selector button { flex: 0 0 auto; max-width: 210px; }
+  .admin-user-usage-summary { gap: 6px; }
+  .admin-user-usage-summary article { padding: 10px; }
+  .admin-user-usage-summary b { font-size: 19px; }
 
   .admin-table thead {
     display: none;

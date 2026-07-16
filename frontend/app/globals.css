@@ -2326,6 +2326,42 @@
 .admin-order-table .admin-list-item > button,
 .admin-order-table .admin-list-item > header ~ button { grid-column: 5; }
 .admin-filter-empty { grid-column: 1 / -1; min-height: 86px; display: grid; place-items: center; color: #7f8882; font-size: 13px; }
+.admin-analytics-window { margin: -4px 0 18px; display: flex; justify-content: flex-end; align-items: center; gap: 6px; }
+.admin-analytics-window span { margin-right: 4px; color: #7f8882; font-size: 12px; font-weight: 800; }
+.admin-analytics-window button { min-height: 44px; padding: 0 13px; border: 1px solid rgba(244,240,232,.1); border-radius: 999px; color: #9ca3a0; background: rgba(255,255,255,.025); cursor: pointer; }
+.admin-analytics-window button.active { border-color: rgba(245,215,122,.42); color: #f5d77a; background: rgba(245,215,122,.09); }
+.admin-analytics-window button:disabled { opacity: .52; cursor: wait; }
+.admin-analytics-grid { display: grid; grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); gap: 18px; }
+.admin-analytics-panel { min-width: 0; min-height: 0; overflow: hidden; }
+.admin-analytics-panel--wide { grid-column: 1 / -1; }
+.admin-analytics-heading { align-items: flex-start; }
+.admin-analytics-heading > div { min-width: 0; }
+.admin-analytics-heading p { margin: 5px 0 0; color: #818984; font-size: 12px; line-height: 1.5; }
+.admin-echart { width: 100%; height: 310px; min-width: 0; }
+.admin-echart--donut { height: 230px; }
+.admin-echart--growth { height: 280px; }
+.admin-echart--users { height: 320px; }
+.admin-analytics-empty { min-height: 230px; padding: 24px; display: grid; place-items: center; color: #7f8882; text-align: center; line-height: 1.65; }
+.admin-feature-share-layout { min-width: 0; display: grid; grid-template-columns: minmax(150px,.7fr) minmax(190px,1fr); align-items: center; gap: 12px; }
+.admin-feature-ranking { min-width: 0; display: grid; gap: 5px; }
+.admin-feature-ranking > div { min-width: 0; padding: 8px 0; display: grid; grid-template-columns: 8px minmax(0,1fr) auto; align-items: center; gap: 9px; border-bottom: 1px solid rgba(244,240,232,.07); }
+.admin-feature-ranking > div:last-child { border-bottom: 0; }
+.admin-feature-ranking i { width: 8px; height: 8px; border-radius: 50%; }
+.admin-feature-ranking span, .admin-feature-ranking strong { min-width: 0; display: grid; gap: 2px; }
+.admin-feature-ranking b { overflow: hidden; color: #dce1de; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.admin-feature-ranking small { color: #737c76; font-size: 10px; font-weight: 600; }
+.admin-feature-ranking strong { color: #f5d77a; font-size: 15px; text-align: right; }
+.admin-grid--single { grid-template-columns: minmax(0,1fr); }
+.admin-high-frequency-panel { min-width: 0; }
+.admin-user-series-selector { margin-top: 4px; display: flex; flex-wrap: wrap; gap: 7px; }
+.admin-user-series-selector button { max-width: 100%; min-height: 44px; padding: 0 11px; border: 1px solid rgba(244,240,232,.1); border-radius: 999px; display: inline-flex; align-items: center; gap: 7px; color: #929a95; background: rgba(255,255,255,.025); cursor: pointer; }
+.admin-user-series-selector button.active { border-color: rgba(245,215,122,.38); color: #f4f0e8; background: rgba(245,215,122,.08); }
+.admin-user-series-selector button i { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; }
+.admin-user-series-selector button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.admin-user-usage-summary { margin-top: 14px; display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 9px; }
+.admin-user-usage-summary article { min-width: 0; padding: 12px 14px; border: 1px solid rgba(244,240,232,.08); border-radius: 11px; background: rgba(255,255,255,.025); }
+.admin-user-usage-summary span { display: block; color: #7f8882; font-size: 11px; }
+.admin-user-usage-summary b { margin-top: 5px; display: block; color: #f5d77a; font-size: 22px; }
 
 @media (max-width: 920px) {
   .home-feedback-section,
@@ -2346,6 +2382,9 @@
   .admin-metrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .admin-analytics-grid { grid-template-columns: minmax(0, 1fr); }
+  .admin-analytics-panel--wide { grid-column: auto; }
 }
 
 @media (max-width: 620px) {
