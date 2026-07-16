@@ -32,6 +32,7 @@ from trade_review_agent.auth_system import (
     consume_feature_credit_once,
     has_feature_access,
     create_membership_order,
+    create_daily_top5_email_campaign,
     create_update_notice,
     credit_packages,
     create_order,
@@ -51,6 +52,7 @@ from trade_review_agent.auth_system import (
     mark_order_paid,
     membership_plans,
     process_next_update_email,
+    process_next_daily_top5_email,
     publish_update_notice,
     register_password_user,
     require_admin,
@@ -58,7 +60,9 @@ from trade_review_agent.auth_system import (
     reject_membership_order,
     review_feedback,
     retry_update_email_campaign,
+    retry_daily_top5_email_campaign,
     recover_update_email_queue,
+    recover_daily_top5_email_queue,
     send_email_code,
     send_email_binding_code,
     submit_membership_payment,
@@ -300,6 +304,9 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                 return
             if path.startswith("/api/admin/update-email-campaigns/"):
                 self._admin_retry_update_email_campaign(path)
+                return
+            if path.startswith("/api/admin/daily-top5-email-campaigns/"):
+                self._admin_retry_daily_top5_email_campaign(path)
                 return
             if path == "/api/reports":
                 self._create_reports()
@@ -792,7 +799,25 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             request_id=getattr(self, "_request_id", ""),
         )
         _append_webhook_event(AUCTION_STRENGTH_PATH, report)
-        self._json({"ok": True, "report": _auction_strength_public_report(report)}, status=202)
+        public_report = _auction_strength_public_report(report)
+        email_campaign = None
+        if _is_today_trade_date(
+            str(public_report.get("trade_date") or "")
+        ) and _auction_strength_report_is_complete(public_report):
+            try:
+                email_campaign = create_daily_top5_email_campaign(AUTH_DB, report=public_report)
+                UPDATE_EMAIL_QUEUE_WAKE.set()
+            except Exception as exc:
+                _write_api_error(
+                    request_id=getattr(self, "_request_id", uuid4().hex),
+                    method=self.command,
+                    path=self._request_path(),
+                    run_id=str(report.get("id") or ""),
+                    stage="daily_top5_email_campaign",
+                    exc=exc,
+                    recovered=True,
+                )
+        self._json({"ok": True, "report": public_report, "email_campaign": email_campaign}, status=202)
 
     def _auth_register(self) -> None:
         raise AuthError("手机号注册已关闭，请使用邮箱注册。", 410)
@@ -1159,6 +1184,16 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             self._json({"error": "not found"}, status=404)
             return
         campaign = retry_update_email_campaign(AUTH_DB, campaign_id=int(parts[4]))
+        UPDATE_EMAIL_QUEUE_WAKE.set()
+        self._json({"email_campaign": campaign})
+
+    def _admin_retry_daily_top5_email_campaign(self, path: str) -> None:
+        self._require_admin()
+        parts = path.split("/")
+        if len(parts) != 6 or parts[5] != "retry":
+            self._json({"error": "not found"}, status=404)
+            return
+        campaign = retry_daily_top5_email_campaign(AUTH_DB, campaign_id=int(parts[4]))
         UPDATE_EMAIL_QUEUE_WAKE.set()
         self._json({"email_campaign": campaign})
 
@@ -3391,6 +3426,41 @@ def _auction_strength_report_from_payload(*, payload: dict, source_ip: str, requ
     return report
 
 
+def _auction_strength_report_is_complete(report: dict) -> bool:
+    strong_stocks = report.get("top5_strong_stocks")
+    conclusion = report.get("global_conclusion")
+    stock_fields = ("name", "code", "theme", "today_open_change", "reason", "observe_after_930")
+    conclusion_fields = (
+        "strongest_stock_at_925",
+        "strongest_theme_cluster",
+        "most_over_expected_stock",
+        "best_capacity_confirmation",
+        "biggest_negative_feedback",
+        "one_sentence_for_930",
+    )
+    conclusion_complete = isinstance(conclusion, dict) and all(
+        str(conclusion.get(field) or "").strip() for field in conclusion_fields
+    )
+    stocks_complete = isinstance(strong_stocks, list) and len(strong_stocks) == 5
+    if stocks_complete:
+        for stock in strong_stocks:
+            if not isinstance(stock, dict):
+                stocks_complete = False
+                break
+            try:
+                rank = int(stock.get("rank"))
+            except (TypeError, ValueError):
+                stocks_complete = False
+                break
+            if rank <= 0 or any(not str(stock.get(field) or "").strip() for field in stock_fields):
+                stocks_complete = False
+                break
+    return bool(
+        stocks_complete
+        and conclusion_complete
+    )
+
+
 def _auction_stock_items(value: object, *, mode: str) -> list[dict]:
     if not isinstance(value, list):
         return []
@@ -3992,8 +4062,15 @@ def _update_email_queue_worker(worker_index: int) -> None:
             UPDATE_EMAIL_QUEUE_WAKE.wait(timeout=5)
             UPDATE_EMAIL_QUEUE_WAKE.clear()
             try:
-                while process_next_update_email(AUTH_DB, sender=smtp_session.send_update_notice):
-                    pass
+                while True:
+                    processed_update = process_next_update_email(
+                        AUTH_DB, sender=smtp_session.send_update_notice
+                    )
+                    processed_top5 = process_next_daily_top5_email(
+                        AUTH_DB, smtp_session=smtp_session
+                    )
+                    if not processed_update and not processed_top5:
+                        break
             except Exception as exc:
                 _write_api_error(
                     request_id=f"update-email-worker-{worker_index}",
@@ -4010,6 +4087,7 @@ def _update_email_queue_worker(worker_index: int) -> None:
 
 def _start_update_email_queue_worker() -> None:
     recover_update_email_queue(AUTH_DB)
+    recover_daily_top5_email_queue(AUTH_DB)
     for worker_index in range(UPDATE_EMAIL_WORKER_COUNT):
         thread = threading.Thread(
             target=_update_email_queue_worker,

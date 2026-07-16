@@ -212,7 +212,9 @@ export default function Page() {
       });
       setUser(payload.user);
       storeUser(payload.user);
-      setFeedbackMessage(payload.user.update_emails_enabled ? "已开启产品更新邮件。" : "已关闭产品更新邮件，网站更新弹窗仍会正常显示。");
+      setFeedbackMessage(payload.user.update_emails_enabled
+        ? "已开启邮件推送，将接收产品更新与每日 TOP5 提醒。"
+        : "已关闭产品更新与每日 TOP5 邮件，网站功能和更新弹窗仍会正常显示。");
     } catch (error) {
       setFeedbackMessage(error instanceof Error ? error.message : "邮件偏好保存失败");
     } finally {
@@ -291,7 +293,7 @@ export default function Page() {
                       <BellRing className="h-4 w-4" />
                       {savingEmailPreference
                         ? "正在保存..."
-                        : `产品更新邮件：${user.update_emails_enabled ?? true ? "已开启" : "已关闭"}`}
+                        : `邮件推送（产品更新与每日 TOP5）：${user.update_emails_enabled ?? true ? "已开启" : "已关闭"}`}
                     </button>
                     <div className="home-user-row">
                       <span>剩余次数</span>
