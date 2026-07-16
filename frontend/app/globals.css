@@ -1845,6 +1845,19 @@
   font-size: 13px;
 }
 
+.admin-notice-item-actions {
+  margin-top: 14px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.admin-notice-item-actions button {
+  min-width: 76px;
+  min-height: 44px;
+  margin-top: 0;
+}
+
 .admin-locked {
   width: min(520px, calc(100% - 40px));
   margin: 0 auto;
