@@ -3,6 +3,21 @@ export type FeatureUsageTotal = { feature: string; count: number; credits: numbe
 export type UserGrowthPoint = { day: string; new_users: number; cumulative_users: number };
 export type HighFrequencyUsagePoint = { day: string; count: number; credits: number };
 
+export type RecentUsageEvent = {
+  id: number;
+  user_id: number;
+  username?: string;
+  email?: string;
+  phone?: string;
+  display_name: string;
+  feature: string;
+  credits_spent: number;
+  status: string;
+  related_id?: string;
+  used_at: string;
+  market_session?: "before_open" | "after_open" | null;
+};
+
 export type HighFrequencyUser = {
   id: number;
   phone?: string;
@@ -35,4 +50,5 @@ export type AdminAnalytics = {
     active_days?: number;
     usage_by_day?: Array<Partial<HighFrequencyUsagePoint> & { day: string }>;
   }>;
+  recent_usage_events?: RecentUsageEvent[];
 };
