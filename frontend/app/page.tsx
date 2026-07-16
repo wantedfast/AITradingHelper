@@ -253,12 +253,6 @@ export default function Page() {
             <span>盈航</span>
           </Link>
           <nav className="nav-links" aria-label="主导航">
-            <button className="nav-action" type="button" onClick={openProductGuide}>
-              功能
-            </button>
-            <button className="nav-action" type="button" onClick={scrollToFeedback}>
-              反馈
-            </button>
             <Link href="/auction-strength">每日 TOP5</Link>
             <Link href="/review">AI 复盘</Link>
             <Link href="/watch">AI 盯盘</Link>
@@ -329,6 +323,9 @@ export default function Page() {
                 登录
               </Link>
             )}
+            <button className="nav-action" type="button" onClick={scrollToFeedback}>
+              反馈
+            </button>
           </nav>
           <div className="home-mobile-actions">
             {hydrated && !user ? (
@@ -396,22 +393,14 @@ export default function Page() {
                 </span>
                 <strong>{hasActiveMembership(user) ? "查看" : "开通"}</strong>
               </Link>
-              <div className="home-mobile-menu-secondary">
-                <button type="button" onClick={() => { setShowMobileMenu(false); openProductGuide(); }}>
-                  <Info aria-hidden="true" />
-                  功能说明
-                </button>
-                <button type="button" onClick={() => { setShowMobileMenu(false); scrollToFeedback(); }}>
-                  <MessageSquare aria-hidden="true" />
-                  反馈建议
-                </button>
-                {hydrated && user?.role === "admin" ? (
+              {hydrated && user?.role === "admin" ? (
+                <div className="home-mobile-menu-secondary">
                   <Link href="/admin" onClick={() => setShowMobileMenu(false)}>
                     <ShieldCheck aria-hidden="true" />
                     管理台
                   </Link>
-                ) : null}
-              </div>
+                </div>
+              ) : null}
               {hydrated && user ? (
                 <div className="home-mobile-account">
                   <div>
@@ -437,6 +426,12 @@ export default function Page() {
                   <Link className="home-mobile-account-login" href="/auth" onClick={() => setShowMobileMenu(false)}>已有账号登录</Link>
                 </div>
               )}
+              <div className="home-mobile-menu-secondary">
+                <button type="button" onClick={() => { setShowMobileMenu(false); scrollToFeedback(); }}>
+                  <MessageSquare aria-hidden="true" />
+                  反馈建议
+                </button>
+              </div>
             </nav>
           </div>
         ) : null}
