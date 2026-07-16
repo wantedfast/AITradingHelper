@@ -1,4 +1,10 @@
-import { CheckCircle2, CreditCard, Gift, Megaphone, MessageSquare, Users } from "lucide-react";
+"use client";
+
+import type { EChartsOption } from "echarts";
+import { Activity, CheckCircle2, CreditCard, Gift, Megaphone, MessageSquare, Users } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { AdminAnalyticsChart } from "@/components/admin/admin-analytics-chart";
+import type { HighFrequencyUser } from "@/components/admin/admin-analytics-types";
 import { AdminStatusFilters, adminStatusLabel } from "@/components/admin/admin-navigation";
 
 type GrantDraft = { credits: string; reason: string };
@@ -86,6 +92,8 @@ export function AdminUsersSection({
   onRequestBulkGrant,
   campaigns,
   users,
+  highFrequencyUsers,
+  days,
   grantDrafts,
   onGrantDraftChange,
   onGrantCredits,
@@ -96,6 +104,8 @@ export function AdminUsersSection({
   onRequestBulkGrant: () => void;
   campaigns: CreditGrantCampaign[];
   users: AdminUser[];
+  highFrequencyUsers: HighFrequencyUser[];
+  days: number;
   grantDrafts: Record<number, GrantDraft>;
   onGrantDraftChange: (userId: number, patch: Partial<GrantDraft>) => void;
   onGrantCredits: (userId: number) => void;
@@ -126,9 +136,11 @@ export function AdminUsersSection({
         )}
       </section>
 
-      <section className="admin-grid">
+      <HighFrequencyAnalytics users={highFrequencyUsers} days={days} />
+
+      <section className="admin-grid admin-grid--single">
         <article className="admin-panel">
-          <div className="admin-panel-head"><Users /><h2>高频用户</h2></div>
+          <div className="admin-panel-head"><Users /><h2>用户额度操作</h2></div>
           <div className="admin-table">
             {users.map((item) => (
               <div key={item.id}>
@@ -149,6 +161,93 @@ export function AdminUsersSection({
       </section>
     </section>
   );
+}
+
+function HighFrequencyAnalytics({ users, days }: { users: HighFrequencyUser[]; days: number }) {
+  const topUsers = useMemo(() => users.slice(0, 5), [users]);
+  const [selectedId, setSelectedId] = useState<number | null>(topUsers[0]?.id ?? null);
+
+  useEffect(() => {
+    if (!topUsers.some((item) => item.id === selectedId)) setSelectedId(topUsers[0]?.id ?? null);
+  }, [selectedId, topUsers]);
+
+  const selected = topUsers.find((item) => item.id === selectedId) || topUsers[0];
+  const displayNames = useMemo(() => buildUserDisplayNames(topUsers), [topUsers]);
+  const option = useMemo(() => buildHighFrequencyOption(topUsers, displayNames), [displayNames, topUsers]);
+
+  return (
+    <section className="admin-panel admin-analytics-panel admin-high-frequency-panel">
+      <div className="admin-panel-head admin-analytics-heading">
+        <Activity />
+        <div><h2>高频用户趋势</h2><p>近 {days} 天使用最多的 5 位用户，可点击图例或用户标签查看个人摘要。</p></div>
+      </div>
+      <AdminAnalyticsChart
+        option={option}
+        ariaLabel={`近 ${days} 天高频用户每日使用次数折线图`}
+        empty={!topUsers.length || !topUsers.some((item) => item.usage_by_day.length) ? "这段时间还没有可展示的用户使用曲线。" : undefined}
+        className="admin-echart--users"
+        onLegendSelect={(name) => {
+          const match = topUsers.find((item) => displayNames.get(item.id) === name);
+          if (match) setSelectedId(match.id);
+        }}
+      />
+      {!!topUsers.length && (
+        <>
+          <div className="admin-user-series-selector" aria-label="选择高频用户">
+            {topUsers.map((item, index) => (
+              <button key={item.id} type="button" className={item.id === selected?.id ? "active" : ""} onClick={() => setSelectedId(item.id)}>
+                <i style={{ background: analyticsColors[index % analyticsColors.length] }} />
+                <span>{userLabel(item)}</span>
+              </button>
+            ))}
+          </div>
+          {selected && (
+            <div className="admin-user-usage-summary" aria-label={`${userLabel(selected)} 使用摘要`}>
+              <article><span>总使用次数</span><b>{selected.total_uses.toLocaleString()}</b></article>
+              <article><span>活跃天数</span><b>{selected.active_days.toLocaleString()}</b></article>
+              <article><span>消耗次数</span><b>{selected.credits_spent.toLocaleString()}</b></article>
+            </div>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
+const analyticsColors = ["#f5d77a", "#55d6a8", "#79a9ff", "#f39a72", "#c897e8"];
+
+function buildHighFrequencyOption(users: HighFrequencyUser[], displayNames: Map<number, string>): EChartsOption {
+  const days = Array.from(new Set(users.flatMap((user) => user.usage_by_day.map((point) => point.day)))).sort();
+  return {
+    color: analyticsColors,
+    animationDuration: 450,
+    textStyle: { color: "#aab1ad", fontFamily: "Inter, Microsoft YaHei, sans-serif" },
+    tooltip: { trigger: "axis", backgroundColor: "rgba(7,10,9,.96)", borderColor: "rgba(245,215,122,.25)", textStyle: { color: "#f4f0e8" } },
+    legend: { top: 0, type: "scroll", data: users.map((item) => displayNames.get(item.id) || userLabel(item)), textStyle: { color: "#aab1ad" }, pageTextStyle: { color: "#aab1ad" } },
+    grid: { top: 52, right: 24, bottom: 28, left: 50 },
+    xAxis: { type: "category", data: days.map((day) => day.slice(5)), boundaryGap: false, axisLine: { lineStyle: { color: "rgba(244,240,232,.15)" } }, axisLabel: { color: "#89918c", hideOverlap: true }, axisTick: { show: false } },
+    yAxis: { type: "value", minInterval: 1, name: "使用次数", axisLabel: { color: "#89918c" }, nameTextStyle: { color: "#727b75" }, splitLine: { lineStyle: { color: "rgba(244,240,232,.07)" } } },
+    series: users.map((user, index) => ({
+      name: displayNames.get(user.id) || userLabel(user),
+      type: "line",
+      data: days.map((day) => user.usage_by_day.find((item) => item.day === day)?.count || 0),
+      smooth: days.length > 2 ? 0.25 : false,
+      symbol: days.length === 1 ? "circle" : "none",
+      symbolSize: 8,
+      lineStyle: { width: 2, color: analyticsColors[index % analyticsColors.length] },
+      itemStyle: { color: analyticsColors[index % analyticsColors.length] },
+      emphasis: { focus: "series" },
+    })),
+  };
+}
+
+function buildUserDisplayNames(users: HighFrequencyUser[]) {
+  const labels = users.map(userLabel);
+  return new Map(users.map((item, index) => [item.id, labels.filter((label) => label === labels[index]).length > 1 ? `${labels[index]} · #${item.id}` : labels[index]]));
+}
+
+function userLabel(user: HighFrequencyUser) {
+  return user.username || user.email || user.phone || `用户 #${user.id}`;
 }
 
 export function AdminFeedbackSection({ active, filter, onFilterChange, items, onRewardRequest }: {

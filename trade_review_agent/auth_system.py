@@ -1005,7 +1005,12 @@ def get_order_by_order_no(db_path: Path, *, order_no: str) -> dict[str, Any]:
 
 def admin_dashboard(db_path: Path, days: int = 14) -> dict[str, Any]:
     days = max(1, min(90, int(days or 14)))
-    start_date = (datetime.now(CN_TZ).date() - timedelta(days=days - 1)).isoformat()
+    end_day = datetime.now(CN_TZ).date()
+    start_day = end_day - timedelta(days=days - 1)
+    start_date = start_day.isoformat()
+    end_date = end_day.isoformat()
+    end_exclusive = (end_day + timedelta(days=1)).isoformat()
+    date_keys = [(start_day + timedelta(days=offset)).isoformat() for offset in range(days)]
     with _connect(db_path) as conn:
         totals = {
             "users": conn.execute("SELECT COUNT(*) AS count FROM users WHERE role = 'user'").fetchone()["count"],
@@ -1062,6 +1067,203 @@ def admin_dashboard(db_path: Path, days: int = 14) -> dict[str, Any]:
             LIMIT 30
             """
         ).fetchall()
+
+        # Analytics intentionally count successful end-user usage only.  Legacy
+        # fields above retain their original semantics for existing clients.
+        successful_statuses = ("charged", "membership_free")
+        feature_rows = conn.execute(
+            """
+            WITH successful_events AS (
+                SELECT user_id, feature, credits_spent, related_id, created_at
+                FROM (
+                    SELECT e.*,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY e.user_id, e.feature,
+                                   CASE
+                                       WHEN TRIM(COALESCE(e.related_id, '')) = '' THEN printf('event:%d', e.id)
+                                       ELSE 'related:' || e.related_id
+                                   END
+                               ORDER BY e.created_at ASC, e.id ASC
+                           ) AS use_rank
+                    FROM usage_events e
+                    WHERE e.status IN (?, ?)
+                )
+                WHERE use_rank = 1
+                  AND created_at >= ?
+                  AND created_at < ?
+            )
+            SELECT substr(e.created_at, 1, 10) AS day,
+                   e.feature,
+                   COUNT(*) AS count,
+                   COALESCE(SUM(e.credits_spent), 0) AS credits
+            FROM successful_events e
+            JOIN users u ON u.id = e.user_id
+            WHERE u.role = 'user'
+            GROUP BY day, e.feature
+            ORDER BY day ASC, e.feature ASC
+            """,
+            (*successful_statuses, start_date, end_exclusive),
+        ).fetchall()
+        feature_lookup = {
+            (str(row["day"]), str(row["feature"])): {
+                "count": int(row["count"]),
+                "credits": int(row["credits"]),
+            }
+            for row in feature_rows
+        }
+        # Keep all product features visible even when a feature has no usage in
+        # the selected window. Dict insertion order is the product's canonical
+        # display order and therefore makes the payload deterministic.
+        observed_features = list(FEATURE_CREDIT_COSTS)
+        feature_by_day = [
+            {
+                "day": day,
+                "feature": feature,
+                **feature_lookup.get((day, feature), {"count": 0, "credits": 0}),
+            }
+            for day in date_keys
+            for feature in observed_features
+        ]
+        feature_totals_unsorted = [
+            {
+                "feature": feature,
+                "count": sum(feature_lookup.get((day, feature), {"count": 0})["count"] for day in date_keys),
+                "credits": sum(feature_lookup.get((day, feature), {"credits": 0})["credits"] for day in date_keys),
+            }
+            for feature in observed_features
+        ]
+        total_feature_uses = sum(item["count"] for item in feature_totals_unsorted)
+        feature_totals = [
+            item | {"share": round(item["count"] / total_feature_uses, 4) if total_feature_uses else 0.0}
+            for item in feature_totals_unsorted
+        ]
+
+        starting_users = int(
+            conn.execute(
+                "SELECT COUNT(*) AS count FROM users WHERE role = 'user' AND created_at < ?",
+                (start_date,),
+            ).fetchone()["count"]
+        )
+        growth_rows = conn.execute(
+            """
+            SELECT substr(created_at, 1, 10) AS day, COUNT(*) AS count
+            FROM users
+            WHERE role = 'user'
+              AND created_at >= ?
+              AND created_at < ?
+            GROUP BY day
+            ORDER BY day ASC
+            """,
+            (start_date, end_exclusive),
+        ).fetchall()
+        new_user_lookup = {str(row["day"]): int(row["count"]) for row in growth_rows}
+        cumulative_users = starting_users
+        growth_by_day: list[dict[str, Any]] = []
+        for day in date_keys:
+            new_users = new_user_lookup.get(day, 0)
+            cumulative_users += new_users
+            growth_by_day.append(
+                {"day": day, "new_users": new_users, "cumulative_users": cumulative_users}
+            )
+
+        frequent_rows = conn.execute(
+            """
+            WITH successful_events AS (
+                SELECT user_id, feature, credits_spent, related_id, created_at
+                FROM (
+                    SELECT e.*,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY e.user_id, e.feature,
+                                   CASE
+                                       WHEN TRIM(COALESCE(e.related_id, '')) = '' THEN printf('event:%d', e.id)
+                                       ELSE 'related:' || e.related_id
+                                   END
+                               ORDER BY e.created_at ASC, e.id ASC
+                           ) AS use_rank
+                    FROM usage_events e
+                    WHERE e.status IN (?, ?)
+                )
+                WHERE use_rank = 1
+                  AND created_at >= ?
+                  AND created_at < ?
+            )
+            SELECT u.id, u.phone, u.username, u.email,
+                   COUNT(*) AS total_uses,
+                   COALESCE(SUM(e.credits_spent), 0) AS credits_spent,
+                   COUNT(DISTINCT substr(e.created_at, 1, 10)) AS active_days,
+                   MAX(e.created_at) AS last_used_at
+            FROM successful_events e
+            JOIN users u ON u.id = e.user_id
+            WHERE u.role = 'user'
+            GROUP BY u.id
+            ORDER BY total_uses DESC, active_days DESC, last_used_at DESC, u.id ASC
+            LIMIT 5
+            """,
+            (*successful_statuses, start_date, end_exclusive),
+        ).fetchall()
+        frequent_user_ids = [int(row["id"]) for row in frequent_rows]
+        frequent_usage_lookup: dict[tuple[int, str], dict[str, int]] = {}
+        if frequent_user_ids:
+            placeholders = ",".join("?" for _ in frequent_user_ids)
+            daily_rows = conn.execute(
+                f"""
+                WITH successful_events AS (
+                    SELECT user_id, feature, credits_spent, related_id, created_at
+                    FROM (
+                        SELECT e.*,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY e.user_id, e.feature,
+                                       CASE
+                                           WHEN TRIM(COALESCE(e.related_id, '')) = '' THEN printf('event:%d', e.id)
+                                           ELSE 'related:' || e.related_id
+                                       END
+                                   ORDER BY e.created_at ASC, e.id ASC
+                               ) AS use_rank
+                        FROM usage_events e
+                        WHERE e.status IN (?, ?)
+                    )
+                    WHERE use_rank = 1
+                      AND created_at >= ?
+                      AND created_at < ?
+                )
+                SELECT e.user_id, substr(e.created_at, 1, 10) AS day,
+                       COUNT(*) AS count,
+                       COALESCE(SUM(e.credits_spent), 0) AS credits
+                FROM successful_events e
+                JOIN users u ON u.id = e.user_id
+                WHERE u.role = 'user'
+                  AND e.user_id IN ({placeholders})
+                GROUP BY e.user_id, day
+                ORDER BY e.user_id ASC, day ASC
+                """,
+                (*successful_statuses, start_date, end_exclusive, *frequent_user_ids),
+            ).fetchall()
+            frequent_usage_lookup = {
+                (int(row["user_id"]), str(row["day"])): {
+                    "count": int(row["count"]),
+                    "credits": int(row["credits"]),
+                }
+                for row in daily_rows
+            }
+        high_frequency_users = [
+            {
+                "id": int(row["id"]),
+                "phone": row["phone"],
+                "username": row["username"],
+                "email": row["email"],
+                "total_uses": int(row["total_uses"]),
+                "credits_spent": int(row["credits_spent"]),
+                "active_days": int(row["active_days"]),
+                "usage_by_day": [
+                    {
+                        "day": day,
+                        **frequent_usage_lookup.get((int(row["id"]), day), {"count": 0, "credits": 0}),
+                    }
+                    for day in date_keys
+                ],
+            }
+            for row in frequent_rows
+        ]
         return {
             "totals": totals,
             "usage_by_day": [dict(row) for row in usage_rows],
@@ -1069,6 +1271,16 @@ def admin_dashboard(db_path: Path, days: int = 14) -> dict[str, Any]:
             "feedback": [_feedback_payload(row) for row in feedback_rows],
             "orders": [_order_payload(row) | {"phone": row["phone"], "username": row["username"], "email": row["email"]} for row in orders],
             "top_users": [dict(row) for row in top_users],
+            "analytics": {
+                "window": {"days": days, "start_date": start_date, "end_date": end_date},
+                "feature_usage": {"totals": feature_totals, "by_day": feature_by_day},
+                "user_growth": {
+                    "starting_users": starting_users,
+                    "total_users": cumulative_users,
+                    "by_day": growth_by_day,
+                },
+                "high_frequency_users": high_frequency_users,
+            },
             "credit_grant_campaigns": [
                 _credit_grant_campaign_payload(row)
                 for row in conn.execute(
@@ -2102,7 +2314,7 @@ def _feature_charge_exists(conn: sqlite3.Connection, user_id: int, feature: str,
         WHERE user_id = ?
           AND feature = ?
           AND related_id = ?
-          AND status IN ('charged', 'admin_free')
+          AND status IN ('charged', 'admin_free', 'membership_free')
         LIMIT 1
         """,
         (user_id, feature, related_id),
