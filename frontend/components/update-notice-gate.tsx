@@ -19,10 +19,7 @@ export function UpdateNoticeGate() {
   const [user, setUser] = useState<UserProfile | null>(null);
   const [notices, setNotices] = useState<UpdateNotice[]>([]);
   const [loading, setLoading] = useState(false);
-  const [noticeStatus, setNoticeStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [message, setMessage] = useState("");
-  const [loadFailed, setLoadFailed] = useState(false);
-  const [retryKey, setRetryKey] = useState(0);
   const confirmButtonRef = useRef<HTMLButtonElement>(null);
   const userId = user?.id || 0;
   const userRole = user?.role || "";
@@ -34,7 +31,6 @@ export function UpdateNoticeGate() {
     setUser(getAuthToken() ? getStoredUser() : null);
     function handleAuth(event: Event) {
       setUser((event as CustomEvent<UserProfile | null>).detail || null);
-      setNoticeStatus("idle");
     }
     window.addEventListener("ai-trade-auth", handleAuth);
     return () => window.removeEventListener("ai-trade-auth", handleAuth);
@@ -44,36 +40,28 @@ export function UpdateNoticeGate() {
     if (!homepageGateEnabled) {
       setNotices([]);
       setMessage("");
-      setLoadFailed(false);
-      setNoticeStatus("idle");
       return;
     }
     let active = true;
     async function loadPending() {
       setLoading(true);
-      setNoticeStatus("loading");
-      setLoadFailed(false);
       setMessage("");
       try {
         const payload = await apiFetch<{ notices: UpdateNotice[]; user?: UserProfile | null }>("/api/update-notices/pending");
         if (!active) return;
         if (payload.user) storeUser(payload.user);
         setNotices(Array.isArray(payload.notices) ? payload.notices : []);
-        setNoticeStatus("ready");
       } catch (error) {
         if (!active) return;
         if (error instanceof ApiError && error.status === 401) {
           setUser(null);
           setNotices([]);
-          setLoadFailed(false);
           setMessage("");
-          setNoticeStatus("idle");
           return;
         }
-        setNotices((current) => current);
-        setLoadFailed(true);
-        setNoticeStatus("error");
-        setMessage(error instanceof Error ? error.message : "更新公告加载失败，请重试");
+        // The check is silent: a transient request failure must not flash or
+        // block the homepage when no notice has actually been returned.
+        setNotices([]);
       } finally {
         if (active) setLoading(false);
       }
@@ -82,10 +70,10 @@ export function UpdateNoticeGate() {
     return () => {
       active = false;
     };
-  }, [homepageGateEnabled, retryKey, userId, userRole]);
+  }, [homepageGateEnabled, userId, userRole]);
 
   useEffect(() => {
-    if (!homepageGateEnabled || (noticeStatus === "ready" && !notices.length)) return;
+    if (!homepageGateEnabled || !notices.length) return;
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     const frame = window.requestAnimationFrame(() => confirmButtonRef.current?.focus());
@@ -93,7 +81,7 @@ export function UpdateNoticeGate() {
       window.cancelAnimationFrame(frame);
       document.body.style.overflow = previousOverflow;
     };
-  }, [homepageGateEnabled, noticeStatus, notices.length]);
+  }, [homepageGateEnabled, notices.length]);
 
   const activeNotice = notices[0] || null;
   const markdownLines = useMemo(
@@ -123,40 +111,7 @@ export function UpdateNoticeGate() {
 
   if (!homepageGateEnabled) return null;
 
-  if (noticeStatus === "ready" && !activeNotice) return null;
-
-  if (!activeNotice) {
-    return (
-      <div className="site-update-notice-backdrop" role="presentation">
-        <section
-          className="site-update-notice-modal"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="site-update-notice-status-title"
-          aria-busy={noticeStatus === "loading"}
-        >
-          <div className="site-update-notice-kicker">平台更新</div>
-          <h2 id="site-update-notice-status-title">
-            {noticeStatus === "error" ? "更新公告加载失败" : "正在检查更新公告"}
-          </h2>
-          <p className="site-update-notice-summary">
-            {noticeStatus === "error"
-              ? message || "无法确认是否有待阅公告，请重试。"
-              : "请稍候，确认完成后即可进入网站。"}
-          </p>
-          {noticeStatus === "error" ? (
-            <div className="site-update-notice-recovery-actions">
-              <button className="site-update-notice-confirm" type="button" onClick={() => setRetryKey((value) => value + 1)} disabled={loading}>
-                {loading ? "正在重试..." : "重试加载公告"}
-              </button>
-            </div>
-          ) : (
-            <div className="site-update-notice-loading" role="status">正在加载...</div>
-          )}
-        </section>
-      </div>
-    );
-  }
+  if (!activeNotice) return null;
 
   return (
     <div className="site-update-notice-backdrop" role="presentation">
@@ -187,12 +142,7 @@ export function UpdateNoticeGate() {
           </ul>
         )}
         {message ? <div className="site-update-notice-error">{message}</div> : null}
-        {loadFailed ? (
-          <button className="billing-secondary" type="button" onClick={() => setRetryKey((value) => value + 1)}>
-            重试加载公告
-          </button>
-        ) : null}
-        <button className="site-update-notice-confirm" type="button" onClick={acknowledge} disabled={loading || loadFailed} ref={confirmButtonRef}>
+        <button className="site-update-notice-confirm" type="button" onClick={acknowledge} disabled={loading} ref={confirmButtonRef}>
           {loading ? "正在确认..." : "知道了，进入网站"}
         </button>
       </section>
