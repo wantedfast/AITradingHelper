@@ -14,6 +14,7 @@ const shellRoutes = [
   { name: "home", path: "/" },
   { name: "auth", path: "/auth" },
   { name: "billing", path: "/billing" },
+  { name: "credits", path: "/credits" },
   { name: "daily-top5", path: "/auction-strength" },
   { name: "review", path: "/review" },
   { name: "watch", path: "/watch" },
@@ -33,6 +34,22 @@ const membershipPlans = [
   { id: "monthly_membership", plan_name: "月度会员", amount_cents: 5900, duration_days: 31, alipay_qr_url: "/pay/alipay-qr.jpg", wechat_qr_url: "/pay/wechat-qr.jpg" },
   { id: "annual_membership", plan_name: "年度会员", amount_cents: 39900, duration_days: 365, alipay_qr_url: "/pay/alipay-qr.jpg", wechat_qr_url: "/pay/wechat-qr.jpg" },
 ];
+
+const creditCatalog = {
+  checkout: {
+    business_hours: "工作日 10:00-18:00",
+    confirmation_eta: "提交付款信息后由运营人工确认到账",
+    support_channel: "站内反馈或运营客服",
+    policy_note: "当前为人工核款开通",
+  },
+  pricing: { unit_price_cents: 100, currency: "CNY" },
+  rules: {
+    min_credits: 5,
+    max_credits: 10000,
+    price_text: "1 元 / 次",
+    support_text: "购买次数按服务器价格计算，客户端金额仅展示。",
+  },
+};
 
 const fixtureUser = {
   id: 1,
@@ -109,6 +126,8 @@ async function installStableApiFixtures(
     if (path === "/api/public/membership/plans") return json(route, { plans: membershipPlans, checkout: {} });
     if (path === "/api/pay/membership/orders/latest") return json(route, { order: null, plans: membershipPlans, user: fixtureUser });
     if (path === "/api/pay/membership/plans") return json(route, { plans: membershipPlans });
+    if (path === "/api/public/credits/catalog") return json(route, creditCatalog);
+    if (path === "/api/pay/credits/orders/latest") return json(route, { ...creditCatalog, order: null, user: fixtureUser });
     if (path === "/api/update-notices/latest") return json(route, { notice: null });
     if (path === "/api/webhooks") return json(route, { events: [], count: 0, total: 0 });
     if (path === "/api/auction-strength") {
@@ -174,6 +193,7 @@ async function installStableApiFixtures(
         new_users_by_day: [],
         feedback: [],
         orders: [],
+        managed_users: [],
         top_users: [],
         credit_grant_campaigns: [],
         update_notices: [{
@@ -894,6 +914,16 @@ test.describe("public pricing and mandatory notices", () => {
     await expect(page.getByText("付款核对未通过：付款金额未到账，请核对交易记录")).toBeVisible();
     await expect(page.getByText("请根据原因核对付款信息", { exact: false })).toBeVisible();
   });
+  test("guest credits purchase redirects to auth while preserving the requested quantity", async ({ page }) => {
+    await page.route("**/api/public/credits/catalog", (route) => json(route, creditCatalog));
+    await page.goto("/credits?credits=12", { waitUntil: "domcontentloaded" });
+    await expect(page.locator('input[type="number"]')).toHaveValue("12");
+    await page.getByRole("button", { name: "登录后创建订单" }).click();
+    await expect(page).toHaveURL(/\/auth\?/);
+    const authUrl = new URL(page.url());
+    expect(authUrl.searchParams.get("credits")).toBe("12");
+    expect(decodeURIComponent(authUrl.searchParams.get("redirect") || "")).toContain("/credits?credits=12");
+  });
 });
 
 test.describe("dated report access controls", () => {
@@ -1048,6 +1078,78 @@ test.describe("independent admin access", () => {
     await expect(page.getByText("这段时间还没有功能使用记录。")).toBeVisible();
     await expect(page.getByText("暂无可统计的功能使用。")).toBeVisible();
     await expect(page.getByText("这段时间还没有用户增长数据。")).toBeVisible();
+  });
+
+  test("admin can see credit-order actions and pause a manageable user", async ({ page }) => {
+    let managedUserStatus: "active" | "disabled" = "active";
+    let requestedStatus = "";
+    let confirmedCreditOrderId = "";
+    await installStableApiFixtures(page);
+    await page.route("**/api/admin/dashboard**", (route) => json(route, {
+      totals: { users: 2, credits: 20, feedback_pending: 0, orders_paid: 0 },
+      usage_by_day: [],
+      new_users_by_day: [],
+      feedback: [],
+      orders: [{
+        id: 18,
+        phone: "13800000008",
+        username: "credit-user",
+        order_no: "CREDIT-001",
+        plan_name: "购买次数",
+        credits: 12,
+        amount_cents: 1200,
+        status: "submitted",
+        product_type: "credits",
+        payment_method: "alipay",
+        payer_name: "tester",
+        payer_paid_at: "2026-07-20T10:00",
+        submitted_amount_cents: 1200,
+        created_at: "2026-07-20T10:00:00+08:00",
+      }],
+      managed_users: [{
+        id: 8,
+        phone: "13800000008",
+        username: "credit-user",
+        role: "user",
+        status: managedUserStatus,
+        used_count: 3,
+        credits: 9,
+        created_at: "2026-07-18T10:00:00+08:00",
+        last_login_at: "2026-07-20T09:30:00+08:00",
+      }],
+      top_users: [],
+      credit_grant_campaigns: [],
+      update_notices: [],
+      analytics: {
+        window: { days: 30, start_date: "2026-06-20", end_date: "2026-07-20" },
+        feature_usage: { totals: [], by_day: [] },
+        user_growth: { starting_users: 2, total_users: 2, by_day: [] },
+        high_frequency_users: [],
+        recent_usage_events: [],
+      },
+    }));
+    await page.route("**/api/admin/users/8/status", async (route) => {
+      const payload = JSON.parse(route.request().postData() || "{}");
+      requestedStatus = String(payload.status || "");
+      managedUserStatus = payload.status === "disabled" ? "disabled" : "active";
+      return json(route, { ok: true });
+    });
+    await page.route("**/api/admin/orders/18/confirm-credits", async (route) => {
+      confirmedCreditOrderId = new URL(route.request().url()).pathname.split("/")[4] || "";
+      return json(route, { ok: true });
+    });
+
+    await page.goto("/admin?section=users&days=30", { waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("button", { name: "暂停账号" })).toBeVisible();
+    await page.getByRole("button", { name: "暂停账号" }).click();
+    await expect.poll(() => requestedStatus).toBe("disabled");
+    await expect(page.getByText("账号已暂停，现有 session 已失效。")).toBeVisible();
+
+    await page.locator(".admin-mobile-section-switcher").getByRole("button", { name: "订单处理" }).click();
+    const confirmCredits = page.getByRole("button", { name: "确认到账并增加次数" });
+    await expect(confirmCredits).toBeVisible();
+    await confirmCredits.click();
+    await expect.poll(() => confirmedCreditOrderId).toBe("18");
   });
 
   test("admin shows Daily TOP5 mail delivery counts and retries failures", async ({ page }) => {
