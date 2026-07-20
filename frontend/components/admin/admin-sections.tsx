@@ -1,7 +1,7 @@
 "use client";
 
 import type { EChartsOption } from "echarts";
-import { Activity, CheckCircle2, CreditCard, Gift, Megaphone, MessageSquare, PauseCircle, PlayCircle, Users } from "lucide-react";
+import { Activity, CheckCircle2, CreditCard, Gift, Megaphone, MessageSquare, PauseCircle, PlayCircle, Search, Users, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { AdminAnalyticsChart } from "@/components/admin/admin-analytics-chart";
 import type { HighFrequencyUser } from "@/components/admin/admin-analytics-types";
@@ -134,6 +134,13 @@ export function AdminUsersSection({
   onGrantCredits: (userId: number) => void;
   onToggleUserStatus: (userId: number, nextStatus: "active" | "disabled") => void;
 }) {
+  const [searchQuery, setSearchQuery] = useState("");
+  const normalizedQuery = searchQuery.trim().toLocaleLowerCase();
+  const filteredUsers = useMemo(
+    () => users.filter((item) => matchesUserSearch(item, normalizedQuery)),
+    [normalizedQuery, users],
+  );
+
   return (
     <section className={`${sectionClass("users", active)} admin-section-stack`}>
       <section className="admin-panel admin-bulk-credit-panel">
@@ -185,8 +192,35 @@ export function AdminUsersSection({
             <Users />
             <h2>用户次数与状态</h2>
           </div>
+          <div className="admin-user-toolbar">
+            <label className="admin-user-search">
+              <Search aria-hidden="true" />
+              <input
+                type="search"
+                value={searchQuery}
+                onChange={(event) => setSearchQuery(event.target.value)}
+                placeholder="按用户名搜索，可模糊匹配邮箱"
+                aria-label="搜索用户名或邮箱"
+                autoComplete="off"
+                spellCheck={false}
+              />
+              {searchQuery ? (
+                <button
+                  type="button"
+                  className="admin-user-search-clear"
+                  onClick={() => setSearchQuery("")}
+                  aria-label="清空搜索"
+                >
+                  <X aria-hidden="true" />
+                </button>
+              ) : null}
+            </label>
+            <p className="admin-user-search-meta" aria-live="polite">
+              {normalizedQuery ? `匹配 ${filteredUsers.length} / ${users.length} 位用户` : `共 ${users.length} 位用户`}
+            </p>
+          </div>
           <div className="admin-table">
-            {users.map((item) => {
+            {filteredUsers.map((item) => {
               const draft = grantDrafts[item.id] || { credits: "", reason: "" };
               const isAdmin = item.role === "admin";
               const nextStatus = item.status === "disabled" ? "active" : "disabled";
@@ -243,6 +277,11 @@ export function AdminUsersSection({
                 </div>
               );
             })}
+            {!filteredUsers.length ? (
+              <div className="admin-filter-empty">
+                未找到匹配用户。请检查用户名，或尝试输入邮箱片段。
+              </div>
+            ) : null}
           </div>
         </article>
       </section>
@@ -386,6 +425,13 @@ function userLabel(user: HighFrequencyUser) {
 
 function displayUserName(user: AdminUser) {
   return user.username || user.email || user.phone || `用户 #${user.id}`;
+}
+
+function matchesUserSearch(user: AdminUser, query: string) {
+  if (!query) return true;
+  const username = String(user.username || "").toLocaleLowerCase();
+  const email = String(user.email || "").toLocaleLowerCase();
+  return username.includes(query) || email.includes(query);
 }
 
 export function AdminFeedbackSection({

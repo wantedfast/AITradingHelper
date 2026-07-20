@@ -1709,6 +1709,83 @@
   gap: 10px;
 }
 
+.admin-user-toolbar {
+  margin: -2px 0 14px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px 14px;
+  align-items: center;
+}
+
+.admin-user-search {
+  min-width: 0;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px solid rgba(244, 240, 232, 0.12);
+  border-radius: 12px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  background: rgba(0, 0, 0, 0.22);
+}
+
+.admin-user-search svg {
+  width: 16px;
+  height: 16px;
+  color: rgba(244, 240, 232, 0.48);
+}
+
+.admin-user-search input {
+  min-width: 0;
+  min-height: 42px;
+  border: 0;
+  padding: 0;
+  color: var(--text);
+  background: transparent;
+  font: inherit;
+}
+
+.admin-user-search input::-webkit-search-cancel-button {
+  display: none;
+}
+
+.admin-user-search input:focus {
+  outline: none;
+}
+
+.admin-user-search:focus-within {
+  border-color: rgba(245, 215, 122, 0.34);
+  box-shadow: 0 0 0 1px rgba(245, 215, 122, 0.14);
+}
+
+.admin-user-search-clear {
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(244, 240, 232, 0.72);
+  background: rgba(255, 255, 255, 0.08);
+  cursor: pointer;
+}
+
+.admin-user-search-clear svg {
+  width: 14px;
+  height: 14px;
+  color: currentColor;
+}
+
+.admin-user-search-meta {
+  margin: 0;
+  color: #7f8882;
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: right;
+}
+
 .admin-user-status {
   display: inline-flex;
   align-items: center;
@@ -2621,8 +2698,13 @@
   .admin-table div,
   .admin-credit-grant,
   .admin-bulk-credit-form,
+  .admin-user-toolbar,
   .account-code-row {
     grid-template-columns: 1fr;
+  }
+
+  .admin-user-search-meta {
+    text-align: left;
   }
 
   .admin-usage-timeline-head { display: grid; grid-template-columns: auto minmax(0,1fr); }
