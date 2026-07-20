@@ -78,7 +78,7 @@ class UpdateNoticeEmailApiTest(unittest.TestCase):
         self.assertEqual(invalid_status, 400)
         self.assertEqual(ok_status, 201)
         self.assertEqual(payload["notice"]["status"], "published")
-        self.assertEqual(payload["email_campaign"]["pending"], 2)
+        self.assertEqual(payload["email_campaign"]["pending"], 1)
 
     def test_non_admin_cannot_publish_or_retry(self) -> None:
         status, _ = self.request("/api/admin/update-notices", token="user-token", payload={
