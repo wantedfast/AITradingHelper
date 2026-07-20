@@ -1152,6 +1152,86 @@ test.describe("independent admin access", () => {
     await expect.poll(() => confirmedCreditOrderId).toBe("18");
   });
 
+  test("admin user search filters by partial username, falls back to email, and shows an empty state", async ({ page }) => {
+    await installStableApiFixtures(page);
+    await page.route("**/api/admin/dashboard**", (route) => json(route, {
+      totals: { users: 3, credits: 20, feedback_pending: 0, orders_paid: 0 },
+      usage_by_day: [],
+      new_users_by_day: [],
+      feedback: [],
+      orders: [],
+      managed_users: [
+        {
+          id: 8,
+          phone: "13800000008",
+          username: "AlphaTrader",
+          email: "alpha@example.com",
+          role: "user",
+          status: "active",
+          used_count: 3,
+          credits: 9,
+          created_at: "2026-07-18T10:00:00+08:00",
+          last_login_at: "2026-07-20T09:30:00+08:00",
+        },
+        {
+          id: 9,
+          phone: "13800000009",
+          username: "BetaSwing",
+          email: "beta@example.com",
+          role: "user",
+          status: "active",
+          used_count: 5,
+          credits: 4,
+          created_at: "2026-07-17T10:00:00+08:00",
+          last_login_at: "2026-07-20T08:15:00+08:00",
+        },
+        {
+          id: 10,
+          phone: "13800000010",
+          username: "GammaDesk",
+          email: "ops-team@example.com",
+          role: "user",
+          status: "disabled",
+          used_count: 1,
+          credits: 12,
+          created_at: "2026-07-16T10:00:00+08:00",
+          last_login_at: "2026-07-19T20:00:00+08:00",
+        },
+      ],
+      top_users: [],
+      credit_grant_campaigns: [],
+      update_notices: [],
+      analytics: {
+        window: { days: 30, start_date: "2026-06-20", end_date: "2026-07-20" },
+        feature_usage: { totals: [], by_day: [] },
+        user_growth: { starting_users: 3, total_users: 3, by_day: [] },
+        high_frequency_users: [],
+        recent_usage_events: [],
+      },
+    }));
+
+    await page.goto("/admin?section=users&days=30", { waitUntil: "domcontentloaded" });
+
+    const search = page.locator(".admin-user-search input");
+    const cards = page.locator(".admin-user-card");
+
+    await expect(cards).toHaveCount(3);
+
+    await search.fill("trade");
+    await expect(cards).toHaveCount(1);
+    await expect(page.getByText("AlphaTrader")).toBeVisible();
+    await expect(page.getByText("BetaSwing")).toHaveCount(0);
+
+    await search.fill("OPS-TEAM");
+    await expect(cards).toHaveCount(1);
+    await expect(page.getByText("GammaDesk")).toBeVisible();
+
+    await search.fill("missing-user");
+    await expect(cards).toHaveCount(0);
+    await expect(page.locator(".admin-section--users.is-active .admin-filter-empty")).toBeVisible();
+    await expect(page.locator(".admin-user-search-meta")).toContainText("0 / 3");
+  });
+
   test("admin shows Daily TOP5 mail delivery counts and retries failures", async ({ page }) => {
     await installStableApiFixtures(page);
     let retriedCampaignId = "";
