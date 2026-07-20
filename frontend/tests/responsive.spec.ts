@@ -1083,6 +1083,7 @@ test.describe("independent admin access", () => {
   test("admin can see credit-order actions and pause a manageable user", async ({ page }) => {
     let managedUserStatus: "active" | "disabled" = "active";
     let requestedStatus = "";
+    let requestedIdentity = "";
     let confirmedCreditOrderId = "";
     await installStableApiFixtures(page);
     await page.route("**/api/admin/dashboard**", (route) => json(route, {
@@ -1131,8 +1132,9 @@ test.describe("independent admin access", () => {
     await page.route("**/api/admin/users/8/status", async (route) => {
       const payload = JSON.parse(route.request().postData() || "{}");
       requestedStatus = String(payload.status || "");
+      requestedIdentity = String(payload.expected_identity || "");
       managedUserStatus = payload.status === "disabled" ? "disabled" : "active";
-      return json(route, { ok: true });
+      return json(route, { user: { id: 8, display_name: "credit-user", status: managedUserStatus } });
     });
     await page.route("**/api/admin/orders/18/confirm-credits", async (route) => {
       confirmedCreditOrderId = new URL(route.request().url()).pathname.split("/")[4] || "";
@@ -1141,9 +1143,15 @@ test.describe("independent admin access", () => {
 
     await page.goto("/admin?section=users&days=30", { waitUntil: "domcontentloaded" });
     await expect(page.getByRole("button", { name: "暂停账号" })).toBeVisible();
+    page.once("dialog", async (dialog) => {
+      expect(dialog.message()).toContain("credit-user");
+      expect(dialog.message()).toContain("用户 ID：8");
+      await dialog.accept();
+    });
     await page.getByRole("button", { name: "暂停账号" }).click();
     await expect.poll(() => requestedStatus).toBe("disabled");
-    await expect(page.getByText("账号已暂停，现有 session 已失效。")).toBeVisible();
+    expect(requestedIdentity).toBe("credit-user");
+    await expect(page.getByText("账号“credit-user”（用户 ID：8）已暂停，现有 session 已失效。")).toBeVisible();
 
     await page.locator(".admin-mobile-section-switcher").getByRole("button", { name: "订单处理" }).click();
     const confirmCredits = page.getByRole("button", { name: "确认到账并增加次数" });

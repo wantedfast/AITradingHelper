@@ -1454,11 +1454,15 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             self._json(result)
             return
         if parts[5] == "status":
+            expected_identity = str(payload.get("expected_identity") or "").strip()
+            if not expected_identity:
+                raise AuthError("必须明确目标用户名，请刷新列表后重试", 400)
             result = set_user_status(
                 AUTH_DB,
                 user_id=user_id,
                 status=str(payload.get("status") or ""),
                 admin_id=int(admin["id"]),
+                expected_identity=expected_identity,
             )
             self._json(result)
             return
