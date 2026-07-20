@@ -659,7 +659,8 @@ test.describe("public pricing and mandatory notices", () => {
       return json(route, {});
     });
     await page.goto("/billing", { waitUntil: "domcontentloaded" });
-    await expect.poll(() => pendingRequests).toBe(1);
+    await page.waitForTimeout(300);
+    expect(pendingRequests).toBe(0);
     await expect(page.locator(".site-update-notice-modal")).toHaveCount(0);
     await expect(page.getByRole("button", { name: "登录后创建订单" })).toBeEnabled();
   });
@@ -693,27 +694,115 @@ test.describe("public pricing and mandatory notices", () => {
     await expect(page.locator(".billing-order")).toHaveCount(0);
   });
 
-  test("logged-in user confirms multiple notices in server order and cannot dismiss with Escape", async ({ page }) => {
-    const notices = [
-      { id: 1, title: "第一条公告", version: "v1", items: ["第一项"], published_at: "2026-07-18T10:00:00+08:00" },
-      { id: 2, title: "第二条公告", version: "v2", items: ["第二项"], published_at: "2026-07-19T10:00:00+08:00" },
-    ];
+  test("logged-in user only requests pending notices on homepage", async ({ page }) => {
+    let pendingRequests = 0;
     await page.addInitScript((user) => {
-      window.localStorage.setItem("ai_trade_token", "notice-token");
+      window.localStorage.setItem("ai_trade_token", "notice-home-token");
       window.localStorage.setItem("ai_trade_user", JSON.stringify(user));
     }, { ...fixtureUser, role: "user" });
     await page.route("**/api/**", async (route) => {
       const path = new URL(route.request().url()).pathname;
-      if (path === "/api/update-notices/pending") return json(route, { notices });
-      if (path === "/api/update-notices/1/ack") return json(route, { remaining: notices.slice(1) });
+      if (path === "/api/update-notices/pending") {
+        pendingRequests += 1;
+        return json(route, {
+          notices: [{ id: 2, title: "Newest notice", version: "v2", items: ["Newest item"], published_at: "2026-07-19T10:00:00+08:00" }],
+        });
+      }
+      if (path === "/api/auth/me") return json(route, { user: { ...fixtureUser, role: "user" } });
+      if (path === "/api/public/membership/plans") return json(route, { plans: membershipPlans, checkout: {} });
+      if (path === "/api/pay/membership/orders/latest") return json(route, { order: null, plans: membershipPlans });
+      if (path === "/api/admin/dashboard") {
+        return json(route, {
+          totals: { users: 0, credits: 0, feedback_pending: 0, orders_paid: 0 },
+          usage_by_day: [],
+          new_users_by_day: [],
+          feedback: [],
+          orders: [],
+          top_users: [],
+          credit_grant_campaigns: [],
+          update_notices: [],
+          analytics: {
+            window: { days: 30, start_date: "2026-06-16", end_date: "2026-07-15" },
+            feature_usage: { totals: [], by_day: [] },
+            user_growth: { starting_users: 0, total_users: 0, by_day: [] },
+            high_frequency_users: [],
+            recent_usage_events: [],
+          },
+        });
+      }
+      return json(route, {});
+    });
+    await page.goto("/billing", { waitUntil: "domcontentloaded" });
+    await page.waitForTimeout(300);
+    expect(pendingRequests).toBe(0);
+    await expect(page.locator(".site-update-notice-modal")).toHaveCount(0);
+
+    await page.goto("/", { waitUntil: "domcontentloaded" });
+    await expect.poll(() => pendingRequests).toBe(1);
+    await expect(page.locator(".site-update-notice-modal")).toContainText("Newest notice");
+    await page.waitForTimeout(500);
+    expect(pendingRequests).toBe(1);
+
+    await page.goto("/admin", { waitUntil: "domcontentloaded" });
+    await page.waitForTimeout(300);
+    expect(pendingRequests).toBe(1);
+    await expect(page.locator(".site-update-notice-modal")).toHaveCount(0);
+  });
+
+  test("admin never requests pending notices on homepage", async ({ page }) => {
+    let pendingRequests = 0;
+    await page.addInitScript((user) => {
+      window.localStorage.setItem("ai_trade_token", "admin-notice-token");
+      window.localStorage.setItem("ai_trade_user", JSON.stringify(user));
+    }, fixtureUser);
+    await page.route("**/api/**", async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path === "/api/update-notices/pending") pendingRequests += 1;
+      if (path === "/api/auth/me") return json(route, { user: fixtureUser });
+      if (path === "/api/update-notices/latest") return json(route, { notice: null });
+      if (path === "/api/auction-strength/performance") return json(route, { rows: [] });
+      if (path === "/api/legal/registration-agreement") {
+        return json(route, {
+          agreement_type: "registration",
+          version: "responsive-test",
+          effective_at: "2026-07-15",
+          title: "Agreement",
+          operator_name: "Responsive test",
+          sections: [],
+          confirmation: "I agree",
+        });
+      }
+      return json(route, {});
+    });
+    await page.goto("/", { waitUntil: "domcontentloaded" });
+    await page.waitForTimeout(300);
+    expect(pendingRequests).toBe(0);
+    await expect(page.locator(".site-update-notice-modal")).toHaveCount(0);
+  });
+
+  test("logged-in user sees only the newest notice and acknowledgement clears without old backlog", async ({ page }) => {
+    let pendingRequests = 0;
+    const newestNotice = { id: 2, title: "Newest notice", version: "v2", items: ["Newest item"], published_at: "2026-07-19T10:00:00+08:00" };
+    await page.addInitScript((user) => {
+      window.localStorage.setItem("ai_trade_token", "notice-single-token");
+      window.localStorage.setItem("ai_trade_user", JSON.stringify(user));
+    }, { ...fixtureUser, role: "user" });
+    await page.route("**/api/**", async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path === "/api/update-notices/pending") {
+        pendingRequests += 1;
+        return json(route, { notices: [newestNotice] });
+      }
+      if (path === "/api/auth/me") return json(route, { user: { ...fixtureUser, role: "user" } });
       if (path === "/api/update-notices/2/ack") return json(route, { remaining: [] });
       if (path === "/api/public/membership/plans") return json(route, { plans: membershipPlans, checkout: {} });
       if (path === "/api/pay/membership/orders/latest") return json(route, { order: null, plans: membershipPlans });
       return json(route, {});
     });
-    await page.goto("/billing", { waitUntil: "domcontentloaded" });
+    await page.goto("/", { waitUntil: "domcontentloaded" });
+    await expect.poll(() => pendingRequests).toBe(1);
     const dialog = page.locator(".site-update-notice-modal");
-    await expect(dialog).toContainText("第一条公告");
+    await expect(dialog).toContainText("Newest notice");
     const backdrop = page.locator(".site-update-notice-backdrop");
     await expect(backdrop).toHaveCSS("position", "fixed");
     await expect(backdrop).toHaveCSS("display", "grid");
@@ -726,13 +815,9 @@ test.describe("public pricing and mandatory notices", () => {
     expect(Math.abs(dialogBox!.x + dialogBox!.width / 2 - viewport!.width / 2)).toBeLessThanOrEqual(2);
     await page.keyboard.press("Escape");
     await expect(dialog).toBeVisible();
-    await expect(dialog.getByRole("button")).toHaveCount(1);
-    await expect(dialog.getByRole("button", { name: "知道了，进入网站" })).toBeEnabled();
-    await dialog.getByRole("button", { name: "知道了，进入网站" }).dispatchEvent("click");
-    await expect(dialog).toContainText("第二条公告");
-    await expect(dialog.getByRole("button", { name: "知道了，进入网站" })).toBeEnabled();
-    await dialog.getByRole("button", { name: "知道了，进入网站" }).dispatchEvent("click");
+    await dialog.getByRole("button").click();
     await expect(dialog).toHaveCount(0);
+    expect(pendingRequests).toBe(1);
   });
 
   test("logged-in user remains blocked while pending notices fail to load", async ({ page }) => {
@@ -747,9 +832,10 @@ test.describe("public pricing and mandatory notices", () => {
         pendingRequests += 1;
         return json(route, { error: "temporary failure" }, 503);
       }
+      if (path === "/api/auth/me") return json(route, { user: { ...fixtureUser, role: "user" } });
       return json(route, {});
     });
-    await page.goto("/billing", { waitUntil: "domcontentloaded" });
+    await page.goto("/", { waitUntil: "domcontentloaded" });
     const dialog = page.locator(".site-update-notice-modal");
     await expect(dialog).toBeVisible();
     await expect(dialog.getByRole("button", { name: "重试加载公告" })).toBeVisible();

@@ -125,9 +125,19 @@ class UpdateNoticeTest(unittest.TestCase):
 
             campaign = results[0]["email_campaign"]
             self.assertEqual(campaign["id"], results[1]["email_campaign"]["id"])
-            self.assertEqual(campaign["total"], 5)
-            self.assertEqual(campaign["pending"], 3)  # admin + active user + disabled-status verified user
+            self.assertEqual(campaign["total"], 4)
+            self.assertEqual(campaign["pending"], 2)
             self.assertEqual(campaign["skipped"], 2)
+            with closing(sqlite3.connect(db_path)) as conn:
+                recipients = conn.execute(
+                    """
+                    SELECT u.username
+                    FROM update_email_deliveries d
+                    JOIN users u ON u.id = d.user_id
+                    ORDER BY u.username
+                    """
+                ).fetchall()
+            self.assertEqual([row[0] for row in recipients], ["noticeuser1", "noticeuser2", "noticeuser3", "noticeuser4"])
             with closing(sqlite3.connect(db_path)) as conn:
                 self.assertEqual(conn.execute("SELECT COUNT(*) FROM update_email_campaigns").fetchone()[0], 1)
             other = create_update_notice(db_path, title="Other", version="2026-07-16", items=["Two"], admin_id=admin_id)
@@ -139,7 +149,18 @@ class UpdateNoticeTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "auth.sqlite"
             admin_id = self._create_admin(db_path)
-            updated = set_update_email_preference(db_path, user_id=admin_id, enabled=False)
+            with closing(sqlite3.connect(db_path)) as conn:
+                with conn:
+                    recipient_id = int(conn.execute(
+                        """
+                        INSERT INTO users (
+                            phone, username, email, email_verified, update_emails_enabled,
+                            password_hash, password_salt, role, status, invite_code, created_at
+                        ) VALUES (?, ?, ?, 1, 1, 'hash', 'salt', 'user', 'active', ?, ?)
+                        """,
+                        ("pref-user", "prefuser", "pref@example.com", "PREFUSER", "2026-07-15T10:00:00+08:00"),
+                    ).lastrowid)
+            updated = set_update_email_preference(db_path, user_id=recipient_id, enabled=False)
             self.assertFalse(updated["update_emails_enabled"])
             notice = create_update_notice(db_path, title="Update", version="2026-07-15", items=["One"], admin_id=admin_id)
             result = publish_update_notice(
@@ -148,7 +169,7 @@ class UpdateNoticeTest(unittest.TestCase):
             self.assertEqual(result["email_campaign"]["pending"], 0)
             self.assertEqual(result["email_campaign"]["skipped"], 1)
 
-            set_update_email_preference(db_path, user_id=admin_id, enabled=True)
+            set_update_email_preference(db_path, user_id=recipient_id, enabled=True)
             result = publish_update_notice(
                 db_path, notice_id=int(notice["id"]), send_email=True, request_id="campaign-request-003", admin_id=admin_id
             )
@@ -173,7 +194,7 @@ class UpdateNoticeTest(unittest.TestCase):
                 "trade_review_agent.auth_system._send_smtp_message"
             ) as smtp:
                 self.assertTrue(process_next_update_email(db_path))
-            self.assertEqual(smtp.call_args.args[0], "notice-admin@example.com")
+            self.assertEqual(smtp.call_args.args[0], "pref@example.com")
             with closing(sqlite3.connect(db_path)) as conn:
                 status = conn.execute("SELECT status FROM update_email_campaigns WHERE id = ?", (campaign_id,)).fetchone()[0]
             self.assertEqual(status, "completed")
@@ -234,17 +255,62 @@ class UpdateNoticeTest(unittest.TestCase):
             with ThreadPoolExecutor(max_workers=4) as pool:
                 processed = list(pool.map(process_one, range(8)))
 
-            self.assertEqual(processed, [True] * 8)
+            self.assertEqual(processed.count(True), 7)
+            self.assertEqual(processed.count(False), 1)
             self.assertGreaterEqual(max_active, 2, "queue sends remained serial despite four workers")
-            self.assertEqual(len(sent_ids), 8)
+            self.assertEqual(len(sent_ids), 7)
             self.assertEqual(Counter(sent_ids), Counter(set(sent_ids)), "a delivery was claimed more than once")
             with closing(sqlite3.connect(db_path)) as conn:
                 rows = conn.execute(
                     "SELECT id, status, attempt_count FROM update_email_deliveries WHERE campaign_id = ? ORDER BY id",
                     (campaign_id,),
                 ).fetchall()
-            self.assertEqual(len(rows), 8)
+            self.assertEqual(len(rows), 7)
             self.assertTrue(all(status == "sent" and attempts == 1 for _, status, attempts in rows))
+
+    def test_legacy_admin_delivery_is_skipped_even_after_retry(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "auth.sqlite"
+            admin_id = self._create_admin(db_path)
+            notice = create_update_notice(
+                db_path, title="Legacy admin delivery", version="2026-07-20", items=["One"], admin_id=admin_id
+            )
+            result = publish_update_notice(
+                db_path,
+                notice_id=int(notice["id"]),
+                send_email=True,
+                request_id="legacy-admin-campaign-001",
+                admin_id=admin_id,
+            )
+            campaign_id = int(result["email_campaign"]["id"])
+            with closing(sqlite3.connect(db_path)) as conn:
+                with conn:
+                    conn.execute(
+                        """
+                        INSERT INTO update_email_deliveries (
+                            campaign_id, user_id, email, status, attempt_count,
+                            next_attempt_at, last_error, updated_at
+                        ) VALUES (?, ?, 'notice-admin@example.com', 'failed', 3, NULL, 'legacy failure', ?)
+                        """,
+                        (campaign_id, admin_id, "2026-07-20T10:00:00+08:00"),
+                    )
+            retried = retry_update_email_campaign(db_path, campaign_id=campaign_id)
+            self.assertEqual(retried["pending"], 1)
+
+            sender = mock.Mock()
+            self.assertFalse(process_next_update_email(db_path, sender=sender))
+            sender.assert_not_called()
+            with closing(sqlite3.connect(db_path)) as conn:
+                delivery = conn.execute(
+                    "SELECT status, last_error FROM update_email_deliveries WHERE campaign_id = ? AND user_id = ?",
+                    (campaign_id, admin_id),
+                ).fetchone()
+                campaign_status = conn.execute(
+                    "SELECT status FROM update_email_campaigns WHERE id = ?", (campaign_id,)
+                ).fetchone()[0]
+            self.assertEqual(delivery[0], "skipped")
+            self.assertEqual(delivery[1], "管理员不接收产品更新邮件")
+            self.assertEqual(campaign_status, "completed")
 
     def test_smtp_session_reuses_connection_and_keeps_one_to_recipient_per_message(self):
         server = mock.Mock()
