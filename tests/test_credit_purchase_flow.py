@@ -561,7 +561,7 @@ class CreditPurchaseApiTest(unittest.TestCase):
         status, payload = self.request(
             f"/api/admin/users/{self.user_id}/status",
             token="api-admin-token",
-            payload={"status": "disabled"},
+            payload={"status": "disabled", "expected_identity": "apiuser"},
         )
         self.assertEqual(status, 200)
         self.assertEqual(payload["user"]["status"], "disabled")
@@ -579,18 +579,64 @@ class CreditPurchaseApiTest(unittest.TestCase):
         paused_status, paused_payload = self.request(
             f"/api/admin/users/{self.user_id}/status",
             token="api-admin-token",
-            payload={"status": "disabled"},
+            payload={"status": "disabled", "expected_identity": "apiuser"},
         )
         resumed_status, resumed_payload = self.request(
             f"/api/admin/users/{self.user_id}/status",
             token="api-admin-token",
-            payload={"status": "active"},
+            payload={"status": "active", "expected_identity": "apiuser"},
         )
 
         self.assertEqual(paused_status, 200)
         self.assertEqual(paused_payload["user"]["status"], "disabled")
         self.assertEqual(resumed_status, 200)
         self.assertEqual(resumed_payload["user"]["status"], "active")
+
+    def test_status_api_rejects_prefix_identity_mismatch_and_only_updates_exact_user(self) -> None:
+        now = "2026-07-20T10:00:00+08:00"
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            with conn:
+                root_id = int(conn.execute(
+                    """
+                    INSERT INTO users (
+                        phone, username, email_verified, password_hash, password_salt,
+                        role, status, invite_code, created_at
+                    ) VALUES (?, ?, 0, 'hash', 'salt', 'user', 'active', ?, ?)
+                    """,
+                    ("prefix-root", "root", "PREFIXROOT", now),
+                ).lastrowid)
+                root888_id = int(conn.execute(
+                    """
+                    INSERT INTO users (
+                        phone, username, email_verified, password_hash, password_salt,
+                        role, status, invite_code, created_at
+                    ) VALUES (?, ?, 0, 'hash', 'salt', 'user', 'active', ?, ?)
+                    """,
+                    ("prefix-root888", "root888", "PREFIXROOT888", now),
+                ).lastrowid)
+
+        mismatch_status, _ = self.request(
+            f"/api/admin/users/{root888_id}/status",
+            token="api-admin-token",
+            payload={"status": "disabled", "expected_identity": "root"},
+        )
+        self.assertEqual(mismatch_status, 409)
+
+        exact_status, exact_payload = self.request(
+            f"/api/admin/users/{root888_id}/status",
+            token="api-admin-token",
+            payload={"status": "disabled", "expected_identity": "root888"},
+        )
+        self.assertEqual(exact_status, 200)
+        self.assertEqual(exact_payload["user"]["id"], root888_id)
+        self.assertEqual(exact_payload["user"]["display_name"], "root888")
+
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            statuses = dict(conn.execute(
+                "SELECT username, status FROM users WHERE id IN (?, ?)",
+                (root_id, root888_id),
+            ).fetchall())
+        self.assertEqual(statuses, {"root": "active", "root888": "disabled"})
 
 
 if __name__ == "__main__":

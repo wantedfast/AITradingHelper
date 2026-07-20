@@ -306,14 +306,26 @@ export default function AdminPage() {
   }
 
   async function toggleUserStatus(userId: number, nextStatus: "active" | "disabled") {
+    const target = data?.managed_users.find((item) => item.id === userId);
+    if (!target) {
+      setMessage("目标用户不存在，请刷新列表后重试。");
+      return;
+    }
+    const targetName = target.username || target.email || target.phone || `用户 #${target.id}`;
+    const actionText = nextStatus === "disabled" ? "暂停" : "恢复";
+    if (!window.confirm(`确认${actionText}账号“${targetName}”（用户 ID：${target.id}）？`)) return;
     setMessage("");
     try {
-      await apiFetch(`/api/admin/users/${userId}/status`, {
+      const result = await apiFetch<{ user: { id: number; display_name?: string; status: string } }>(`/api/admin/users/${userId}/status`, {
         method: "POST",
-        body: JSON.stringify({ status: nextStatus }),
+        body: JSON.stringify({ status: nextStatus, expected_identity: targetName }),
       });
+      if (result.user.id !== userId) throw new Error("服务器返回的目标用户不一致，操作已中止。");
       await loadDashboard(days);
-      setMessage(nextStatus === "disabled" ? "账号已暂停，现有 session 已失效。" : "账号已恢复，可重新登录。");
+      const confirmedName = result.user.display_name || targetName;
+      setMessage(nextStatus === "disabled"
+        ? `账号“${confirmedName}”（用户 ID：${userId}）已暂停，现有 session 已失效。`
+        : `账号“${confirmedName}”（用户 ID：${userId}）已恢复，可重新登录。`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "更新账号状态失败");
     }
