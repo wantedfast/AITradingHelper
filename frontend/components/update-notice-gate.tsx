@@ -24,7 +24,9 @@ export function UpdateNoticeGate() {
   const [loadFailed, setLoadFailed] = useState(false);
   const [retryKey, setRetryKey] = useState(0);
   const confirmButtonRef = useRef<HTMLButtonElement>(null);
-  const excludedPage = pathname === "/auth";
+  const userId = user?.id || 0;
+  const userRole = user?.role || "";
+  const homepageGateEnabled = pathname === "/" && userRole === "user";
 
   useEffect(() => {
     // A profile without a session token is stale browser state, not a logged-in
@@ -39,7 +41,7 @@ export function UpdateNoticeGate() {
   }, []);
 
   useEffect(() => {
-    if (!user || excludedPage) {
+    if (!homepageGateEnabled) {
       setNotices([]);
       setMessage("");
       setLoadFailed(false);
@@ -61,6 +63,11 @@ export function UpdateNoticeGate() {
       } catch (error) {
         if (!active) return;
         if (error instanceof ApiError && error.status === 401) {
+          setUser(null);
+          setNotices([]);
+          setLoadFailed(false);
+          setMessage("");
+          setNoticeStatus("idle");
           return;
         }
         setNotices((current) => current);
@@ -75,10 +82,10 @@ export function UpdateNoticeGate() {
     return () => {
       active = false;
     };
-  }, [excludedPage, retryKey, user]);
+  }, [homepageGateEnabled, retryKey, userId, userRole]);
 
   useEffect(() => {
-    if (!user || excludedPage || (noticeStatus === "ready" && !notices.length)) return;
+    if (!homepageGateEnabled || (noticeStatus === "ready" && !notices.length)) return;
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     const frame = window.requestAnimationFrame(() => confirmButtonRef.current?.focus());
@@ -86,7 +93,7 @@ export function UpdateNoticeGate() {
       window.cancelAnimationFrame(frame);
       document.body.style.overflow = previousOverflow;
     };
-  }, [excludedPage, noticeStatus, notices.length, user]);
+  }, [homepageGateEnabled, noticeStatus, notices.length]);
 
   const activeNotice = notices[0] || null;
   const markdownLines = useMemo(
@@ -114,7 +121,7 @@ export function UpdateNoticeGate() {
     }
   }
 
-  if (!user || excludedPage) return null;
+  if (!homepageGateEnabled) return null;
 
   if (noticeStatus === "ready" && !activeNotice) return null;
 

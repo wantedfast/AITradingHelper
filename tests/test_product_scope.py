@@ -73,22 +73,47 @@ class ProductScopeTest(unittest.TestCase):
             publish_update_notice(db_path, notice_id=int(notice["id"]))
         with closing(sqlite3.connect(db_path)) as conn:
             with conn:
+                conn.execute("UPDATE users SET created_at = '2026-07-17T09:00:00+08:00' WHERE id = ?", (user_id,))
                 conn.execute("UPDATE update_notices SET published_at = '2026-07-18T10:00:00+08:00' WHERE id = ?", (first["id"],))
                 conn.execute("UPDATE update_notices SET published_at = '2026-07-19T10:00:00+08:00' WHERE id = ?", (second["id"],))
+                conn.execute("UPDATE update_notices SET published_at = '2026-07-17T10:00:00+08:00' WHERE id = ?", (expired["id"],))
                 conn.execute("UPDATE update_notices SET expires_at = '2020-01-01T00:00:00+08:00' WHERE id = ?", (expired["id"],))
 
         pending = list_pending_update_notices(db_path, user_id=user_id)
-        self.assertEqual([item["id"] for item in pending], [first["id"], second["id"]])
-        first_ack = acknowledge_update_notice(db_path, notice_id=int(first["id"]), user_id=user_id)
-        second_ack = acknowledge_update_notice(db_path, notice_id=int(first["id"]), user_id=user_id)
+        self.assertEqual([item["id"] for item in pending], [second["id"]])
+        first_ack = acknowledge_update_notice(db_path, notice_id=int(second["id"]), user_id=user_id)
+        second_ack = acknowledge_update_notice(db_path, notice_id=int(second["id"]), user_id=user_id)
         self.assertEqual(first_ack, second_ack)
-        self.assertEqual([item["id"] for item in list_pending_update_notices(db_path, user_id=user_id)], [second["id"]])
+        self.assertEqual(list_pending_update_notices(db_path, user_id=user_id), [])
         with closing(sqlite3.connect(db_path)) as conn:
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM update_notice_acknowledgements").fetchone()[0], 1)
 
         archived = unpublish_update_notice(db_path, notice_id=int(second["id"]))
         self.assertEqual(archived["status"], "archived")
         self.assertEqual(list_pending_update_notices(db_path, user_id=user_id), [])
+
+    def test_pending_notices_ignore_pre_registration_history_and_admins(self) -> None:
+        temp_dir, db_path, admin_id, user_id = self._database()
+        self.addCleanup(temp_dir.cleanup)
+        old_notice = create_update_notice(db_path, title="Old", version="v1", items=["Old"], admin_id=admin_id)
+        new_notice = create_update_notice(db_path, title="New", version="v2", items=["New"], admin_id=admin_id)
+        for notice in (old_notice, new_notice):
+            publish_update_notice(db_path, notice_id=int(notice["id"]))
+        with closing(sqlite3.connect(db_path)) as conn:
+            with conn:
+                conn.execute("UPDATE update_notices SET published_at = '2026-07-19T09:00:00+08:00' WHERE id = ?", (old_notice["id"],))
+                conn.execute("UPDATE update_notices SET published_at = '2026-07-20T11:00:00+08:00' WHERE id = ?", (new_notice["id"],))
+                conn.execute("UPDATE users SET created_at = '2026-07-20T10:30:00+08:00' WHERE id = ?", (user_id,))
+                conn.execute(
+                    "INSERT INTO sessions (token, user_id, expires_at, created_at) VALUES ('admin-token', ?, '2999-01-01', '2026-07-20T10:00:00+08:00')",
+                    (admin_id,),
+                )
+
+        self.assertEqual([item["id"] for item in list_pending_update_notices(db_path, user_id=user_id)], [new_notice["id"]])
+        self.assertEqual(list_pending_update_notices(db_path, user_id=admin_id), [])
+        with self.assertRaises(AuthError) as error:
+            acknowledge_update_notice(db_path, notice_id=int(old_notice["id"]), user_id=user_id)
+        self.assertEqual(error.exception.status, 404)
 
     def test_notice_payload_and_dashboard_do_not_expose_removed_statistics(self) -> None:
         temp_dir, db_path, admin_id, _user_id = self._database()
@@ -163,9 +188,12 @@ class PublicBoundaryApiTest(unittest.TestCase):
         self.auth_patch.stop()
         self.temp_dir.cleanup()
 
-    def _request(self, path: str, *, method: str = "GET", payload: dict | None = None) -> tuple[int, dict]:
+    def _request(self, path: str, *, method: str = "GET", payload: dict | None = None, token: str | None = None) -> tuple[int, dict]:
         body = json.dumps(payload).encode() if payload is not None else None
-        request = Request(self.base_url + path, data=body, method=method, headers={"Content-Type": "application/json"})
+        headers = {"Content-Type": "application/json"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        request = Request(self.base_url + path, data=body, method=method, headers=headers)
         try:
             with urlopen(request, timeout=3) as response:
                 return response.status, json.loads(response.read())
@@ -196,6 +224,60 @@ class PublicBoundaryApiTest(unittest.TestCase):
         ):
             status, _payload = self._request(path)
             self.assertEqual(status, 401)
+
+    def test_pending_notice_api_returns_only_homepage_relevant_latest_notice(self) -> None:
+        now = "2026-07-20T10:00:00+08:00"
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            with conn:
+                admin_id = int(conn.execute(
+                    """
+                    INSERT INTO users (phone, username, email, email_verified, password_hash, password_salt,
+                                       role, status, invite_code, created_at)
+                    VALUES ('api-admin', 'apiadmin', 'api-admin@example.com', 1, 'hash', 'salt',
+                            'admin', 'active', 'APIADMIN', ?)
+                    """,
+                    (now,),
+                ).lastrowid)
+                user_id = int(conn.execute(
+                    """
+                    INSERT INTO users (phone, username, email, email_verified, password_hash, password_salt,
+                                       role, status, invite_code, created_at)
+                    VALUES ('api-user', 'apiuser', 'api-user@example.com', 1, 'hash', 'salt',
+                            'user', 'active', 'APIUSER', ?)
+                    """,
+                    (now,),
+                ).lastrowid)
+                conn.execute(
+                    "INSERT INTO sessions (token, user_id, expires_at, created_at) VALUES ('api-user-token', ?, '2999-01-01', ?)",
+                    (user_id, now),
+                )
+                conn.execute(
+                    "INSERT INTO sessions (token, user_id, expires_at, created_at) VALUES ('api-admin-token', ?, '2999-01-01', ?)",
+                    (admin_id, now),
+                )
+        older = create_update_notice(self.db_path, title="Older", version="v1", items=["Older"], admin_id=admin_id)
+        latest = create_update_notice(self.db_path, title="Latest", version="v2", items=["Latest"], admin_id=admin_id)
+        for notice in (older, latest):
+            publish_update_notice(self.db_path, notice_id=int(notice["id"]))
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            with conn:
+                conn.execute("UPDATE update_notices SET published_at = '2026-07-20T10:01:00+08:00' WHERE id = ?", (older["id"],))
+                conn.execute("UPDATE update_notices SET published_at = '2026-07-20T10:02:00+08:00' WHERE id = ?", (latest["id"],))
+
+        status, payload = self._request("/api/update-notices/pending", token="api-user-token")
+        self.assertEqual(status, 200)
+        self.assertEqual([item["id"] for item in payload["notices"]], [latest["id"]])
+
+        ack_status, acknowledged = self._request(
+            f"/api/update-notices/{latest['id']}/ack", method="POST", payload={}, token="api-user-token"
+        )
+        self.assertEqual(ack_status, 200)
+        self.assertEqual(acknowledged["acknowledgement"]["notice_id"], latest["id"])
+        self.assertEqual(acknowledged["remaining"], [])
+
+        admin_status, admin_payload = self._request("/api/update-notices/pending", token="api-admin-token")
+        self.assertEqual(admin_status, 200)
+        self.assertEqual(admin_payload["notices"], [])
 
 
 if __name__ == "__main__":

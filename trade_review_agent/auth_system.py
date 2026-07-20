@@ -1575,44 +1575,61 @@ def latest_published_update_notice(db_path: Path) -> dict[str, Any] | None:
         return _update_notice_payload(row) if row else None
 
 
+def _latest_eligible_update_notice_row(
+    conn: sqlite3.Connection, *, user_id: int, now: str | None = None
+) -> sqlite3.Row | None:
+    user = _fetch_user_by_id(conn, user_id)
+    if str(user["role"] or "").strip() != "user":
+        return None
+    current_time = str(now or _now())
+    registered_at = str(user["created_at"] or "").strip()
+    return conn.execute(
+        """
+        SELECT n.*
+        FROM update_notices n
+        WHERE n.audience = 'registered_users'
+          AND COALESCE(n.published_at, '') != ''
+          AND n.published_at >= ?
+          AND n.published_at <= ?
+        ORDER BY n.published_at DESC, n.id DESC
+        LIMIT 1
+        """,
+        (registered_at, current_time),
+    ).fetchone()
+
+
 def list_pending_update_notices(db_path: Path, *, user_id: int) -> list[dict[str, Any]]:
     with _connect(db_path) as conn:
-        rows = conn.execute(
+        now = _now()
+        latest = _latest_eligible_update_notice_row(conn, user_id=user_id, now=now)
+        if not latest:
+            return []
+        expires_at = str(latest["expires_at"] or "").strip()
+        if str(latest["status"] or "") != "published" or (expires_at and expires_at <= now):
+            return []
+        acknowledged = conn.execute(
             """
-            SELECT n.*
-            FROM update_notices n
-            LEFT JOIN update_notice_acknowledgements a
-              ON a.notice_id = n.id AND a.user_id = ?
-            WHERE n.status = 'published'
-              AND n.audience = 'registered_users'
-              AND COALESCE(n.published_at, '') != ''
-              AND n.published_at <= ?
-              AND (n.expires_at IS NULL OR n.expires_at = '' OR n.expires_at > ?)
-              AND a.id IS NULL
-            ORDER BY n.published_at ASC, n.id ASC
+            SELECT 1
+            FROM update_notice_acknowledgements
+            WHERE notice_id = ? AND user_id = ?
+            LIMIT 1
             """,
-            (user_id, _now(), _now()),
-        ).fetchall()
-        return [_update_notice_payload(row) for row in rows]
+            (int(latest["id"]), user_id),
+        ).fetchone()
+        return [] if acknowledged else [_update_notice_payload(latest)]
 
 
 def acknowledge_update_notice(db_path: Path, *, notice_id: int, user_id: int) -> dict[str, Any]:
     now = _now()
     with _connect(db_path) as conn:
-        row = conn.execute(
-            """
-            SELECT *
-            FROM update_notices
-            WHERE id = ?
-              AND status = 'published'
-              AND audience = 'registered_users'
-              AND COALESCE(published_at, '') != ''
-              AND published_at <= ?
-              AND (expires_at IS NULL OR expires_at = '' OR expires_at > ?)
-            """,
-            (notice_id, now, now),
-        ).fetchone()
-        if not row:
+        latest = _latest_eligible_update_notice_row(conn, user_id=user_id, now=now)
+        expires_at = str(latest["expires_at"] or "").strip() if latest else ""
+        if (
+            not latest
+            or int(latest["id"]) != notice_id
+            or str(latest["status"] or "") != "published"
+            or (expires_at and expires_at <= now)
+        ):
             raise AuthError("更新公告不存在或已下线", 404)
         conn.execute(
             """
@@ -2075,6 +2092,30 @@ def process_next_update_email(
     now = _now()
     with _connect(db_path) as conn:
         conn.execute("BEGIN IMMEDIATE")
+        excluded_campaigns = [
+            int(item["campaign_id"])
+            for item in conn.execute(
+                """
+                SELECT DISTINCT d.campaign_id
+                FROM update_email_deliveries d
+                JOIN users u ON u.id = d.user_id
+                WHERE u.role != 'user' AND d.status IN ('pending', 'failed')
+                """
+            ).fetchall()
+        ]
+        if excluded_campaigns:
+            conn.execute(
+                """
+                UPDATE update_email_deliveries
+                SET status = 'skipped', next_attempt_at = NULL,
+                    last_error = '管理员不接收产品更新邮件', updated_at = ?
+                WHERE status IN ('pending', 'failed')
+                  AND user_id IN (SELECT id FROM users WHERE role != 'user')
+                """,
+                (now,),
+            )
+            for campaign_id in excluded_campaigns:
+                _refresh_email_campaign_status(conn, campaign_id)
         row = conn.execute(
             """
             SELECT d.id, d.campaign_id, d.email, d.attempt_count,
@@ -2082,7 +2123,10 @@ def process_next_update_email(
             FROM update_email_deliveries d
             JOIN update_email_campaigns c ON c.id = d.campaign_id
             JOIN update_notices n ON n.id = c.notice_id
-            WHERE d.status = 'pending' AND (d.next_attempt_at IS NULL OR d.next_attempt_at <= ?)
+            JOIN users u ON u.id = d.user_id
+            WHERE u.role = 'user'
+              AND d.status = 'pending'
+              AND (d.next_attempt_at IS NULL OR d.next_attempt_at <= ?)
             ORDER BY d.id
             LIMIT 1
             """,
@@ -3244,7 +3288,14 @@ def _create_update_email_campaign(
             (notice_id, request_id, admin_id, now),
         ).lastrowid
     )
-    users = conn.execute("SELECT id, email, email_verified, update_emails_enabled FROM users ORDER BY id").fetchall()
+    users = conn.execute(
+        """
+        SELECT id, email, email_verified, update_emails_enabled
+        FROM users
+        WHERE role = 'user'
+        ORDER BY id
+        """
+    ).fetchall()
     for user in users:
         email = str(user["email"] or "").strip().lower()
         eligible = bool(email and int(user["email_verified"] or 0) == 1 and int(user["update_emails_enabled"] or 0) == 1)
