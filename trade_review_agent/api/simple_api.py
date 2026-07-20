@@ -24,13 +24,16 @@ from zoneinfo import ZoneInfo
 import requests
 
 from trade_review_agent.auth_system import (
+    adjust_user_credits,
     AuthError,
     acknowledge_update_notice,
     admin_dashboard,
     bind_user_email,
+    confirm_credit_order,
     confirm_membership_order,
     consume_feature_credit,
     consume_feature_credit_once,
+    create_credit_order,
     has_feature_access,
     create_membership_order,
     create_daily_top5_email_campaign,
@@ -38,14 +41,15 @@ from trade_review_agent.auth_system import (
     create_update_notice,
     credit_packages,
     create_order,
+    credit_checkout_config,
     ensure_feature_credit_available,
     get_order,
     get_order_by_order_no,
     get_current_user,
+    latest_credit_order,
     latest_membership_order,
     list_pending_update_notices,
     grant_credits_to_all_users,
-    grant_user_credits,
     init_auth_db,
     latest_published_update_notice,
     list_update_notices,
@@ -58,11 +62,13 @@ from trade_review_agent.auth_system import (
     process_next_update_email,
     process_next_daily_top5_email,
     process_next_ai_report_email,
+    public_credit_catalog,
     public_membership_catalog,
     publish_update_notice,
     register_password_user,
     require_admin,
     require_user,
+    reject_credit_order,
     reject_membership_order,
     review_feedback,
     retry_update_email_campaign,
@@ -73,6 +79,8 @@ from trade_review_agent.auth_system import (
     recover_ai_report_email_queue,
     send_email_code,
     send_email_binding_code,
+    set_user_status,
+    submit_credit_payment,
     submit_membership_payment,
     submit_feedback,
     UpdateEmailSMTPSession,
@@ -178,6 +186,9 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             if path == "/api/public/membership/plans":
                 self._public_membership_plans()
                 return
+            if path == "/api/public/credits/catalog":
+                self._public_credit_catalog()
+                return
             if path == "/api/update-notices/latest":
                 self._latest_update_notice()
                 return
@@ -192,6 +203,9 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/pay/membership/plans":
                 self._membership_plans()
+                return
+            if path == "/api/pay/credits/orders/latest":
+                self._latest_credit_order()
                 return
             if path == "/api/pay/membership/orders/latest":
                 self._latest_membership_order()
@@ -297,6 +311,12 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             if path == "/api/pay/membership/orders":
                 self._create_membership_order()
                 return
+            if path == "/api/pay/credits/orders":
+                self._create_credit_order()
+                return
+            if path.startswith("/api/pay/credits/orders/"):
+                self._submit_credit_payment(path)
+                return
             if path.startswith("/api/pay/membership/orders/"):
                 self._submit_membership_payment(path)
                 return
@@ -316,7 +336,7 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                 self._admin_grant_all_user_credits()
                 return
             if path.startswith("/api/admin/users/"):
-                self._admin_grant_user_credits(path)
+                self._admin_user_action(path)
                 return
             if path == "/api/admin/update-notices" or path.startswith("/api/admin/update-notices/"):
                 self._admin_update_notice_action(path)
@@ -974,7 +994,11 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
         self._json({"ok": True})
 
     def _auth_me(self) -> None:
-        user = get_current_user(AUTH_DB, self._bearer_token())
+        token = self._bearer_token()
+        if token:
+            user = require_user(AUTH_DB, token)
+        else:
+            user = get_current_user(AUTH_DB, token)
         self._json({"user": user})
 
     def _auth_email_preferences(self) -> None:
@@ -1050,9 +1074,18 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
     def _public_membership_plans(self) -> None:
         self._json(public_membership_catalog())
 
+    def _public_credit_catalog(self) -> None:
+        self._json(public_credit_catalog())
+
     def _membership_plans(self) -> None:
         self._require_user()
         self._json(public_membership_catalog(include_payment_assets=True))
+
+    def _latest_credit_order(self) -> None:
+        user = self._require_user()
+        order = latest_credit_order(AUTH_DB, user_id=int(user["id"]))
+        refreshed = get_current_user(AUTH_DB, self._bearer_token())
+        self._json({"order": order, "user": refreshed, **public_credit_catalog()})
 
     def _latest_membership_order(self) -> None:
         user = self._require_user()
@@ -1070,6 +1103,37 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
         )
         refreshed = get_current_user(AUTH_DB, self._bearer_token())
         self._json({"order": order, "user": refreshed, **public_membership_catalog(include_payment_assets=True)})
+
+    def _create_credit_order(self) -> None:
+        user = self._require_user()
+        payload = self._read_json_body()
+        order = create_credit_order(
+            AUTH_DB,
+            user_id=int(user["id"]),
+            credits=payload.get("credits"),
+        )
+        refreshed = get_current_user(AUTH_DB, self._bearer_token())
+        self._json({"order": order, "user": refreshed, **public_credit_catalog()})
+
+    def _submit_credit_payment(self, path: str) -> None:
+        user = self._require_user()
+        parts = path.split("/")
+        if len(parts) != 7 or parts[6] != "submit":
+            self._json({"error": "not found"}, status=404)
+            return
+        payload = self._read_json_body()
+        order = submit_credit_payment(
+            AUTH_DB,
+            order_id=int(parts[5]),
+            user_id=int(user["id"]),
+            payment_method=str(payload.get("payment_method") or ""),
+            payer_name=str(payload.get("payer_name") or ""),
+            payer_paid_at=str(payload.get("payer_paid_at") or ""),
+            submitted_amount_cents=payload.get("submitted_amount_cents"),
+            payer_note=str(payload.get("payer_note") or ""),
+        )
+        refreshed = get_current_user(AUTH_DB, self._bearer_token())
+        self._json({"order": order, "user": refreshed})
 
     def _submit_membership_payment(self, path: str) -> None:
         user = self._require_user()
@@ -1326,7 +1390,7 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
         self._json({"feedback": result})
 
     def _admin_order_action(self, path: str) -> None:
-        self._require_admin()
+        admin = self._require_admin()
         parts = path.split("/")
         if len(parts) != 6:
             self._json({"error": "not found"}, status=404)
@@ -1334,7 +1398,6 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
         if parts[5] == "paid":
             result = mark_order_paid(AUTH_DB, order_id=int(parts[4]))
         elif parts[5] == "confirm-membership":
-            admin = self._require_admin()
             payload = self._read_json_body()
             result = confirm_membership_order(
                 AUTH_DB,
@@ -1342,10 +1405,25 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                 admin_id=int(admin["id"]),
                 admin_note=str(payload.get("admin_note") or ""),
             )
-        elif parts[5] == "reject":
-            admin = self._require_admin()
+        elif parts[5] == "confirm-credits":
+            payload = self._read_json_body()
+            result = confirm_credit_order(
+                AUTH_DB,
+                order_id=int(parts[4]),
+                admin_id=int(admin["id"]),
+                admin_note=str(payload.get("admin_note") or ""),
+            )
+        elif parts[5] in {"reject", "reject-membership"}:
             payload = self._read_json_body()
             result = reject_membership_order(
+                AUTH_DB,
+                order_id=int(parts[4]),
+                admin_id=int(admin["id"]),
+                admin_note=str(payload.get("admin_note") or ""),
+            )
+        elif parts[5] == "reject-credits":
+            payload = self._read_json_body()
+            result = reject_credit_order(
                 AUTH_DB,
                 order_id=int(parts[4]),
                 admin_id=int(admin["id"]),
@@ -1356,21 +1434,35 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             return
         self._json({"order": result})
 
-    def _admin_grant_user_credits(self, path: str) -> None:
+    def _admin_user_action(self, path: str) -> None:
         admin = self._require_admin()
         parts = path.split("/")
-        if len(parts) != 6 or parts[5] != "credits":
+        if len(parts) != 6:
             self._json({"error": "not found"}, status=404)
             return
         payload = self._read_json_body()
-        result = grant_user_credits(
-            AUTH_DB,
-            user_id=int(parts[4]),
-            credits=int(payload.get("credits") or 0),
-            reason=str(payload.get("reason") or ""),
-            admin_id=int(admin["id"]),
-        )
-        self._json(result)
+        user_id = int(parts[4])
+        if parts[5] == "credits":
+            result = adjust_user_credits(
+                AUTH_DB,
+                user_id=user_id,
+                delta=payload.get("credits"),
+                reason=str(payload.get("reason") or ""),
+                request_id=str(payload.get("request_id") or ""),
+                admin_id=int(admin["id"]),
+            )
+            self._json(result)
+            return
+        if parts[5] == "status":
+            result = set_user_status(
+                AUTH_DB,
+                user_id=user_id,
+                status=str(payload.get("status") or ""),
+                admin_id=int(admin["id"]),
+            )
+            self._json(result)
+            return
+        self._json({"error": "not found"}, status=404)
 
     def _admin_grant_all_user_credits(self) -> None:
         admin = self._require_admin()

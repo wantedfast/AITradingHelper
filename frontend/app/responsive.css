@@ -1088,6 +1088,15 @@
     grid-template-columns: minmax(0, 1fr);
   }
 
+  .credits-summary,
+  .admin-credit-actions {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .admin-credit-actions {
+    display: grid;
+  }
+
   .billing-packages .billing-plan-options button {
     min-height: 126px;
     grid-template-columns: 36px minmax(0, 1fr) auto;

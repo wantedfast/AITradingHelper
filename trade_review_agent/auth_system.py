@@ -106,6 +106,14 @@ def init_auth_db(db_path: Path) -> None:
                 FOREIGN KEY (user_id) REFERENCES users(id)
             );
 
+            CREATE TABLE IF NOT EXISTS invalidated_sessions (
+                token TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                reason TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            );
+
             CREATE TABLE IF NOT EXISTS credit_ledger (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
@@ -128,6 +136,20 @@ def init_auth_db(db_path: Path) -> None:
                 created_at TEXT NOT NULL,
                 completed_at TEXT,
                 FOREIGN KEY (created_by) REFERENCES users(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS admin_credit_adjustments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                request_id TEXT NOT NULL UNIQUE,
+                user_id INTEGER NOT NULL,
+                delta INTEGER NOT NULL,
+                reason TEXT NOT NULL,
+                admin_id INTEGER,
+                resulting_balance INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                completed_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                FOREIGN KEY (admin_id) REFERENCES users(id)
             );
 
             CREATE TABLE IF NOT EXISTS referrals (
@@ -347,6 +369,8 @@ def init_auth_db(db_path: Path) -> None:
 
             CREATE INDEX IF NOT EXISTS idx_usage_created ON usage_events(created_at);
             CREATE INDEX IF NOT EXISTS idx_credit_grant_campaigns_created ON credit_grant_campaigns(created_at);
+            CREATE INDEX IF NOT EXISTS idx_admin_credit_adjustments_user_created
+                ON admin_credit_adjustments(user_id, created_at DESC);
             CREATE UNIQUE INDEX IF NOT EXISTS idx_credit_ledger_grant_campaign_user
                 ON credit_ledger(user_id, related_id) WHERE reason = 'admin_grant_all';
             CREATE INDEX IF NOT EXISTS idx_feedback_status ON feedback(status);
@@ -759,37 +783,19 @@ def logout_user(db_path: Path, token: str) -> None:
         conn.execute("DELETE FROM sessions WHERE token = ?", (token,))
 
 
-def get_current_user(db_path: Path, token: str) -> dict[str, Any] | None:
+def _session_user_row_strict(conn: sqlite3.Connection, token: str) -> sqlite3.Row | None:
     if not token:
         return None
     now = _now()
-    with _connect(db_path) as conn:
-        row = conn.execute(
-            """
-            SELECT u.*
-            FROM sessions s
-            JOIN users u ON u.id = s.user_id
-            WHERE s.token = ? AND s.expires_at > ? AND u.status = 'active'
-            """,
-            (token, now),
-        ).fetchone()
-        if not row:
-            return None
-        return _user_payload(conn, row)
-
-
-def require_user(db_path: Path, token: str) -> dict[str, Any]:
-    user = get_current_user(db_path, token)
-    if not user:
-        raise AuthError("请先登录后再使用", 401)
-    return user
-
-
-def require_admin(db_path: Path, token: str) -> dict[str, Any]:
-    user = require_user(db_path, token)
-    if user.get("role") != "admin":
-        raise AuthError("需要管理员权限", 403)
-    return user
+    return conn.execute(
+        """
+        SELECT u.*
+        FROM sessions s
+        JOIN users u ON u.id = s.user_id
+        WHERE s.token = ? AND s.expires_at > ?
+        """,
+        (token, now),
+    ).fetchone()
 
 
 def consume_feature_credit(db_path: Path, *, user_id: int, feature: str, ip: str = "", related_id: str = "") -> dict[str, Any]:
@@ -905,6 +911,30 @@ def credit_packages() -> list[dict[str, Any]]:
     return [{"id": key, **value} for key, value in CREDIT_PACKAGES.items()]
 
 
+def _manual_checkout_config(prefix: str) -> dict[str, str]:
+    prefix = (prefix or "MEMBERSHIP").strip().upper() or "MEMBERSHIP"
+    business_hours = (
+        os.getenv(f"{prefix}_SUPPORT_HOURS", "").strip()
+        or os.getenv("MEMBERSHIP_SUPPORT_HOURS", "工作日 10:00-18:00").strip()
+        or "工作日 10:00-18:00"
+    )
+    confirmation_eta = os.getenv(f"{prefix}_CONFIRMATION_ETA", "").strip()
+    support_channel = (
+        os.getenv(f"{prefix}_SUPPORT_CHANNEL", "").strip()
+        or os.getenv("MEMBERSHIP_SUPPORT_CHANNEL", "如长时间未处理，请联系站内反馈或运营客服。").strip()
+    )
+    policy_note = (
+        os.getenv(f"{prefix}_POLICY_NOTE", "").strip()
+        or os.getenv("MEMBERSHIP_POLICY_NOTE", "当前为人工核款开通，退款与发票按人工客服规则处理。").strip()
+    )
+    return {
+        "business_hours": business_hours,
+        "confirmation_eta": confirmation_eta or "提交付款信息后由运营在客服工作时间内人工核对",
+        "support_channel": support_channel or "如长时间未处理，请联系站内反馈或运营客服。",
+        "policy_note": policy_note or "当前为人工核款开通，退款与发票按人工客服规则处理。",
+    }
+
+
 def membership_checkout_config() -> dict[str, str]:
     business_hours = os.getenv("MEMBERSHIP_SUPPORT_HOURS", "工作日 10:00-18:00").strip() or "工作日 10:00-18:00"
     confirmation_eta = os.getenv("MEMBERSHIP_CONFIRMATION_ETA", "").strip()
@@ -916,6 +946,10 @@ def membership_checkout_config() -> dict[str, str]:
         "support_channel": support_channel or "如长时间未处理，请联系站内反馈或运营客服。",
         "policy_note": policy_note or "当前为人工核款开通，退款与发票按人工客服规则处理。",
     }
+
+
+def credit_checkout_config() -> dict[str, str]:
+    return _manual_checkout_config("CREDITS")
 
 
 def membership_plans() -> list[dict[str, Any]]:
@@ -958,6 +992,32 @@ def public_membership_catalog(*, include_payment_assets: bool = False) -> dict[s
     }
 
 
+def public_credit_catalog() -> dict[str, Any]:
+    return {
+        "checkout": credit_checkout_config(),
+        "pricing": {
+            "unit_price_cents": 100,
+            "currency": "CNY",
+        },
+        "rules": {
+            "min_credits": 1,
+            "max_credits": 10000,
+            "price_text": "1 元 / 次",
+            "support_text": "人工核款，确认后到账；退款、发票请联系人工客服处理。",
+        },
+    }
+
+
+def _normalize_credit_purchase_quantity(credits: int) -> int:
+    if isinstance(credits, bool) or not isinstance(credits, int):
+        raise AuthError("购买次数必须是正整数", 400)
+    if credits <= 0:
+        raise AuthError("购买次数必须是正整数", 400)
+    if credits > 10000:
+        raise AuthError("单次购买次数过大，请拆分后重试", 400)
+    return credits
+
+
 def create_order(db_path: Path, *, user_id: int, plan_name: str = "", credits: int = 0, amount_cents: int = 0, package_id: str = "") -> dict[str, Any]:
     package_id = (package_id or "").strip()
     if package_id:
@@ -978,6 +1038,25 @@ def create_order(db_path: Path, *, user_id: int, plan_name: str = "", credits: i
             VALUES (?, ?, ?, ?, ?, ?)
             """,
             (user_id, order_no, plan_name.strip()[:60] or "次数包", credits, amount_cents, now),
+        )
+        return _order_payload(conn.execute("SELECT * FROM orders WHERE id = ?", (cursor.lastrowid,)).fetchone())
+
+
+def create_credit_order(db_path: Path, *, user_id: int, credits: int) -> dict[str, Any]:
+    credits = _normalize_credit_purchase_quantity(credits)
+    order_no = f"YC{datetime.now(CN_TZ).strftime('%Y%m%d%H%M%S')}{secrets.token_hex(3).upper()}"
+    now = _now()
+    with _connect(db_path) as conn:
+        _require_manageable_user(conn, user_id)
+        cursor = conn.execute(
+            """
+            INSERT INTO orders (
+                user_id, order_no, plan_name, credits, amount_cents, status, created_at,
+                product_type, package_id, payment_submit_status
+            )
+            VALUES (?, ?, ?, ?, ?, 'pending', ?, 'credits', '', 'none')
+            """,
+            (user_id, order_no, f"{credits} 次使用", credits, credits * 100, now),
         )
         return _order_payload(conn.execute("SELECT * FROM orders WHERE id = ?", (cursor.lastrowid,)).fetchone())
 
@@ -1007,6 +1086,21 @@ def latest_membership_order(db_path: Path, *, user_id: int) -> dict[str, Any] | 
             SELECT *
             FROM orders
             WHERE user_id = ? AND COALESCE(product_type, '') = 'membership'
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (user_id,),
+        ).fetchone()
+        return _order_payload(row) if row else None
+
+
+def latest_credit_order(db_path: Path, *, user_id: int) -> dict[str, Any] | None:
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT *
+            FROM orders
+            WHERE user_id = ? AND COALESCE(product_type, 'credits') = 'credits'
             ORDER BY id DESC
             LIMIT 1
             """,
@@ -1181,6 +1275,163 @@ def reject_membership_order(db_path: Path, *, order_id: int, admin_id: int, admi
 
 
 
+def submit_credit_payment(
+    db_path: Path,
+    *,
+    order_id: int,
+    user_id: int,
+    payment_method: str,
+    payer_name: str,
+    payer_paid_at: str,
+    submitted_amount_cents: int,
+    payer_note: str = "",
+) -> dict[str, Any]:
+    payment_method = _normalize_payment_method(payment_method)
+    payer_name = (payer_name or "").strip()[:80]
+    payer_note = (payer_note or "").strip()[:240]
+    payer_paid_at = (payer_paid_at or "").strip()[:60]
+    if isinstance(submitted_amount_cents, bool) or not isinstance(submitted_amount_cents, int):
+        raise AuthError("实付金额格式不正确", 400)
+    if not payer_name:
+        raise AuthError("请填写付款人昵称或姓名", 400)
+    if not payer_paid_at:
+        raise AuthError("请填写付款时间", 400)
+    if submitted_amount_cents <= 0:
+        raise AuthError("请填写实付金额", 400)
+    now = _now()
+    notify_result: dict[str, Any]
+    with _connect(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        order = conn.execute("SELECT * FROM orders WHERE id = ? AND user_id = ?", (order_id, user_id)).fetchone()
+        if not order:
+            raise AuthError("订单不存在", 404)
+        if (order["product_type"] if "product_type" in order.keys() else "credits") != "credits":
+            raise AuthError("该订单不是次数订单", 400)
+        _require_manageable_user(conn, int(order["user_id"]))
+        if order["status"] == "paid":
+            raise AuthError("该订单已到账，无需重复提交", 409)
+        if order["status"] not in {"pending", "rejected"}:
+            raise AuthError("付款信息已提交，请等待管理员核款", 409)
+        if int(order["amount_cents"]) != submitted_amount_cents:
+            raise AuthError("实付金额与订单金额不一致，请核对后再提交", 400)
+        updated_count = conn.execute(
+            """
+            UPDATE orders
+            SET status = 'submitted',
+                payment_method = ?,
+                payment_submit_status = 'submitted',
+                payer_name = ?,
+                payer_note = ?,
+                payer_paid_at = ?,
+                submitted_amount_cents = ?,
+                submitted_at = ?,
+                rejected_at = NULL,
+                admin_note = ''
+            WHERE id = ? AND status IN ('pending', 'rejected')
+            """,
+            (payment_method, payer_name, payer_note, payer_paid_at, submitted_amount_cents, now, order_id),
+        ).rowcount
+        if updated_count != 1:
+            raise AuthError("订单状态已变化，请刷新后重试", 409)
+        updated = conn.execute("SELECT * FROM orders WHERE id = ?", (order_id,)).fetchone()
+        user = _fetch_user_by_id(conn, user_id)
+        order_payload = _order_payload(updated)
+        user_payload = _user_payload(conn, user)
+    notify_result = notify_admin_credit_payment(order=order_payload, user=user_payload)
+    order_payload["admin_notification"] = notify_result
+    return order_payload
+
+
+def _grant_order_credits_once(conn: sqlite3.Connection, *, user_id: int, order_id: int, credits: int) -> None:
+    existing = conn.execute(
+        """
+        SELECT id
+        FROM credit_ledger
+        WHERE user_id = ? AND reason = 'order_paid' AND related_id = ?
+        LIMIT 1
+        """,
+        (user_id, str(order_id)),
+    ).fetchone()
+    if existing:
+        return
+    _add_credits(conn, user_id, credits, "order_paid", str(order_id))
+
+
+def confirm_credit_order(db_path: Path, *, order_id: int, admin_id: int, admin_note: str = "") -> dict[str, Any]:
+    now = _now()
+    admin_note = (admin_note or "").strip()[:300]
+    with _connect(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        order = conn.execute("SELECT * FROM orders WHERE id = ?", (order_id,)).fetchone()
+        if not order:
+            raise AuthError("订单不存在", 404)
+        if (order["product_type"] if "product_type" in order.keys() else "credits") != "credits":
+            raise AuthError("该订单不是次数订单", 400)
+        _require_manageable_user(conn, int(order["user_id"]))
+        if order["status"] == "paid":
+            return _order_payload(order)
+        if order["status"] != "submitted":
+            raise AuthError("用户尚未提交付款信息，不能确认到账", 400)
+        updated_order_count = conn.execute(
+            """
+            UPDATE orders
+            SET status = 'paid',
+                paid_at = ?,
+                confirmed_at = ?,
+                admin_id = ?,
+                admin_note = ?
+            WHERE id = ? AND status = 'submitted'
+            """,
+            (now, now, admin_id, admin_note, order_id),
+        ).rowcount
+        if updated_order_count != 1:
+            refreshed_order = conn.execute("SELECT * FROM orders WHERE id = ?", (order_id,)).fetchone()
+            if refreshed_order and refreshed_order["status"] == "paid":
+                return _order_payload(refreshed_order)
+            raise AuthError("订单状态已变化，请刷新后重试", 409)
+        _grant_order_credits_once(
+            conn,
+            user_id=int(order["user_id"]),
+            order_id=order_id,
+            credits=int(order["credits"]),
+        )
+        updated = conn.execute("SELECT * FROM orders WHERE id = ?", (order_id,)).fetchone()
+        return _order_payload(updated)
+
+
+def reject_credit_order(db_path: Path, *, order_id: int, admin_id: int, admin_note: str = "") -> dict[str, Any]:
+    admin_note = (admin_note or "").strip()[:300]
+    if len(admin_note) < 2:
+        raise AuthError("请填写驳回或异常原因", 400)
+    now = _now()
+    with _connect(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        order = conn.execute("SELECT * FROM orders WHERE id = ?", (order_id,)).fetchone()
+        if not order:
+            raise AuthError("订单不存在", 404)
+        if (order["product_type"] if "product_type" in order.keys() else "credits") != "credits":
+            raise AuthError("该订单不是次数订单", 400)
+        if order["status"] == "paid":
+            raise AuthError("已到账订单不能驳回", 409)
+        if order["status"] != "submitted":
+            raise AuthError("只有待核款订单可以驳回", 400)
+        updated_count = conn.execute(
+            """
+            UPDATE orders
+            SET status = 'rejected',
+                rejected_at = ?,
+                admin_id = ?,
+                admin_note = ?
+            WHERE id = ? AND status = 'submitted'
+            """,
+            (now, admin_id, admin_note, order_id),
+        ).rowcount
+        if updated_count != 1:
+            raise AuthError("订单状态已变化，请刷新后重试", 409)
+        updated = conn.execute("SELECT * FROM orders WHERE id = ?", (order_id,)).fetchone()
+        return _order_payload(updated)
+
+
 def get_order_by_order_no(db_path: Path, *, order_no: str) -> dict[str, Any]:
     with _connect(db_path) as conn:
         row = conn.execute("SELECT * FROM orders WHERE order_no = ?", (order_no,)).fetchone()
@@ -1240,6 +1491,18 @@ def admin_dashboard(db_path: Path, days: int = 14) -> dict[str, Any]:
             JOIN users u ON u.id = o.user_id
             ORDER BY o.created_at DESC
             LIMIT 50
+            """
+        ).fetchall()
+        managed_users = conn.execute(
+            """
+            SELECT u.id, u.phone, u.username, u.email, u.role, u.status, u.created_at, u.last_login_at,
+                   COALESCE(SUM(e.credits_spent), 0) AS used_count,
+                   COALESCE((SELECT SUM(delta) FROM credit_ledger c WHERE c.user_id = u.id), 0) AS credits
+            FROM users u
+            LEFT JOIN usage_events e ON e.user_id = u.id
+            WHERE u.role = 'user'
+            GROUP BY u.id
+            ORDER BY u.created_at DESC, u.id DESC
             """
         ).fetchall()
         top_users = conn.execute(
@@ -1535,6 +1798,7 @@ def admin_dashboard(db_path: Path, days: int = 14) -> dict[str, Any]:
             "new_users_by_day": [dict(row) for row in user_rows],
             "feedback": [_feedback_payload(row) for row in feedback_rows],
             "orders": [_order_payload(row) | {"phone": row["phone"], "username": row["username"], "email": row["email"]} for row in orders],
+            "managed_users": [dict(row) for row in managed_users],
             "top_users": [dict(row) for row in top_users],
             "analytics": {
                 "window": {"days": days, "start_date": start_date, "end_date": end_date},
@@ -2392,8 +2656,11 @@ def mark_order_paid(db_path: Path, *, order_id: int) -> dict[str, Any]:
         order = conn.execute("SELECT * FROM orders WHERE id = ?", (order_id,)).fetchone()
         if not order:
             raise AuthError("订单不存在", 404)
-        if (order["product_type"] if "product_type" in order.keys() else "") == "membership":
+        product_type = str(order["product_type"] if "product_type" in order.keys() else "").strip()
+        if product_type == "membership":
             raise AuthError("会员订单请使用确认开通操作", 400)
+        if product_type == "credits":
+            raise AuthError("人工次数订单请先提交付款信息，再使用确认到账操作", 400)
         if order["status"] != "paid":
             conn.execute("UPDATE orders SET status = 'paid', paid_at = ? WHERE id = ?", (now, order_id))
             _add_credits(conn, int(order["user_id"]), int(order["credits"]), "order_paid", str(order_id))
@@ -2449,6 +2716,9 @@ def mark_order_paid_by_order_no(
         order = conn.execute("SELECT * FROM orders WHERE order_no = ?", (order_no,)).fetchone()
         if not order:
             raise AuthError("订单不存在", 404)
+        product_type = str(order["product_type"] if "product_type" in order.keys() else "").strip()
+        if product_type in {"credits", "membership"}:
+            raise AuthError("人工核款订单不能通过自动支付回调确认", 400)
         user = _fetch_user_by_id(conn, int(order["user_id"]))
         user_email = str(user["email"] if "email" in user.keys() else "").strip().lower()
         if payer_email and user_email and payer_email != user_email:
@@ -2547,6 +2817,62 @@ def notify_admin_membership_payment(*, order: dict[str, Any], user: dict[str, An
         return {"sent": False, "error": str(exc)}
 
 
+def notify_admin_credit_payment(*, order: dict[str, Any], user: dict[str, Any]) -> dict[str, Any]:
+    try:
+        admin_email = os.getenv("ADMIN_PAYMENT_NOTIFY_EMAIL", "").strip()
+        if not admin_email:
+            return {"sent": False, "skipped": True, "error": "ADMIN_PAYMENT_NOTIFY_EMAIL 未配置"}
+        amount = int(order.get("amount_cents") or 0) / 100
+        submitted_amount = int(order.get("submitted_amount_cents") or 0) / 100
+        payment_method = _payment_provider_label(str(order.get("payment_method") or ""))
+        plan_name = str(order.get("plan_name") or "次数充值").strip() or "次数充值"
+        user_label = user.get("username") or user.get("email") or user.get("phone") or f"用户 {user.get('id')}"
+        admin_url = os.getenv("ADMIN_DASHBOARD_URL", "").strip() or "/admin"
+        subject = f"【盈航】用户已付款待确认 - {plan_name} ¥{amount:.2f} - 订单号 {order.get('order_no')}"
+        text = (
+            "有用户提交了次数充值付款信息，请核对到账后再确认入账。\n\n"
+            f"订单号：{order.get('order_no')}\n"
+            f"用户：{user_label}\n"
+            f"手机号/账号：{user.get('phone') or ''}\n"
+            f"邮箱：{user.get('email') or ''}\n"
+            f"购买次数：{order.get('credits')}\n"
+            f"应付金额：¥{amount:.2f}\n"
+            f"支付方式：{payment_method}\n"
+            f"付款人：{order.get('payer_name') or ''}\n"
+            f"付款时间：{order.get('payer_paid_at') or ''}\n"
+            f"实付金额：¥{submitted_amount:.2f}\n"
+            f"付款备注：{order.get('payer_note') or ''}\n"
+            f"管理后台：{admin_url}\n"
+        )
+        html = _light_email_document(
+            f"""
+          <h1 style="margin:0 0 20px;color:#1f2328;font-size:24px;line-height:1.35;">用户已付款待确认</h1>
+          <p style="margin:0 0 20px;color:#1f2328;line-height:1.7;">请核对到账后，再到管理台确认次数充值。</p>
+          <p style="margin:8px 0;color:#1f2328;"><strong>订单号：</strong>{_html_escape(str(order.get('order_no') or ''))}</p>
+          <p style="margin:8px 0;color:#1f2328;"><strong>用户：</strong>{_html_escape(str(user_label))}</p>
+          <p style="margin:8px 0;color:#1f2328;"><strong>账号：</strong>{_html_escape(str(user.get('phone') or ''))}</p>
+          <p style="margin:8px 0;color:#1f2328;"><strong>邮箱：</strong>{_html_escape(str(user.get('email') or ''))}</p>
+          <p style="margin:8px 0;color:#1f2328;"><strong>购买次数：</strong>{_html_escape(str(order.get('credits') or ''))}</p>
+          <p style="margin:8px 0;color:#1f2328;"><strong>应付金额：</strong>¥{amount:.2f}</p>
+          <p style="margin:8px 0;color:#1f2328;"><strong>支付方式：</strong>{_html_escape(payment_method)}</p>
+          <p style="margin:8px 0;color:#1f2328;"><strong>付款人：</strong>{_html_escape(str(order.get('payer_name') or ''))}</p>
+          <p style="margin:8px 0;color:#1f2328;"><strong>付款时间：</strong>{_html_escape(str(order.get('payer_paid_at') or ''))}</p>
+          <p style="margin:8px 0;color:#1f2328;"><strong>实付金额：</strong>¥{submitted_amount:.2f}</p>
+          <p style="margin:8px 0;color:#1f2328;"><strong>付款备注：</strong>{_html_escape(str(order.get('payer_note') or ''))}</p>
+          <p style="margin:20px 0 0;color:#1f2328;"><strong>管理后台：</strong><a href="{_html_escape(admin_url)}" style="color:#0969da;text-decoration:underline;">{_html_escape(admin_url)}</a></p>
+        """,
+            max_width=640,
+        )
+        provider = os.getenv("EMAIL_PROVIDER", "smtp").strip().lower() or "smtp"
+        if provider in {"log", "debug", "local"}:
+            _write_email_debug_log(admin_email, text, None)
+            return {"sent": False, "skipped": True, "provider": "log", "email": _mask_email(admin_email), "error": "EMAIL_PROVIDER=log，仅写入本地日志，未真实发送邮件"}
+        _send_smtp_message(admin_email, subject=subject, text=text, html=html)
+        return {"sent": True, "provider": "smtp", "email": _mask_email(admin_email)}
+    except Exception as exc:
+        return {"sent": False, "error": str(exc)}
+
+
 def _membership_plans() -> list[dict[str, Any]]:
     plans = []
     for prefix, defaults in (
@@ -2597,6 +2923,85 @@ def _has_active_membership(user: sqlite3.Row | dict[str, Any]) -> bool:
         return datetime.fromisoformat(expires_at) > datetime.now(CN_TZ)
     except ValueError:
         return False
+
+
+def _require_manageable_user(conn: sqlite3.Connection, user_id: int) -> sqlite3.Row:
+    user = _fetch_user_by_id(conn, user_id)
+    if user["role"] == "admin":
+        raise AuthError("不能操作管理员账号", 403)
+    return user
+
+
+def adjust_user_credits(
+    db_path: Path,
+    *,
+    user_id: int,
+    delta: int,
+    reason: str,
+    request_id: str,
+    admin_id: int | None = None,
+) -> dict[str, Any]:
+    if isinstance(delta, bool) or not isinstance(delta, int):
+        raise AuthError("调整次数必须是整数", 400)
+    reason = (reason or "").strip()
+    request_id = (request_id or "").strip()
+    if delta == 0:
+        raise AuthError("调整次数不能为 0", 400)
+    if abs(delta) > 10000:
+        raise AuthError("单次调整次数过大，请拆分后重试", 400)
+    if len(reason) < 2:
+        raise AuthError("请填写调整次数原因", 400)
+    if len(reason) > 300:
+        raise AuthError("调整次数原因不能超过 300 字", 400)
+    if not CREDIT_GRANT_REQUEST_ID_RE.fullmatch(request_id):
+        raise AuthError("request_id 格式无效", 400)
+
+    now = _now()
+    with _connect(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        existing = conn.execute(
+            "SELECT * FROM admin_credit_adjustments WHERE request_id = ?",
+            (request_id,),
+        ).fetchone()
+        if existing:
+            if int(existing["user_id"]) != user_id or int(existing["delta"]) != delta or str(existing["reason"]) != reason:
+                raise AuthError("request_id 已用于其他调整请求", 409)
+            user = _fetch_user_by_id(conn, user_id)
+            return {
+                "user": _user_payload(conn, user),
+                "delta": int(existing["delta"]),
+                "reason": str(existing["reason"]),
+                "request_id": str(existing["request_id"]),
+                "balance": int(existing["resulting_balance"]),
+                "idempotent": True,
+            }
+
+        user = _require_manageable_user(conn, user_id)
+        balance = _credit_balance(conn, user_id)
+        next_balance = balance + delta
+        if next_balance < 0:
+            raise AuthError("扣减后余额不能小于 0", 400)
+        ledger_reason = "admin_grant" if delta > 0 else "admin_deduct"
+        related_id = f"admin-adjust:{request_id}"
+        _add_credits(conn, user_id, delta, ledger_reason, related_id)
+        conn.execute(
+            """
+            INSERT INTO admin_credit_adjustments (
+                request_id, user_id, delta, reason, admin_id, resulting_balance, created_at, completed_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (request_id, user_id, delta, reason, admin_id, next_balance, now, now),
+        )
+        refreshed = _fetch_user_by_id(conn, int(user["id"]))
+        return {
+            "user": _user_payload(conn, refreshed),
+            "delta": delta,
+            "reason": reason,
+            "request_id": request_id,
+            "balance": next_balance,
+            "idempotent": False,
+        }
 
 
 def grant_user_credits(db_path: Path, *, user_id: int, credits: int, reason: str, admin_id: int | None = None) -> dict[str, Any]:
@@ -2722,6 +3127,79 @@ def _normalize_email_purpose(purpose: str) -> str:
     value = (purpose or "register").strip().lower()
     return value if value in {"register", "bind_email"} else "register"
 
+
+def _invalidated_session_reason(conn: sqlite3.Connection, token: str) -> str:
+    row = conn.execute(
+        "SELECT reason FROM invalidated_sessions WHERE token = ?",
+        (token,),
+    ).fetchone()
+    return str(row["reason"] or "") if row else ""
+
+
+def get_current_user(db_path: Path, token: str) -> dict[str, Any] | None:
+    if not token:
+        return None
+    with _connect(db_path) as conn:
+        row = _session_user_row_strict(conn, token)
+        if not row or row["status"] != "active":
+            return None
+        return _user_payload(conn, row)
+
+
+def require_user(db_path: Path, token: str) -> dict[str, Any]:
+    if not token:
+        raise AuthError("请先登录后再使用", 401)
+    with _connect(db_path) as conn:
+        row = _session_user_row_strict(conn, token)
+        if not row:
+            if _invalidated_session_reason(conn, token) == "disabled":
+                raise AuthError("账号已暂停，请联系管理员", 403)
+            raise AuthError("请先登录后再使用", 401)
+        if row["status"] != "active":
+            raise AuthError("账号已暂停，请联系管理员", 403)
+        return _user_payload(conn, row)
+
+
+def require_admin(db_path: Path, token: str) -> dict[str, Any]:
+    user = require_user(db_path, token)
+    if user.get("role") != "admin":
+        raise AuthError("需要管理员权限", 403)
+    return user
+
+
+def set_user_status(db_path: Path, *, user_id: int, status: str, admin_id: int | None = None) -> dict[str, Any]:
+    normalized_status = (status or "").strip().lower()
+    if normalized_status not in {"active", "disabled"}:
+        raise AuthError("用户状态仅支持 active 或 disabled", 400)
+    now = _now()
+    with _connect(db_path) as conn:
+        user = _require_manageable_user(conn, user_id)
+        if user["status"] != normalized_status:
+            conn.execute("UPDATE users SET status = ? WHERE id = ?", (normalized_status, user_id))
+        if normalized_status == "disabled":
+            tokens = [
+                str(row["token"])
+                for row in conn.execute("SELECT token FROM sessions WHERE user_id = ?", (user_id,)).fetchall()
+            ]
+            for token in tokens:
+                conn.execute(
+                    """
+                    INSERT INTO invalidated_sessions (token, user_id, reason, created_at)
+                    VALUES (?, ?, 'disabled', ?)
+                    ON CONFLICT(token) DO UPDATE SET reason = excluded.reason, created_at = excluded.created_at
+                    """,
+                    (token, user_id, now),
+                )
+            conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+        refreshed = _fetch_user_by_id(conn, user_id)
+        return {
+            "user": {
+                "id": int(refreshed["id"]),
+                "status": str(refreshed["status"]),
+                "credits": _credit_balance(conn, user_id),
+            },
+            "admin_id": admin_id,
+        }
 
 @contextmanager
 def _connect(db_path: Path) -> Iterator[sqlite3.Connection]:

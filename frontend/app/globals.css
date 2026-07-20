@@ -1675,6 +1675,61 @@
   cursor: pointer;
 }
 
+.admin-credit-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.admin-credit-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+}
+
+.admin-secondary-button {
+  color: rgba(244, 240, 232, 0.86) !important;
+  background: rgba(255, 255, 255, 0.06) !important;
+}
+
+.admin-user-card {
+  align-items: start;
+}
+
+.admin-user-main {
+  display: grid;
+  gap: 8px;
+}
+
+.admin-user-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.admin-user-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 900;
+}
+
+.admin-user-status--active {
+  color: #9df1bf;
+  background: rgba(110, 231, 168, 0.12);
+}
+
+.admin-user-status--disabled {
+  color: #fecaca;
+  background: rgba(248, 113, 113, 0.14);
+}
+
 .admin-bulk-credit-panel {
   min-height: 0;
   margin-top: 18px;
@@ -1843,6 +1898,17 @@
   min-height: 38px;
   padding: 0 12px;
   font-size: 13px;
+}
+
+.admin-order-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.admin-order-actions button {
+  margin-top: 0;
 }
 
 .admin-notice-item-actions {
@@ -2158,6 +2224,33 @@
   height: 16px;
 }
 
+.home-credits-nav {
+  display: inline-flex !important;
+  align-items: center;
+  gap: 6px;
+  color: #9be7ff !important;
+}
+
+.home-credits-nav svg {
+  width: 16px;
+  height: 16px;
+}
+
+.home-mobile-credits-card {
+  border-color: rgba(111, 213, 223, 0.28);
+  background: linear-gradient(120deg, rgba(111, 213, 223, 0.1), rgba(255, 255, 255, 0.025));
+}
+
+.home-mobile-credits-card .home-mobile-membership-card__icon {
+  color: #6fd5df;
+  background: rgba(111, 213, 223, 0.12);
+}
+
+.home-mobile-credits-card b,
+.home-mobile-credits-card strong {
+  color: #a9eef3;
+}
+
 .billing-package-heading {
   display: flex;
   align-items: center;
@@ -2172,6 +2265,74 @@
   color: #f4f0e8;
   font-size: 17px;
   font-weight: 900;
+}
+
+.credits-page .billing-shell {
+  width: min(1160px, 100%);
+}
+
+.credits-config-panel {
+  gap: 18px;
+}
+
+.credits-quantity-row {
+  display: grid;
+  gap: 8px;
+}
+
+.credits-quantity-row > span {
+  color: rgba(244, 240, 232, 0.72);
+  font-size: 13px;
+}
+
+.credits-quantity-row input {
+  min-height: 52px;
+  border: 1px solid rgba(244, 240, 232, 0.12);
+  border-radius: 14px;
+  padding: 0 16px;
+  color: #f4f0e8;
+  background: rgba(0, 0, 0, 0.24);
+  font-size: 24px;
+  font-weight: 900;
+}
+
+.credits-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.credits-summary article {
+  min-width: 0;
+  padding: 14px 16px;
+  border: 1px solid rgba(244, 240, 232, 0.1);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.credits-summary span {
+  display: block;
+  color: rgba(244, 240, 232, 0.58);
+  font-size: 12px;
+}
+
+.credits-summary b {
+  display: block;
+  margin-top: 8px;
+  color: #f4f0e8;
+  font-size: 24px;
+  overflow-wrap: anywhere;
+}
+
+.credits-rule-list {
+  align-items: start;
+  text-align: left;
+}
+
+.credits-rule-list p {
+  margin: 0;
+  color: #e6ece8;
+  line-height: 1.65;
 }
 
 .billing-package-heading svg {
