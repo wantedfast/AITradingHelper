@@ -3167,13 +3167,24 @@ def require_admin(db_path: Path, token: str) -> dict[str, Any]:
     return user
 
 
-def set_user_status(db_path: Path, *, user_id: int, status: str, admin_id: int | None = None) -> dict[str, Any]:
+def set_user_status(
+    db_path: Path,
+    *,
+    user_id: int,
+    status: str,
+    admin_id: int | None = None,
+    expected_identity: str = "",
+) -> dict[str, Any]:
     normalized_status = (status or "").strip().lower()
     if normalized_status not in {"active", "disabled"}:
         raise AuthError("用户状态仅支持 active 或 disabled", 400)
     now = _now()
     with _connect(db_path) as conn:
         user = _require_manageable_user(conn, user_id)
+        actual_identity = str(user["username"] or user["email"] or user["phone"] or f"用户 #{user_id}").strip()
+        expected_identity = str(expected_identity or "").strip()
+        if expected_identity and expected_identity.casefold() != actual_identity.casefold():
+            raise AuthError("目标用户信息已变化，请刷新列表后重试", 409)
         if user["status"] != normalized_status:
             conn.execute("UPDATE users SET status = ? WHERE id = ?", (normalized_status, user_id))
         if normalized_status == "disabled":
@@ -3195,6 +3206,10 @@ def set_user_status(db_path: Path, *, user_id: int, status: str, admin_id: int |
         return {
             "user": {
                 "id": int(refreshed["id"]),
+                "username": str(refreshed["username"] or ""),
+                "email": str(refreshed["email"] or ""),
+                "phone": str(refreshed["phone"] or ""),
+                "display_name": actual_identity,
                 "status": str(refreshed["status"]),
                 "credits": _credit_balance(conn, user_id),
             },
