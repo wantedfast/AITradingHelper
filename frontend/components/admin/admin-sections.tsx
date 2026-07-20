@@ -97,9 +97,6 @@ type UpdateNotice = {
 type NoticeDraft = {
   title: string;
   version: string;
-  summary: string;
-  contentMarkdown: string;
-  expiresAt: string;
   itemsText: string;
 };
 
@@ -636,18 +633,7 @@ export function AdminUpdatesSection({
         <div className="admin-notice-form">
           <input value={draft.title} onChange={(event) => onDraftChange({ title: event.target.value })} placeholder="公告标题，例如：本周更新" />
           <input type="date" value={draft.version} onChange={(event) => onDraftChange({ version: event.target.value })} aria-label="公告日期" />
-          <input value={draft.summary} onChange={(event) => onDraftChange({ summary: event.target.value })} placeholder="公告摘要（最多 240 字）" />
-          <textarea
-            value={draft.contentMarkdown}
-            onChange={(event) => onDraftChange({ contentMarkdown: event.target.value })}
-            placeholder="公告正文（支持安全 Markdown 文本，不执行 HTML）"
-            rows={7}
-          />
-          <label>
-            <span>到期时间（可选）</span>
-            <input type="datetime-local" value={draft.expiresAt} onChange={(event) => onDraftChange({ expiresAt: event.target.value })} />
-          </label>
-          <textarea value={draft.itemsText} onChange={(event) => onDraftChange({ itemsText: event.target.value })} placeholder="每行一条更新内容" rows={5} />
+          <textarea value={draft.itemsText} onChange={(event) => onDraftChange({ itemsText: event.target.value })} placeholder="每行一条更新内容（必填）" rows={7} />
           <div className="admin-notice-actions">
             <button type="button" onClick={onSave}>{editingNoticeId ? "保存修改" : "保存草稿"}</button>
             <button type="button" onClick={onRequestFormPublish}>保存并发布</button>
