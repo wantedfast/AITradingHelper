@@ -714,6 +714,16 @@ test.describe("public pricing and mandatory notices", () => {
     await page.goto("/billing", { waitUntil: "domcontentloaded" });
     const dialog = page.locator(".site-update-notice-modal");
     await expect(dialog).toContainText("第一条公告");
+    const backdrop = page.locator(".site-update-notice-backdrop");
+    await expect(backdrop).toHaveCSS("position", "fixed");
+    await expect(backdrop).toHaveCSS("display", "grid");
+    const dialogBox = await dialog.boundingBox();
+    const viewport = page.viewportSize();
+    expect(dialogBox).not.toBeNull();
+    expect(viewport).not.toBeNull();
+    expect(dialogBox!.width).toBeLessThanOrEqual(681);
+    expect(dialogBox!.x).toBeGreaterThan(0);
+    expect(Math.abs(dialogBox!.x + dialogBox!.width / 2 - viewport!.width / 2)).toBeLessThanOrEqual(2);
     await page.keyboard.press("Escape");
     await expect(dialog).toBeVisible();
     await expect(dialog.getByRole("button")).toHaveCount(1);
