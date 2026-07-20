@@ -3,7 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { FormEvent, useEffect, useRef, useState } from "react";
-import { BellRing, ChevronDown, Copy, Crown, FileSearch, FileText, Gift, Info, LogOut, Menu, MessageSquare, ShieldCheck, Sparkles, TrendingUp, Trophy, UserRound, X } from "lucide-react";
+import { BellRing, ChevronDown, Copy, CreditCard, Crown, FileSearch, FileText, Gift, Info, LogOut, Menu, MessageSquare, ShieldCheck, Sparkles, TrendingUp, Trophy, UserRound, X } from "lucide-react";
 import { AuctionStrengthPerformanceTicker, useAuctionStrengthPerformance } from "@/components/auction-strength-performance-ticker";
 import { GoldMagicCube } from "@/components/gold-magic-cube";
 import { FinancialDisclaimer } from "@/components/financial-disclaimer";
@@ -225,6 +225,10 @@ export default function Page() {
               <Crown className="h-4 w-4" />
               {hydrated && hasActiveMembership(user) ? "会员已开通" : "开通会员"}
             </Link>
+            <Link className="home-credits-nav" href="/credits">
+              <CreditCard className="h-4 w-4" />
+              购买次数
+            </Link>
             {hydrated && user?.role === "admin" && <Link href="/admin">管理台</Link>}
             {hydrated && user ? (
               <div className="home-user-menu">
@@ -273,6 +277,10 @@ export default function Page() {
                     <Link className="home-user-copy" href="/billing" onClick={() => setShowUserMenu(false)}>
                       <Crown className="h-4 w-4" />
                       {hasActiveMembership(user) ? `会员有效至 ${membershipExpiryText(user) || "当前周期"}` : "开通会员"}
+                    </Link>
+                    <Link className="home-user-copy" href="/credits" onClick={() => setShowUserMenu(false)}>
+                      <CreditCard className="h-4 w-4" />
+                      购买次数
                     </Link>
                     <button className="home-user-logout" type="button" onClick={logout}>
                       <LogOut className="h-4 w-4" />
@@ -356,6 +364,15 @@ export default function Page() {
                 </span>
                 <strong>{hasActiveMembership(user) ? "查看" : "开通"}</strong>
               </Link>
+              <Link className="home-mobile-membership-card home-mobile-credits-card" href="/credits" onClick={() => { setShowMobileMenu(false); }}>
+                <span className="home-mobile-membership-card__icon"><CreditCard aria-hidden="true" /></span>
+                <span>
+                  <small>单次购买 · 次数余额</small>
+                  <b>固定 1 元 / 次</b>
+                  <em>会员期内先累加不消耗，会员过期后继续用余额。</em>
+                </span>
+                <strong>购买</strong>
+              </Link>
               {hydrated && user?.role === "admin" ? (
                 <div className="home-mobile-menu-secondary">
                   <Link href="/admin" onClick={() => setShowMobileMenu(false)}>
@@ -377,6 +394,10 @@ export default function Page() {
                   <Link href="/billing" onClick={() => setShowMobileMenu(false)}>
                     <Crown aria-hidden="true" />
                     {hasActiveMembership(user) ? "查看会员权益" : "开通会员"}
+                  </Link>
+                  <Link href="/credits" onClick={() => setShowMobileMenu(false)}>
+                    <CreditCard aria-hidden="true" />
+                    购买次数
                   </Link>
                   <button type="button" onClick={mobileLogout}>
                     <LogOut aria-hidden="true" />

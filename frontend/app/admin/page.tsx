@@ -50,6 +50,18 @@ type DashboardPayload = {
     admin_note?: string;
     created_at: string;
   }>;
+  managed_users: Array<{
+    id: number;
+    phone: string;
+    username?: string;
+    email?: string;
+    role: string;
+    status: "active" | "disabled" | string;
+    used_count: number;
+    credits: number;
+    created_at: string;
+    last_login_at?: string | null;
+  }>;
   top_users: Array<{ id: number; phone: string; username?: string; email?: string; role: string; used_count: number; credits: number; created_at: string }>;
   credit_grant_campaigns: CreditGrantCampaign[];
   update_notices: UpdateNotice[];
@@ -241,7 +253,25 @@ export default function AdminPage() {
   async function rejectMembership(id: number) {
     const reason = window.prompt("请输入异常或驳回原因");
     if (!reason) return;
-    await apiFetch(`/api/admin/orders/${id}/reject`, {
+    await apiFetch(`/api/admin/orders/${id}/reject-membership`, {
+      method: "POST",
+      body: JSON.stringify({ admin_note: reason }),
+    });
+    await loadDashboard(days);
+  }
+
+  async function confirmCredits(id: number) {
+    await apiFetch(`/api/admin/orders/${id}/confirm-credits`, {
+      method: "POST",
+      body: JSON.stringify({ admin_note: "已人工核对到账，增加次数" }),
+    });
+    await loadDashboard(days);
+  }
+
+  async function rejectCredits(id: number) {
+    const reason = window.prompt("请输入驳回原因");
+    if (!reason) return;
+    await apiFetch(`/api/admin/orders/${id}/reject-credits`, {
       method: "POST",
       body: JSON.stringify({ admin_note: reason }),
     });
@@ -259,16 +289,39 @@ export default function AdminPage() {
     const draft = grantDrafts[userId] || { credits: "", reason: "" };
     setMessage("");
     try {
+      const delta = Number(draft.credits);
       const result = await apiFetch<{ email_notification?: { sent?: boolean; error?: string; skipped?: boolean } }>(`/api/admin/users/${userId}/credits`, {
         method: "POST",
-        body: JSON.stringify({ credits: Number(draft.credits), reason: draft.reason }),
+        body: JSON.stringify({
+          credits: delta,
+          reason: draft.reason,
+          request_id: createCreditAdjustmentRequestId(),
+        }),
       });
       const notice = result.email_notification;
       setGrantDrafts((current) => ({ ...current, [userId]: { credits: "", reason: "" } }));
       await loadDashboard(days);
-      setMessage(notice?.sent ? "次数已增加，并已发送邮件提醒。" : `次数已增加，但邮件提醒未发送：${notice?.error || "未知原因"}`);
+      if (delta > 0) {
+        setMessage(notice?.sent ? "次数已调整，并已发送邮件提醒。" : `次数已调整，但邮件提醒未发送：${notice?.error || "未知原因"}`);
+      } else {
+        setMessage("次数已扣减。");
+      }
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "增加次数失败");
+      setMessage(error instanceof Error ? error.message : "调整次数失败");
+    }
+  }
+
+  async function toggleUserStatus(userId: number, nextStatus: "active" | "disabled") {
+    setMessage("");
+    try {
+      await apiFetch(`/api/admin/users/${userId}/status`, {
+        method: "POST",
+        body: JSON.stringify({ status: nextStatus }),
+      });
+      await loadDashboard(days);
+      setMessage(nextStatus === "disabled" ? "账号已暂停，现有 session 已失效。" : "账号已恢复，可重新登录。");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "更新账号状态失败");
     }
   }
 
@@ -429,7 +482,7 @@ export default function AdminPage() {
     () => (data?.feedback || []).filter((item) => feedbackFilter === "all" || item.status === feedbackFilter),
     [data, feedbackFilter],
   );
-  const pendingMembershipOrders = (data?.orders || []).filter((item) => item.product_type === "membership" && item.status === "submitted");
+  const pendingMembershipOrders = (data?.orders || []).filter((item) => item.status === "submitted");
   const pendingFeedback = (data?.feedback || []).filter((item) => item.status === "pending");
   const failedEmailTasks = (data?.update_notices || []).filter((item) => (item.email_campaign?.failed || 0) > 0);
   const failedDailyTop5EmailCount = data?.daily_top5_email_failed_count
@@ -504,15 +557,26 @@ export default function AdminPage() {
               onBulkDraftChange={(patch) => setBulkGrantDraft((current) => ({ ...current, ...patch }))}
               onRequestBulkGrant={requestBulkGrantConfirmation}
               campaigns={data.credit_grant_campaigns || []}
-              users={data.top_users}
+              users={data.managed_users}
               highFrequencyUsers={analytics!.highFrequencyUsers}
               days={days}
               grantDrafts={grantDrafts}
               onGrantDraftChange={updateGrantDraft}
               onGrantCredits={grantCredits}
+              onToggleUserStatus={toggleUserStatus}
             />
             <AdminFeedbackSection active={section === "feedback"} filter={feedbackFilter} onFilterChange={setFeedbackFilter} items={filteredFeedback} onRewardRequest={setFeedbackRewardIntent} />
-            <AdminOrdersSection active={section === "orders"} filter={orderFilter} onFilterChange={setOrderFilter} items={filteredOrders} onConfirmMembership={confirmMembership} onRejectMembership={rejectMembership} onMarkPaid={markPaid} />
+            <AdminOrdersSection
+              active={section === "orders"}
+              filter={orderFilter}
+              onFilterChange={setOrderFilter}
+              items={filteredOrders}
+              onConfirmMembership={confirmMembership}
+              onRejectMembership={rejectMembership}
+              onConfirmCredits={confirmCredits}
+              onRejectCredits={rejectCredits}
+              onMarkPaid={markPaid}
+            />
             <AdminUpdatesSection
               active={section === "updates"}
               draft={noticeDraft}
@@ -681,5 +745,11 @@ function createCreditGrantRequestId() {
   const randomUuid = globalThis.crypto?.randomUUID;
   if (typeof randomUuid === "function") return `credit-${randomUuid.call(globalThis.crypto)}`;
   return `credit-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 14)}`;
+}
+
+function createCreditAdjustmentRequestId() {
+  const randomUuid = globalThis.crypto?.randomUUID;
+  if (typeof randomUuid === "function") return `credit-adjust-${randomUuid.call(globalThis.crypto)}`;
+  return `credit-adjust-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 14)}`;
 }
 
