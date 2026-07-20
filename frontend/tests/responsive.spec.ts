@@ -1258,6 +1258,40 @@ test.describe("independent admin access", () => {
     await expectNoGlobalHorizontalOverflow(page, "Daily TOP5 email campaigns");
   });
 
+  test("admin publishes an update notice with the restored simple form and email delivery", async ({ page }) => {
+    await installStableApiFixtures(page);
+    let publishedPayload: Record<string, unknown> | null = null;
+    await page.route("**/api/admin/update-notices", async (route) => {
+      if (route.request().method() !== "POST") return route.fallback();
+      publishedPayload = route.request().postDataJSON() as Record<string, unknown>;
+      return json(route, {
+        notice: { id: 21, status: "published" },
+        email_campaign: { pending: 2, skipped: 0 },
+      }, 201);
+    });
+
+    await page.goto("/admin?section=updates&days=30", { waitUntil: "domcontentloaded" });
+    await page.getByPlaceholder("公告标题，例如：本周更新").fill("发布流程回归");
+    await page.getByPlaceholder("每行一条更新内容（必填）").fill("修复公告发布\n恢复邮件推送");
+    await expect(page.getByPlaceholder("公告摘要（最多 240 字）")).toHaveCount(0);
+    await expect(page.getByPlaceholder("公告正文（支持安全 Markdown 文本，不执行 HTML）")).toHaveCount(0);
+
+    await page.getByRole("button", { name: "保存并发布" }).click();
+    await expect(page.getByRole("dialog", { name: "如何发布本次更新？" })).toBeVisible();
+    await page.getByRole("button", { name: "网站弹窗 + 邮件推送" }).click();
+
+    await expect.poll(() => publishedPayload).not.toBeNull();
+    expect(publishedPayload).toMatchObject({
+      title: "发布流程回归",
+      items_text: "修复公告发布\n恢复邮件推送",
+      status: "published",
+      send_email: true,
+    });
+    expect(publishedPayload).not.toHaveProperty("summary");
+    expect(publishedPayload).not.toHaveProperty("content_markdown");
+    await expect(page.getByText(/公告已发布，邮件任务已创建/)).toBeVisible();
+  });
+
   test("update notice actions use a spaced equal-width mobile layout", async ({ page }) => {
     await installStableApiFixtures(page);
     await page.goto("/admin?section=updates&days=30", { waitUntil: "domcontentloaded" });
