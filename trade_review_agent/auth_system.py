@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import base64
 import json
+import mimetypes
 import os
 import re
 import secrets
@@ -196,12 +198,26 @@ def init_auth_db(db_path: Path) -> None:
                 title TEXT NOT NULL,
                 version TEXT NOT NULL,
                 items_json TEXT NOT NULL,
+                summary TEXT NOT NULL DEFAULT '',
+                content_markdown TEXT NOT NULL DEFAULT '',
                 status TEXT NOT NULL DEFAULT 'draft',
+                audience TEXT NOT NULL DEFAULT 'registered_users',
                 created_by INTEGER,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 published_at TEXT,
+                expires_at TEXT,
                 FOREIGN KEY (created_by) REFERENCES users(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS update_notice_acknowledgements (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                notice_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                acknowledged_at TEXT NOT NULL,
+                FOREIGN KEY (notice_id) REFERENCES update_notices(id),
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                UNIQUE (notice_id, user_id)
             );
 
             CREATE TABLE IF NOT EXISTS update_email_campaigns (
@@ -336,6 +352,7 @@ def init_auth_db(db_path: Path) -> None:
             CREATE INDEX IF NOT EXISTS idx_feedback_status ON feedback(status);
             CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
             CREATE INDEX IF NOT EXISTS idx_update_notices_status ON update_notices(status, published_at);
+            CREATE INDEX IF NOT EXISTS idx_update_notice_acks_user ON update_notice_acknowledgements(user_id, acknowledged_at);
             CREATE INDEX IF NOT EXISTS idx_update_email_campaigns_notice ON update_email_campaigns(notice_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_update_email_deliveries_queue ON update_email_deliveries(status, next_attempt_at, id);
             CREATE INDEX IF NOT EXISTS idx_daily_top5_email_deliveries_queue
@@ -351,6 +368,7 @@ def init_auth_db(db_path: Path) -> None:
         )
         _ensure_user_columns(conn)
         _ensure_order_columns(conn)
+        _ensure_update_notice_columns(conn)
         conn.executescript(
             """
             CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username) WHERE username IS NOT NULL AND username != '';
@@ -400,6 +418,43 @@ def _ensure_order_columns(conn: sqlite3.Connection) -> None:
     for column, statement in migrations.items():
         if column not in columns:
             conn.execute(statement)
+
+
+def _ensure_update_notice_columns(conn: sqlite3.Connection) -> None:
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(update_notices)").fetchall()}
+    migrations = {
+        "summary": "ALTER TABLE update_notices ADD COLUMN summary TEXT NOT NULL DEFAULT ''",
+        "content_markdown": "ALTER TABLE update_notices ADD COLUMN content_markdown TEXT NOT NULL DEFAULT ''",
+        "audience": "ALTER TABLE update_notices ADD COLUMN audience TEXT NOT NULL DEFAULT 'registered_users'",
+        "expires_at": "ALTER TABLE update_notices ADD COLUMN expires_at TEXT",
+    }
+    for column, statement in migrations.items():
+        if column not in columns:
+            conn.execute(statement)
+    conn.execute(
+        """
+        UPDATE update_notices
+        SET summary = version
+        WHERE TRIM(COALESCE(summary, '')) = ''
+        """
+    )
+    conn.execute(
+        """
+        UPDATE update_notices
+        SET content_markdown = (
+            SELECT GROUP_CONCAT(value, char(10))
+            FROM json_each(COALESCE(items_json, '[]'))
+        )
+        WHERE TRIM(COALESCE(content_markdown, '')) = ''
+        """
+    )
+    conn.execute(
+        """
+        UPDATE update_notices
+        SET audience = 'registered_users'
+        WHERE TRIM(COALESCE(audience, '')) = ''
+        """
+    )
 
 
 def send_login_code(db_path: Path, *, phone: str, purpose: str = "login", ip: str = "", log_path: Path | None = None) -> dict[str, Any]:
@@ -850,15 +905,57 @@ def credit_packages() -> list[dict[str, Any]]:
     return [{"id": key, **value} for key, value in CREDIT_PACKAGES.items()]
 
 
+def membership_checkout_config() -> dict[str, str]:
+    business_hours = os.getenv("MEMBERSHIP_SUPPORT_HOURS", "工作日 10:00-18:00").strip() or "工作日 10:00-18:00"
+    confirmation_eta = os.getenv("MEMBERSHIP_CONFIRMATION_ETA", "").strip()
+    support_channel = os.getenv("MEMBERSHIP_SUPPORT_CHANNEL", "如长时间未处理，请联系站内反馈或运营客服。").strip()
+    policy_note = os.getenv("MEMBERSHIP_POLICY_NOTE", "当前为人工核款开通，退款与发票按人工客服规则处理。").strip()
+    return {
+        "business_hours": business_hours,
+        "confirmation_eta": confirmation_eta or "提交付款信息后由运营在客服工作时间内人工核对",
+        "support_channel": support_channel or "如长时间未处理，请联系站内反馈或运营客服。",
+        "policy_note": policy_note or "当前为人工核款开通，退款与发票按人工客服规则处理。",
+    }
+
+
 def membership_plans() -> list[dict[str, Any]]:
+    checkout = membership_checkout_config()
     return [
         {
             **plan,
-            "alipay_qr_url": os.getenv("PAYMENT_ALIPAY_QR_URL", "/pay/alipay-qr.png").strip(),
-            "wechat_qr_url": os.getenv("PAYMENT_WECHAT_QR_URL", "/pay/wechat-qr.png").strip(),
+            "alipay_qr_url": _payment_qr_data_uri("PAYMENT_ALIPAY_QR_FILE", "alipay-qr.jpg"),
+            "wechat_qr_url": _payment_qr_data_uri("PAYMENT_WECHAT_QR_FILE", "wechat-qr.jpg"),
+            "manual_checkout": checkout,
         }
         for plan in _membership_plans()
     ]
+
+
+def _payment_qr_data_uri(env_key: str, fallback_name: str) -> str:
+    configured_path = os.getenv(env_key, "").strip()
+    file_path = (
+        Path(configured_path)
+        if configured_path
+        else Path(__file__).resolve().parent / "private_assets" / "pay" / fallback_name
+    )
+    if not file_path.exists() or not file_path.is_file():
+        return ""
+    content_type = mimetypes.guess_type(file_path.name)[0] or "image/jpeg"
+    encoded = base64.b64encode(file_path.read_bytes()).decode("ascii")
+    return f"data:{content_type};base64,{encoded}"
+
+
+def public_membership_catalog(*, include_payment_assets: bool = False) -> dict[str, Any]:
+    plans = membership_plans()
+    if not include_payment_assets:
+        plans = [
+            {key: value for key, value in plan.items() if key not in {"alipay_qr_url", "wechat_qr_url"}}
+            for plan in plans
+        ]
+    return {
+        "plans": plans,
+        "checkout": membership_checkout_config(),
+    }
 
 
 def create_order(db_path: Path, *, user_id: int, plan_name: str = "", credits: int = 0, amount_cents: int = 0, package_id: str = "") -> dict[str, Any]:
@@ -901,6 +998,21 @@ def create_membership_order(db_path: Path, *, user_id: int, plan_id: str = "mont
             (user_id, order_no, plan["plan_name"], int(plan["amount_cents"]), now, plan["id"], int(plan["duration_days"])),
         )
         return _order_payload(conn.execute("SELECT * FROM orders WHERE id = ?", (cursor.lastrowid,)).fetchone())
+
+
+def latest_membership_order(db_path: Path, *, user_id: int) -> dict[str, Any] | None:
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT *
+            FROM orders
+            WHERE user_id = ? AND COALESCE(product_type, '') = 'membership'
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (user_id,),
+        ).fetchone()
+        return _order_payload(row) if row else None
 
 
 def get_order(db_path: Path, *, order_id: int, user_id: int | None = None, admin: bool = False) -> dict[str, Any]:
@@ -978,6 +1090,9 @@ def confirm_membership_order(db_path: Path, *, order_id: int, admin_id: int, adm
     now = now_dt.isoformat()
     admin_note = (admin_note or "").strip()[:300]
     with _connect(db_path) as conn:
+        # Serialize entitlement delivery so double-clicks and concurrent admin retries
+        # cannot create duplicate membership ledger rows.
+        conn.execute("BEGIN IMMEDIATE")
         order = conn.execute("SELECT * FROM orders WHERE id = ?", (order_id,)).fetchone()
         if not order:
             raise AuthError("订单不存在", 404)
@@ -999,7 +1114,7 @@ def confirm_membership_order(db_path: Path, *, order_id: int, admin_id: int, adm
                 start_dt = now_dt
         duration_days = int(order["duration_days"] if "duration_days" in order.keys() and order["duration_days"] else _membership_plan()["duration_days"])
         expires_dt = start_dt + timedelta(days=duration_days)
-        conn.execute(
+        updated_order_count = conn.execute(
             """
             UPDATE orders
             SET status = 'paid',
@@ -1007,10 +1122,15 @@ def confirm_membership_order(db_path: Path, *, order_id: int, admin_id: int, adm
                 confirmed_at = ?,
                 admin_id = ?,
                 admin_note = ?
-            WHERE id = ?
+            WHERE id = ? AND status = 'submitted'
             """,
             (now, now, admin_id, admin_note, order_id),
-        )
+        ).rowcount
+        if updated_order_count != 1:
+            refreshed_order = conn.execute("SELECT * FROM orders WHERE id = ?", (order_id,)).fetchone()
+            if refreshed_order and refreshed_order["status"] == "paid":
+                return _order_payload(refreshed_order)
+            raise AuthError("订单状态已变化，请刷新后重试", 409)
         conn.execute(
             """
             UPDATE users
@@ -1455,6 +1575,67 @@ def latest_published_update_notice(db_path: Path) -> dict[str, Any] | None:
         return _update_notice_payload(row) if row else None
 
 
+def list_pending_update_notices(db_path: Path, *, user_id: int) -> list[dict[str, Any]]:
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT n.*
+            FROM update_notices n
+            LEFT JOIN update_notice_acknowledgements a
+              ON a.notice_id = n.id AND a.user_id = ?
+            WHERE n.status = 'published'
+              AND n.audience = 'registered_users'
+              AND COALESCE(n.published_at, '') != ''
+              AND n.published_at <= ?
+              AND (n.expires_at IS NULL OR n.expires_at = '' OR n.expires_at > ?)
+              AND a.id IS NULL
+            ORDER BY n.published_at ASC, n.id ASC
+            """,
+            (user_id, _now(), _now()),
+        ).fetchall()
+        return [_update_notice_payload(row) for row in rows]
+
+
+def acknowledge_update_notice(db_path: Path, *, notice_id: int, user_id: int) -> dict[str, Any]:
+    now = _now()
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT *
+            FROM update_notices
+            WHERE id = ?
+              AND status = 'published'
+              AND audience = 'registered_users'
+              AND COALESCE(published_at, '') != ''
+              AND published_at <= ?
+              AND (expires_at IS NULL OR expires_at = '' OR expires_at > ?)
+            """,
+            (notice_id, now, now),
+        ).fetchone()
+        if not row:
+            raise AuthError("更新公告不存在或已下线", 404)
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO update_notice_acknowledgements (notice_id, user_id, acknowledged_at)
+            VALUES (?, ?, ?)
+            """,
+            (notice_id, user_id, now),
+        )
+        ack = conn.execute(
+            """
+            SELECT notice_id, user_id, acknowledged_at
+            FROM update_notice_acknowledgements
+            WHERE notice_id = ? AND user_id = ?
+            """,
+            (notice_id, user_id),
+        ).fetchone()
+        return {
+            "notice_id": int(ack["notice_id"]),
+            "user_id": int(ack["user_id"]),
+            "acknowledged_at": str(ack["acknowledged_at"]),
+        }
+
+
 def list_update_notices(db_path: Path, limit: int = 20) -> list[dict[str, Any]]:
     limit = max(1, min(100, int(limit or 20)))
     with _connect(db_path) as conn:
@@ -1476,18 +1657,47 @@ def create_update_notice(
     version: str,
     items: list[Any],
     admin_id: int,
+    summary: str = "",
+    content_markdown: str = "",
+    audience: str = "registered_users",
+    expires_at: str = "",
     status: str = "draft",
 ) -> dict[str, Any]:
-    title, version, items, status = _normalize_update_notice_input(title, version, items, status)
+    title, version, items, summary, content_markdown, audience, expires_at, status = _normalize_update_notice_input(
+        title,
+        version,
+        items,
+        summary,
+        content_markdown,
+        audience,
+        expires_at,
+        status,
+    )
     now = _now()
     published_at = now if status == "published" else None
     with _connect(db_path) as conn:
         cursor = conn.execute(
             """
-            INSERT INTO update_notices (title, version, items_json, status, created_by, created_at, updated_at, published_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO update_notices (
+                title, version, items_json, summary, content_markdown, status, audience,
+                created_by, created_at, updated_at, published_at, expires_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (title, version, json.dumps(items, ensure_ascii=False), status, admin_id, now, now, published_at),
+            (
+                title,
+                version,
+                json.dumps(items, ensure_ascii=False),
+                summary,
+                content_markdown,
+                status,
+                audience,
+                admin_id,
+                now,
+                now,
+                published_at,
+                expires_at or None,
+            ),
         )
         return _update_notice_payload(conn.execute("SELECT * FROM update_notices WHERE id = ?", (cursor.lastrowid,)).fetchone())
 
@@ -1499,8 +1709,21 @@ def update_update_notice(
     title: str,
     version: str,
     items: list[Any],
+    summary: str = "",
+    content_markdown: str = "",
+    audience: str = "registered_users",
+    expires_at: str = "",
 ) -> dict[str, Any]:
-    title, version, items, _ = _normalize_update_notice_input(title, version, items, "draft")
+    title, version, items, summary, content_markdown, audience, expires_at, _ = _normalize_update_notice_input(
+        title,
+        version,
+        items,
+        summary,
+        content_markdown,
+        audience,
+        expires_at,
+        "draft",
+    )
     with _connect(db_path) as conn:
         existing = conn.execute("SELECT * FROM update_notices WHERE id = ?", (notice_id,)).fetchone()
         if not existing:
@@ -1508,10 +1731,21 @@ def update_update_notice(
         conn.execute(
             """
             UPDATE update_notices
-            SET title = ?, version = ?, items_json = ?, updated_at = ?
+            SET title = ?, version = ?, items_json = ?, summary = ?, content_markdown = ?,
+                audience = ?, expires_at = ?, updated_at = ?
             WHERE id = ?
             """,
-            (title, version, json.dumps(items, ensure_ascii=False), _now(), notice_id),
+            (
+                title,
+                version,
+                json.dumps(items, ensure_ascii=False),
+                summary,
+                content_markdown,
+                audience,
+                expires_at or None,
+                _now(),
+                notice_id,
+            ),
         )
         return _update_notice_payload(conn.execute("SELECT * FROM update_notices WHERE id = ?", (notice_id,)).fetchone())
 
@@ -2064,7 +2298,7 @@ def unpublish_update_notice(db_path: Path, *, notice_id: int) -> dict[str, Any]:
         if not existing:
             raise AuthError("更新公告不存在", 404)
         conn.execute(
-            "UPDATE update_notices SET status = 'draft', updated_at = ? WHERE id = ?",
+            "UPDATE update_notices SET status = 'archived', updated_at = ? WHERE id = ?",
             (_now(), notice_id),
         )
         return _update_notice_payload(conn.execute("SELECT * FROM update_notices WHERE id = ?", (notice_id,)).fetchone())
@@ -2976,11 +3210,15 @@ def _update_notice_payload(row: sqlite3.Row, *, conn: sqlite3.Connection | None 
         "title": row["title"],
         "version": row["version"],
         "items": [str(item) for item in items if str(item).strip()],
+        "summary": row["summary"] if "summary" in row.keys() else "",
+        "content_markdown": row["content_markdown"] if "content_markdown" in row.keys() else "",
         "status": row["status"],
+        "audience": row["audience"] if "audience" in row.keys() else "registered_users",
         "created_by": row["created_by"],
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
         "published_at": row["published_at"],
+        "expires_at": row["expires_at"] if "expires_at" in row.keys() else None,
     }
     if conn is not None:
         campaign = conn.execute(
@@ -3642,23 +3880,37 @@ def _normalize_update_notice_input(
     title: str,
     version: str,
     items: list[Any],
+    summary: str,
+    content_markdown: str,
+    audience: str,
+    expires_at: str,
     status: str,
-) -> tuple[str, str, list[str], str]:
+) -> tuple[str, str, list[str], str, str, str, str, str]:
     title = str(title or "").strip()[:80]
     version = str(version or "").strip()[:40]
+    summary = str(summary or "").strip()[:240]
+    content_markdown = str(content_markdown or "").strip()[:20000]
+    audience = str(audience or "registered_users").strip() or "registered_users"
+    expires_at = str(expires_at or "").strip()[:40]
     status = str(status or "draft").strip()
-    if status not in {"draft", "published"}:
+    if status not in {"draft", "published", "archived"}:
         raise AuthError("更新公告状态不正确", 400)
     if not title:
         raise AuthError("更新公告标题不能为空", 400)
     if not version:
         raise AuthError("更新公告版本不能为空", 400)
+    if audience != "registered_users":
+        raise AuthError("更新公告受众不正确", 400)
     if not isinstance(items, list):
         raise AuthError("更新公告内容必须是列表", 400)
     normalized_items = [str(item).strip()[:240] for item in items if str(item).strip()]
     if not normalized_items:
         raise AuthError("更新公告内容不能为空", 400)
-    return title, version, normalized_items[:12], status
+    if not summary:
+        summary = normalized_items[0]
+    if not content_markdown:
+        content_markdown = "\n".join(f"- {item}" for item in normalized_items[:12])
+    return title, version, normalized_items[:12], summary, content_markdown, audience, expires_at, status
 
 
 def _amount_yuan_to_cents(value: str) -> int:

@@ -1894,14 +1894,23 @@
 }
 
 .billing-topbar {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) minmax(0, 880px) minmax(120px, 1fr);
   align-items: flex-start;
-  justify-content: space-between;
   gap: 24px;
   margin-bottom: 24px;
 }
 
+.billing-topbar > div {
+  grid-column: 2;
+  min-width: 0;
+  text-align: center;
+}
+
 .billing-topbar a {
+  grid-column: 1;
+  grid-row: 1;
+  justify-self: start;
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -2418,6 +2427,19 @@
 }
 
 @media (max-width: 620px) {
+  .billing-topbar {
+    grid-template-columns: 1fr;
+  }
+
+  .billing-topbar > div,
+  .billing-topbar a {
+    grid-column: 1;
+  }
+
+  .billing-topbar > div {
+    grid-row: 2;
+  }
+
   .home-feedback-section,
   .account-panel,
   .admin-panel {
@@ -15102,6 +15124,60 @@ button.radar-core,
   width: 16px;
   height: 16px;
   color: #f5c76b;
+}
+
+.update-notice-error-banner {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 9998;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: min(92vw, 420px);
+  padding: 12px 14px;
+  border: 1px solid rgba(245, 199, 107, 0.28);
+  border-radius: 12px;
+  color: #f7f4e9;
+  background: rgba(12, 14, 14, 0.96);
+  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.35);
+}
+
+.update-notice-error-banner button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 38px;
+  border: 1px solid rgba(245, 199, 107, 0.32);
+  border-radius: 10px;
+  padding: 0 12px;
+  color: #f7f4e9;
+  background: rgba(245, 199, 107, 0.08);
+  cursor: pointer;
+}
+
+.update-notice-summary {
+  margin: 14px 0 0;
+  color: rgba(247, 244, 233, 0.82);
+  line-height: 1.7;
+}
+
+.update-notice-progress {
+  margin-top: 12px;
+  color: rgba(247, 244, 233, 0.55);
+  font-size: 12px;
+}
+
+.site-update-notice-recovery-actions {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.site-update-notice-loading {
+  margin-top: 18px;
+  color: rgba(247, 244, 233, 0.72);
 }
 
 /* Dependency-free rendering for Markdown pipe tables embedded in reports. */
