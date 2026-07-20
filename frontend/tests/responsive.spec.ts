@@ -105,6 +105,9 @@ async function installStableApiFixtures(
 
     if (path === "/api/auth/me") return json(route, { user: fixtureUser });
     if (path === "/api/auth/email-preferences") return json(route, { user: fixtureUser });
+    if (path === "/api/update-notices/pending") return json(route, { notices: [] });
+    if (path === "/api/public/membership/plans") return json(route, { plans: membershipPlans, checkout: {} });
+    if (path === "/api/pay/membership/orders/latest") return json(route, { order: null, plans: membershipPlans, user: fixtureUser });
     if (path === "/api/pay/membership/plans") return json(route, { plans: membershipPlans });
     if (path === "/api/update-notices/latest") return json(route, { notice: null });
     if (path === "/api/webhooks") return json(route, { events: [], count: 0, total: 0 });
@@ -507,7 +510,9 @@ test.describe("membership plan selection", () => {
     }, fixtureUser);
     await page.route("**/api/**", async (route) => {
       const path = new URL(route.request().url()).pathname;
-      if (path === "/api/pay/membership/plans") return json(route, { plans: membershipPlans });
+      if (path === "/api/public/membership/plans") return json(route, { plans: membershipPlans, checkout: {} });
+      if (path === "/api/pay/membership/orders/latest") return json(route, { order: null, plans: membershipPlans, user: fixtureUser });
+      if (path === "/api/update-notices/pending") return json(route, { notices: [] });
       if (path === "/api/auth/me") return json(route, { user: fixtureUser });
       if (path === "/api/pay/membership/orders" && route.request().method() === "POST") {
         submittedPlanId = String(route.request().postDataJSON()?.plan_id || "");
@@ -543,10 +548,267 @@ test.describe("membership plan selection", () => {
     await expect(page.locator('.billing-payment-form input').nth(2)).toHaveValue("399.00");
     await expectNoGlobalHorizontalOverflow(page, "annual membership checkout");
   });
+
+  test("restores the existing order plan after session hydration without a guest response race", async ({ page }) => {
+    let publicCatalogRequests = 0;
+    await page.addInitScript((user) => {
+      window.localStorage.setItem("ai_trade_token", "existing-order-token");
+      window.localStorage.setItem("ai_trade_user", JSON.stringify(user));
+    }, fixtureUser);
+    await page.route("**/api/**", async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path === "/api/public/membership/plans") {
+        publicCatalogRequests += 1;
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        return json(route, { plans: membershipPlans, checkout: {} });
+      }
+      if (path === "/api/pay/membership/orders/latest") return json(route, {
+        plans: membershipPlans,
+        checkout: {},
+        user: fixtureUser,
+        order: {
+          id: 91,
+          order_no: "MEM-MONTHLY-EXISTING",
+          plan_name: "月度会员",
+          package_id: "monthly_membership",
+          amount_cents: 5900,
+          status: "pending",
+        },
+      });
+      if (path === "/api/update-notices/pending") return json(route, { notices: [] });
+      if (path === "/api/orders/91") return json(route, {
+        order: {
+          id: 91,
+          order_no: "MEM-MONTHLY-EXISTING",
+          plan_name: "月度会员",
+          package_id: "monthly_membership",
+          amount_cents: 5900,
+          status: "pending",
+        },
+        user: fixtureUser,
+      });
+      return json(route, {});
+    });
+
+    await page.goto("/billing", { waitUntil: "domcontentloaded" });
+    const monthlyPlan = page.locator('.billing-plan-options button[role="radio"]').first();
+    await expect(monthlyPlan).toHaveAttribute("aria-checked", "true");
+    await expect(page.getByText("MEM-MONTHLY-EXISTING", { exact: true })).toBeVisible();
+    expect(publicCatalogRequests).toBe(1);
+  });
+});
+
+test.describe("public pricing and mandatory notices", () => {
+  test.use({ viewport: { width: 390, height: 844 } });
+
+  test("guest can inspect plans and keeps the selected plan in the auth redirect", async ({ page }) => {
+    await page.route("**/api/**", async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path === "/api/public/membership/plans") return json(route, {
+        plans: membershipPlans,
+        checkout: {
+          business_hours: "工作日 10:00-18:00",
+          confirmation_eta: "客服工作时间内人工核对",
+          support_channel: "请联系站内反馈",
+          policy_note: "退款与发票按人工客服规则处理",
+        },
+      });
+      return json(route, {});
+    });
+    await page.goto("/billing?plan_id=monthly_membership", { waitUntil: "domcontentloaded" });
+    await expect(page.getByText("正在读取会员套餐...")).toHaveCount(0);
+    const planCards = page.locator('.billing-plan-options button[role="radio"]');
+    await expect(planCards).toHaveCount(2);
+    await expect(planCards.nth(0)).toHaveAttribute("aria-checked", "true");
+    await expect(page.getByText("人工核对", { exact: false })).toBeVisible();
+    await page.locator(".billing-checkout .billing-primary").click();
+    await expect(page).toHaveURL(/\/auth\?.*plan_id=monthly_membership/);
+    await expect(page).toHaveURL(/source=pricing/);
+    const directQrResponse = await page.request.get("/pay/alipay-qr.jpg");
+    expect(directQrResponse.status()).not.toBe(200);
+  });
+
+  test("guest never requests pending notices", async ({ page }) => {
+    let pendingRequests = 0;
+    await page.route("**/api/**", async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path === "/api/update-notices/pending") pendingRequests += 1;
+      if (path === "/api/auth/me") return json(route, { user: null });
+      return json(route, {});
+    });
+    await page.goto("/", { waitUntil: "domcontentloaded" });
+    await page.waitForTimeout(300);
+    expect(pendingRequests).toBe(0);
+    await expect(page.locator(".site-update-notice-modal")).toHaveCount(0);
+  });
+
+  test("expired browser session returns to guest pricing without a notice error", async ({ page }) => {
+    let pendingRequests = 0;
+    await page.addInitScript((user) => {
+      window.localStorage.setItem("ai_trade_token", "expired-token");
+      window.localStorage.setItem("ai_trade_user", JSON.stringify(user));
+    }, fixtureUser);
+    await page.route("**/api/**", async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path === "/api/public/membership/plans") return json(route, { plans: membershipPlans, checkout: {} });
+      if (path === "/api/update-notices/pending") {
+        pendingRequests += 1;
+        return json(route, { error: "请先登录后再使用" }, 401);
+      }
+      if (path === "/api/pay/membership/orders/latest") return json(route, { error: "请先登录后再使用" }, 401);
+      return json(route, {});
+    });
+    await page.goto("/billing", { waitUntil: "domcontentloaded" });
+    await expect.poll(() => pendingRequests).toBe(1);
+    await expect(page.locator(".site-update-notice-modal")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "登录后创建订单" })).toBeEnabled();
+  });
+
+  test("action-time 401 clears an expired session and restores guest checkout", async ({ page }) => {
+    await page.addInitScript((user) => {
+      window.localStorage.setItem("ai_trade_token", "expires-after-load-token");
+      window.localStorage.setItem("ai_trade_user", JSON.stringify(user));
+    }, fixtureUser);
+    await page.route("**/api/**", async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path === "/api/public/membership/plans") return json(route, { plans: membershipPlans, checkout: {} });
+      if (path === "/api/pay/membership/orders/latest") return json(route, {
+        order: null,
+        plans: membershipPlans,
+        checkout: {},
+        user: fixtureUser,
+      });
+      if (path === "/api/update-notices/pending") return json(route, { notices: [] });
+      if (path === "/api/pay/membership/orders" && route.request().method() === "POST") {
+        return json(route, { error: "请先登录后再使用" }, 401);
+      }
+      return json(route, {});
+    });
+
+    await page.goto("/billing", { waitUntil: "domcontentloaded" });
+    const checkout = page.locator(".billing-checkout .billing-primary");
+    await checkout.click();
+    await expect.poll(() => page.evaluate(() => window.localStorage.getItem("ai_trade_token"))).toBeNull();
+    await expect(page.getByRole("button", { name: "登录后创建订单" })).toBeEnabled();
+    await expect(page.locator(".billing-order")).toHaveCount(0);
+  });
+
+  test("logged-in user confirms multiple notices in server order and cannot dismiss with Escape", async ({ page }) => {
+    const notices = [
+      { id: 1, title: "第一条公告", version: "v1", items: ["第一项"], published_at: "2026-07-18T10:00:00+08:00" },
+      { id: 2, title: "第二条公告", version: "v2", items: ["第二项"], published_at: "2026-07-19T10:00:00+08:00" },
+    ];
+    await page.addInitScript((user) => {
+      window.localStorage.setItem("ai_trade_token", "notice-token");
+      window.localStorage.setItem("ai_trade_user", JSON.stringify(user));
+    }, { ...fixtureUser, role: "user" });
+    await page.route("**/api/**", async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path === "/api/update-notices/pending") return json(route, { notices });
+      if (path === "/api/update-notices/1/ack") return json(route, { remaining: notices.slice(1) });
+      if (path === "/api/update-notices/2/ack") return json(route, { remaining: [] });
+      if (path === "/api/public/membership/plans") return json(route, { plans: membershipPlans, checkout: {} });
+      if (path === "/api/pay/membership/orders/latest") return json(route, { order: null, plans: membershipPlans });
+      return json(route, {});
+    });
+    await page.goto("/billing", { waitUntil: "domcontentloaded" });
+    const dialog = page.locator(".site-update-notice-modal");
+    await expect(dialog).toContainText("第一条公告");
+    await page.keyboard.press("Escape");
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByRole("button")).toHaveCount(1);
+    await expect(dialog.getByRole("button", { name: "知道了，进入网站" })).toBeEnabled();
+    await dialog.getByRole("button", { name: "知道了，进入网站" }).dispatchEvent("click");
+    await expect(dialog).toContainText("第二条公告");
+    await expect(dialog.getByRole("button", { name: "知道了，进入网站" })).toBeEnabled();
+    await dialog.getByRole("button", { name: "知道了，进入网站" }).dispatchEvent("click");
+    await expect(dialog).toHaveCount(0);
+  });
+
+  test("logged-in user remains blocked while pending notices fail to load", async ({ page }) => {
+    let pendingRequests = 0;
+    await page.addInitScript((user) => {
+      window.localStorage.setItem("ai_trade_token", "notice-token");
+      window.localStorage.setItem("ai_trade_user", JSON.stringify(user));
+    }, { ...fixtureUser, role: "user" });
+    await page.route("**/api/**", async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path === "/api/update-notices/pending") {
+        pendingRequests += 1;
+        return json(route, { error: "temporary failure" }, 503);
+      }
+      return json(route, {});
+    });
+    await page.goto("/billing", { waitUntil: "domcontentloaded" });
+    const dialog = page.locator(".site-update-notice-modal");
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByRole("button", { name: "重试加载公告" })).toBeVisible();
+    await expect(dialog.getByRole("button")).toHaveCount(1);
+    await expect(page.locator("body")).toHaveCSS("overflow", "hidden");
+    await dialog.getByRole("button", { name: "重试加载公告" }).dispatchEvent("click");
+    await expect.poll(() => pendingRequests).toBeGreaterThanOrEqual(2);
+    await expect(dialog).toBeVisible();
+  });
+
+  test("invalid requested plan blocks checkout until a valid plan is selected", async ({ page }) => {
+    await page.route("**/api/**", async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path === "/api/public/membership/plans") return json(route, { plans: membershipPlans, checkout: {} });
+      return json(route, {});
+    });
+    await page.goto("/billing?plan_id=retired_membership", { waitUntil: "domcontentloaded" });
+    await expect(page.getByText("所选套餐已失效，请重新选择有效套餐。")).toBeVisible();
+    const checkout = page.locator(".billing-checkout .billing-primary");
+    await expect(checkout).toBeDisabled();
+    await page.locator('.billing-plan-options button[role="radio"]').first().click();
+    await expect(checkout).toBeEnabled();
+  });
+
+  test("rejected membership order shows the admin reason and recovery guidance", async ({ page }) => {
+    await page.addInitScript((user) => {
+      window.localStorage.setItem("ai_trade_token", "membership-token");
+      window.localStorage.setItem("ai_trade_user", JSON.stringify(user));
+    }, { ...fixtureUser, role: "user" });
+    await page.route("**/api/**", async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path === "/api/update-notices/pending") return json(route, { notices: [] });
+      if (path === "/api/public/membership/plans") return json(route, { plans: membershipPlans, checkout: {} });
+      if (path === "/api/pay/membership/orders/latest") return json(route, {
+        plans: membershipPlans,
+        checkout: {},
+        user: fixtureUser,
+        order: {
+          id: 88,
+          order_no: "MEM-REJECTED",
+          plan_name: "月度会员",
+          package_id: "monthly_membership",
+          amount_cents: 5900,
+          status: "rejected",
+          admin_note: "付款金额未到账，请核对交易记录",
+        },
+      });
+      if (path === "/api/orders/88") return json(route, { order: null });
+      return json(route, {});
+    });
+    await page.goto("/billing", { waitUntil: "domcontentloaded" });
+    await expect(page.getByText("付款核对未通过：付款金额未到账，请核对交易记录")).toBeVisible();
+    await expect(page.getByText("请根据原因核对付款信息", { exact: false })).toBeVisible();
+  });
 });
 
 test.describe("dated report access controls", () => {
   test.use({ viewport: { width: 390, height: 844 } });
+
+  test("guest cannot open historical Daily TOP5 data", async ({ page }) => {
+    let reportRequests = 0;
+    await page.route("**/api/auction-strength?**", (route) => {
+      reportRequests += 1;
+      return json(route, { reports: [], latest: null, billing_status: "no_data" });
+    });
+    await page.goto("/auction-strength?date=2026-07-01", { waitUntil: "domcontentloaded" });
+    await expect(page).toHaveURL(/\/auth\?redirect=%2Fauction-strength|\/auth\?redirect=\/auction-strength/);
+    expect(reportRequests).toBe(0);
+  });
 
   test("Daily TOP5 keeps a disabled waiting action until today's data arrives", async ({ page }) => {
     await installStableApiFixtures(page);

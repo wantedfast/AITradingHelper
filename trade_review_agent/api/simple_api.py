@@ -25,6 +25,7 @@ import requests
 
 from trade_review_agent.auth_system import (
     AuthError,
+    acknowledge_update_notice,
     admin_dashboard,
     bind_user_email,
     confirm_membership_order,
@@ -41,6 +42,8 @@ from trade_review_agent.auth_system import (
     get_order,
     get_order_by_order_no,
     get_current_user,
+    latest_membership_order,
+    list_pending_update_notices,
     grant_credits_to_all_users,
     grant_user_credits,
     init_auth_db,
@@ -55,6 +58,7 @@ from trade_review_agent.auth_system import (
     process_next_update_email,
     process_next_daily_top5_email,
     process_next_ai_report_email,
+    public_membership_catalog,
     publish_update_notice,
     register_password_user,
     require_admin,
@@ -125,7 +129,6 @@ AI_RESEARCH_REPORT_NAME = "ai_research_report.json"
 DATED_REPORT_RETENTION_DAYS = 5
 _dated_report_retention_lock = threading.RLock()
 
-
 def normalize_research_model_tier(value: object = None) -> str:
     text = str(value or "").strip().lower()
     if text in {"1", "true", "yes", "on", "better", "premium", "gpt55", "gpt-5.5"}:
@@ -172,8 +175,14 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             if path == "/api/admin/dashboard":
                 self._admin_dashboard()
                 return
+            if path == "/api/public/membership/plans":
+                self._public_membership_plans()
+                return
             if path == "/api/update-notices/latest":
                 self._latest_update_notice()
+                return
+            if path == "/api/update-notices/pending":
+                self._pending_update_notices()
                 return
             if path == "/api/admin/update-notices":
                 self._admin_update_notices()
@@ -183,6 +192,9 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/pay/membership/plans":
                 self._membership_plans()
+                return
+            if path == "/api/pay/membership/orders/latest":
+                self._latest_membership_order()
                 return
             if path.startswith("/api/orders/"):
                 self._get_order(path)
@@ -266,6 +278,9 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/auth/email-preferences":
                 self._auth_email_preferences()
+                return
+            if path.startswith("/api/update-notices/") and path.endswith("/ack"):
+                self._acknowledge_update_notice(path)
                 return
             if path == "/api/feedback":
                 self._submit_feedback()
@@ -972,6 +987,19 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
         )
         self._json({"user": updated})
 
+    def _pending_update_notices(self) -> None:
+        user = self._require_user()
+        self._json({"notices": list_pending_update_notices(AUTH_DB, user_id=int(user["id"]))})
+
+    def _acknowledge_update_notice(self, path: str) -> None:
+        user = self._require_user()
+        parts = path.split("/")
+        if len(parts) != 5 or parts[4] != "ack":
+            self._json({"error": "not found"}, status=404)
+            return
+        ack = acknowledge_update_notice(AUTH_DB, notice_id=int(parts[3]), user_id=int(user["id"]))
+        self._json({"acknowledgement": ack, "remaining": list_pending_update_notices(AUTH_DB, user_id=int(user["id"]))})
+
     def _submit_feedback(self) -> None:
         user = self._require_user()
         payload = self._read_json_body()
@@ -1019,8 +1047,18 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
     def _pay_packages(self) -> None:
         self._json({"packages": credit_packages()})
 
+    def _public_membership_plans(self) -> None:
+        self._json(public_membership_catalog())
+
     def _membership_plans(self) -> None:
-        self._json({"plans": membership_plans()})
+        self._require_user()
+        self._json(public_membership_catalog(include_payment_assets=True))
+
+    def _latest_membership_order(self) -> None:
+        user = self._require_user()
+        order = latest_membership_order(AUTH_DB, user_id=int(user["id"]))
+        refreshed = get_current_user(AUTH_DB, self._bearer_token())
+        self._json({"order": order, "user": refreshed, **public_membership_catalog(include_payment_assets=True)})
 
     def _create_membership_order(self) -> None:
         user = self._require_user()
@@ -1031,7 +1069,7 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             plan_id=str(payload.get("plan_id") or "monthly_membership"),
         )
         refreshed = get_current_user(AUTH_DB, self._bearer_token())
-        self._json({"order": order, "user": refreshed, "plans": membership_plans()})
+        self._json({"order": order, "user": refreshed, **public_membership_catalog(include_payment_assets=True)})
 
     def _submit_membership_payment(self, path: str) -> None:
         user = self._require_user()
@@ -1162,6 +1200,7 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
         self._json(admin_dashboard(AUTH_DB, days=days))
 
     def _latest_update_notice(self) -> None:
+        self._require_user()
         self._json({"notice": latest_published_update_notice(AUTH_DB)})
 
     def _admin_update_notices(self) -> None:
@@ -1183,6 +1222,10 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                 version=str(payload.get("version") or ""),
                 items=items,
                 admin_id=int(admin["id"]),
+                summary=str(payload.get("summary") or ""),
+                content_markdown=str(payload.get("content_markdown") or ""),
+                audience=str(payload.get("audience") or "registered_users"),
+                expires_at=str(payload.get("expires_at") or ""),
                 status="draft" if status == "published" else status,
             )
             if status == "published":
@@ -1211,6 +1254,10 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                 title=str(payload.get("title") or ""),
                 version=str(payload.get("version") or ""),
                 items=_notice_items_from_payload(payload),
+                summary=str(payload.get("summary") or ""),
+                content_markdown=str(payload.get("content_markdown") or ""),
+                audience=str(payload.get("audience") or "registered_users"),
+                expires_at=str(payload.get("expires_at") or ""),
             )
         elif parts[5] == "publish":
             payload = self._read_json_body()
