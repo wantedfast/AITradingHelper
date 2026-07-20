@@ -127,18 +127,12 @@ type PublishIntent = { source: "form"; noticeId: number | null } | { source: "li
 type NoticeDraft = {
   title: string;
   version: string;
-  summary: string;
-  contentMarkdown: string;
-  expiresAt: string;
   itemsText: string;
 };
 
 const emptyNoticeDraft: NoticeDraft = {
   title: "",
   version: todayDateInputValue(),
-  summary: "",
-  contentMarkdown: "",
-  expiresAt: "",
   itemsText: "",
 };
 
@@ -371,10 +365,6 @@ export default function AdminPage() {
       const body = JSON.stringify({
         title: noticeDraft.title,
         version: noticeDraft.version,
-        summary: noticeDraft.summary,
-        content_markdown: noticeDraft.contentMarkdown,
-        audience: "registered_users",
-        expires_at: noticeDraft.expiresAt,
         items_text: noticeDraft.itemsText,
         status: "draft",
       });
@@ -392,6 +382,23 @@ export default function AdminPage() {
     }
   }
 
+  function requestFormPublish() {
+    if (!noticeDraft.title.trim()) {
+      setMessage("请填写公告标题");
+      return;
+    }
+    if (!noticeDraft.version.trim()) {
+      setMessage("请选择公告日期");
+      return;
+    }
+    if (!noticeDraft.itemsText.trim()) {
+      setMessage("请填写更新内容，每行一条");
+      return;
+    }
+    setMessage("");
+    setPublishIntent({ source: "form", noticeId: editingNoticeId });
+  }
+
   async function confirmPublish(sendEmail: boolean) {
     if (!publishIntent || publishing) return;
     setPublishing(true);
@@ -403,10 +410,6 @@ export default function AdminPage() {
         const body = JSON.stringify({
           title: noticeDraft.title,
           version: noticeDraft.version,
-          summary: noticeDraft.summary,
-          content_markdown: noticeDraft.contentMarkdown,
-          audience: "registered_users",
-          expires_at: noticeDraft.expiresAt,
           items_text: noticeDraft.itemsText,
           status: publishIntent.noticeId ? "draft" : "published",
           send_email: sendEmail,
@@ -435,6 +438,7 @@ export default function AdminPage() {
         ? `公告已发布，邮件任务已创建${result.email_campaign ? `（待发送 ${result.email_campaign.pending}，跳过 ${result.email_campaign.skipped}）` : ""}。`
         : "公告已发布，本次未发送邮件。");
     } catch (error) {
+      setPublishIntent(null);
       setMessage(error instanceof Error ? error.message : "发布更新公告失败");
     } finally {
       setPublishing(false);
@@ -446,9 +450,6 @@ export default function AdminPage() {
     setNoticeDraft({
       title: notice.title,
       version: notice.version,
-      summary: notice.summary || "",
-      contentMarkdown: notice.content_markdown || notice.items.join("\n"),
-      expiresAt: notice.expires_at ? String(notice.expires_at).slice(0, 16) : "",
       itemsText: notice.items.join("\n"),
     });
   }
@@ -583,7 +584,7 @@ export default function AdminPage() {
               editingNoticeId={editingNoticeId}
               onDraftChange={(patch) => setNoticeDraft((current) => ({ ...current, ...patch }))}
               onSave={saveUpdateNotice}
-              onRequestFormPublish={() => setPublishIntent({ source: "form", noticeId: editingNoticeId })}
+              onRequestFormPublish={requestFormPublish}
               onCancelEdit={() => { setEditingNoticeId(null); setNoticeDraft(emptyNoticeDraft); }}
               notices={data.update_notices || []}
               dailyTop5Campaigns={data.daily_top5_email_campaigns || []}
