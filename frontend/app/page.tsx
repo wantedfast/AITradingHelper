@@ -3,7 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { FormEvent, useEffect, useRef, useState } from "react";
-import { BellRing, ChevronDown, Copy, Crown, FileSearch, FileText, Gift, Info, LogOut, Megaphone, Menu, MessageSquare, ShieldCheck, Sparkles, TrendingUp, Trophy, UserRound, X } from "lucide-react";
+import { BellRing, ChevronDown, Copy, Crown, FileSearch, FileText, Gift, Info, LogOut, Menu, MessageSquare, ShieldCheck, Sparkles, TrendingUp, Trophy, UserRound, X } from "lucide-react";
 import { AuctionStrengthPerformanceTicker, useAuctionStrengthPerformance } from "@/components/auction-strength-performance-ticker";
 import { GoldMagicCube } from "@/components/gold-magic-cube";
 import { FinancialDisclaimer } from "@/components/financial-disclaimer";
@@ -53,16 +53,6 @@ const features = [
   },
 ];
 
-type UpdateNotice = {
-  id: number;
-  title: string;
-  version: string;
-  items: string[];
-  published_at?: string | null;
-};
-
-const UPDATE_NOTICE_SEEN_KEY = "ai_trade_seen_update_notice_id";
-
 export default function Page() {
   const [hydrated, setHydrated] = useState(false);
   const [user, setUser] = useState<UserProfile | null>(null);
@@ -74,8 +64,6 @@ export default function Page() {
   const [showMobileMenu, setShowMobileMenu] = useState(false);
   const [showAuctionTooltip, setShowAuctionTooltip] = useState(false);
   const [inviteCopied, setInviteCopied] = useState(false);
-  const [updateNotice, setUpdateNotice] = useState<UpdateNotice | null>(null);
-  const [showUpdateNotice, setShowUpdateNotice] = useState(false);
   const [savingEmailPreference, setSavingEmailPreference] = useState(false);
   const mobileMenuButtonRef = useRef<HTMLButtonElement>(null);
   const mobileMenuRef = useRef<HTMLElement>(null);
@@ -125,44 +113,19 @@ export default function Page() {
   }, [showMobileMenu]);
 
   useEffect(() => {
-    if (!showProductGuide && !showUpdateNotice) return;
+    if (!showProductGuide) return;
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       setShowProductGuide(false);
-      if (showUpdateNotice && updateNotice) {
-        window.localStorage.setItem(UPDATE_NOTICE_SEEN_KEY, String(updateNotice.id));
-        setShowUpdateNotice(false);
-      }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => {
       document.body.style.overflow = previousOverflow;
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [showProductGuide, showUpdateNotice, updateNotice]);
-
-  useEffect(() => {
-    apiFetch<{ notice: UpdateNotice | null }>("/api/update-notices/latest")
-      .then((payload) => {
-        if (!payload.notice) return;
-        const noticeId = String(payload.notice.id);
-        if (window.localStorage.getItem(UPDATE_NOTICE_SEEN_KEY) === noticeId) return;
-        setUpdateNotice(payload.notice);
-        setShowUpdateNotice(true);
-      })
-      .catch(() => {
-        // Update notices should never block the homepage.
-      });
-  }, []);
-
-  function closeUpdateNotice() {
-    if (updateNotice) {
-      window.localStorage.setItem(UPDATE_NOTICE_SEEN_KEY, String(updateNotice.id));
-    }
-    setShowUpdateNotice(false);
-  }
+  }, [showProductGuide]);
 
   async function copyInvite() {
     const url = inviteUrl(user);
@@ -330,7 +293,7 @@ export default function Page() {
           <div className="home-mobile-actions">
             {hydrated && !user ? (
               <>
-                <Link className="home-mobile-membership" href="/auth?mode=register&redirect=/billing">
+                <Link className="home-mobile-membership" href="/billing">
                   <Crown aria-hidden="true" />
                   会员
                 </Link>
@@ -384,7 +347,7 @@ export default function Page() {
                   );
                 })}
               </div>
-              <Link className="home-mobile-membership-card" href={user ? "/billing" : "/auth?mode=register&redirect=/billing"} onClick={() => setShowMobileMenu(false)}>
+              <Link className="home-mobile-membership-card" href="/billing" onClick={() => { setShowMobileMenu(false); }}>
                 <span className="home-mobile-membership-card__icon"><Crown aria-hidden="true" /></span>
                 <span>
                   <small>盈航会员 · 全功能不限次数</small>
@@ -422,7 +385,7 @@ export default function Page() {
                 </div>
               ) : (
                 <div className="home-mobile-guest-actions">
-                  <Link className="home-mobile-account-register" href="/auth?mode=register" onClick={() => setShowMobileMenu(false)}>免费注册，领取 5 次</Link>
+                  <Link className="home-mobile-account-register" href="/auth?mode=register" onClick={() => { setShowMobileMenu(false); }}>免费注册，领取 5 次</Link>
                   <Link className="home-mobile-account-login" href="/auth" onClick={() => setShowMobileMenu(false)}>已有账号登录</Link>
                 </div>
               )}
@@ -634,32 +597,6 @@ export default function Page() {
           <Link href="/admin/login">运营登录</Link>
         </footer>
       </div>
-      {showUpdateNotice && updateNotice && (
-        <div className="product-guide-backdrop" role="presentation" onMouseDown={closeUpdateNotice}>
-          <section className="update-notice-modal" role="dialog" aria-modal="true" aria-labelledby="update-notice-title" onMouseDown={(event) => event.stopPropagation()}>
-            <button className="product-guide-close" type="button" onClick={closeUpdateNotice} aria-label="关闭更新公告">
-              <X className="h-5 w-5" />
-            </button>
-            <div className="product-guide-kicker">
-              <Megaphone className="h-4 w-4" />
-              最新更新
-            </div>
-            <h2 id="update-notice-title">{updateNotice.title}</h2>
-            <p>
-              {updateNotice.version}
-              {updateNotice.published_at ? ` · ${formatUpdateNoticeDate(updateNotice.published_at)}` : ""}
-            </p>
-            <ul className="update-notice-list">
-              {updateNotice.items.map((item, index) => (
-                <li key={`${item}-${index}`}>{item}</li>
-              ))}
-            </ul>
-            <button className="update-notice-confirm" type="button" onClick={closeUpdateNotice}>
-              知道了
-            </button>
-          </section>
-        </div>
-      )}
       {showProductGuide && (
         <div className="product-guide-backdrop" role="presentation" onMouseDown={() => setShowProductGuide(false)}>
           <section className="product-guide-modal" role="dialog" aria-modal="true" aria-labelledby="product-guide-title" onMouseDown={(event) => event.stopPropagation()}>
@@ -708,10 +645,6 @@ export default function Page() {
       )}
     </main>
   );
-}
-
-function formatUpdateNoticeDate(value: string) {
-  return value ? value.slice(0, 16).replace("T", " ") : "";
 }
 
 

@@ -51,6 +51,9 @@ function AuthContent() {
   const inviteFromUrl = normalizeInviteCode(params.get("invite") || params.get("invite_code") || params.get("ref") || "");
   const registerFromUrl = ["register", "password-register"].includes(params.get("mode") || "");
   const redirect = safeUserRedirect(params.get("redirect"));
+  const source = safeContextValue(params.get("source"));
+  const feature = safeContextValue(params.get("feature"));
+  const planId = safeContextValue(params.get("plan_id"));
   const [mode, setMode] = useState<Mode>(inviteFromUrl || registerFromUrl ? "password-register" : "password-login");
   const [account, setAccount] = useState("");
   const [username, setUsername] = useState("");
@@ -171,7 +174,7 @@ function AuthContent() {
         });
       }
       storeAuth(result);
-      const target = redirect;
+      const target = buildPostAuthRedirect(redirect, { source, feature, planId });
       router.push(result.user.role !== "admin" && target === "/admin" ? "/" : target);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "操作失败，请稍后重试");
@@ -452,6 +455,23 @@ function safeUserRedirect(value: string | null) {
   if (!value || !value.startsWith("/") || value.startsWith("//") || value.includes(":") || value.includes("\\") || /[\u0000-\u001f\u007f]/.test(value)) return "/";
   if (value === "/admin" || value.startsWith("/admin/") || value.startsWith("/admin?") || value.startsWith("/admin#")) return "/";
   return value;
+}
+
+function safeContextValue(value: string | null) {
+  return (value || "").replace(/[^A-Za-z0-9_/-]/g, "").slice(0, 64);
+}
+
+function buildPostAuthRedirect(
+  redirect: string,
+  context: { source: string; feature: string; planId: string },
+) {
+  const [pathname, query = ""] = redirect.split("?");
+  const search = new URLSearchParams(query);
+  if (context.source && !search.has("source")) search.set("source", context.source);
+  if (context.feature && !search.has("feature")) search.set("feature", context.feature);
+  if (context.planId && !search.has("plan_id")) search.set("plan_id", context.planId);
+  const nextQuery = search.toString();
+  return nextQuery ? `${pathname}?${nextQuery}` : pathname;
 }
 
 function normalizeInviteCode(value: string) {

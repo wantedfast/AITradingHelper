@@ -79,7 +79,11 @@ type UpdateNotice = {
   title: string;
   version: string;
   items: string[];
-  status: "draft" | "published";
+  summary?: string;
+  content_markdown?: string;
+  audience?: "registered_users";
+  expires_at?: string | null;
+  status: "draft" | "published" | "archived";
   created_at: string;
   updated_at: string;
   published_at?: string | null;
@@ -111,12 +115,18 @@ type PublishIntent = { source: "form"; noticeId: number | null } | { source: "li
 type NoticeDraft = {
   title: string;
   version: string;
+  summary: string;
+  contentMarkdown: string;
+  expiresAt: string;
   itemsText: string;
 };
 
 const emptyNoticeDraft: NoticeDraft = {
   title: "",
   version: todayDateInputValue(),
+  summary: "",
+  contentMarkdown: "",
+  expiresAt: "",
   itemsText: "",
 };
 
@@ -308,6 +318,10 @@ export default function AdminPage() {
       const body = JSON.stringify({
         title: noticeDraft.title,
         version: noticeDraft.version,
+        summary: noticeDraft.summary,
+        content_markdown: noticeDraft.contentMarkdown,
+        audience: "registered_users",
+        expires_at: noticeDraft.expiresAt,
         items_text: noticeDraft.itemsText,
         status: "draft",
       });
@@ -336,6 +350,10 @@ export default function AdminPage() {
         const body = JSON.stringify({
           title: noticeDraft.title,
           version: noticeDraft.version,
+          summary: noticeDraft.summary,
+          content_markdown: noticeDraft.contentMarkdown,
+          audience: "registered_users",
+          expires_at: noticeDraft.expiresAt,
           items_text: noticeDraft.itemsText,
           status: publishIntent.noticeId ? "draft" : "published",
           send_email: sendEmail,
@@ -375,6 +393,9 @@ export default function AdminPage() {
     setNoticeDraft({
       title: notice.title,
       version: notice.version,
+      summary: notice.summary || "",
+      contentMarkdown: notice.content_markdown || notice.items.join("\n"),
+      expiresAt: notice.expires_at ? String(notice.expires_at).slice(0, 16) : "",
       itemsText: notice.items.join("\n"),
     });
   }

@@ -32,6 +32,16 @@ const TOKEN_KEY = "ai_trade_token";
 const USER_KEY = "ai_trade_user";
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || (process.env.NODE_ENV === "development" ? "http://127.0.0.1:8600" : "");
 
+export class ApiError extends Error {
+  status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
 export function getAuthToken() {
   if (typeof window === "undefined") return "";
   return window.localStorage.getItem(TOKEN_KEY) || "";
@@ -114,7 +124,8 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
   const text = await response.text();
   const payload = text ? JSON.parse(text) : {};
   if (!response.ok) {
-    throw new Error(payload?.error || payload?.detail || "请求失败");
+    if (response.status === 401 && token) clearAuth();
+    throw new ApiError(payload?.error || payload?.detail || "请求失败", response.status);
   }
   return payload as T;
 }

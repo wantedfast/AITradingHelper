@@ -81,14 +81,24 @@ type UpdateNotice = {
   title: string;
   version: string;
   items: string[];
-  status: "draft" | "published";
+  summary?: string;
+  content_markdown?: string;
+  expires_at?: string | null;
+  status: "draft" | "published" | "archived";
   created_at: string;
   updated_at: string;
   published_at?: string | null;
   email_campaign?: EmailCampaign | null;
 };
 
-type NoticeDraft = { title: string; version: string; itemsText: string };
+type NoticeDraft = {
+  title: string;
+  version: string;
+  summary: string;
+  contentMarkdown: string;
+  expiresAt: string;
+  itemsText: string;
+};
 
 function sectionClass(section: "users" | "feedback" | "orders" | "updates", active: boolean) {
   return `admin-section admin-section--${section}${active ? " is-active" : ""}`;
@@ -368,6 +378,12 @@ export function AdminUpdatesSection({ active, draft, editingNoticeId, onDraftCha
         <div className="admin-notice-form">
           <input value={draft.title} onChange={(event) => onDraftChange({ title: event.target.value })} placeholder="公告标题，例如：本周更新" />
           <input type="date" value={draft.version} onChange={(event) => onDraftChange({ version: event.target.value })} aria-label="公告日期" />
+          <input value={draft.summary} onChange={(event) => onDraftChange({ summary: event.target.value })} placeholder="公告摘要（最多 240 字）" />
+          <textarea value={draft.contentMarkdown} onChange={(event) => onDraftChange({ contentMarkdown: event.target.value })} placeholder="公告正文（支持安全 Markdown 文本，不执行 HTML）" rows={7} />
+          <label>
+            <span>到期时间（可选）</span>
+            <input type="datetime-local" value={draft.expiresAt} onChange={(event) => onDraftChange({ expiresAt: event.target.value })} />
+          </label>
           <textarea value={draft.itemsText} onChange={(event) => onDraftChange({ itemsText: event.target.value })} placeholder="每行一条更新内容" rows={5} />
           <div className="admin-notice-actions">
             <button type="button" onClick={onSave}>{editingNoticeId ? "保存修改" : "保存草稿"}</button>
@@ -382,8 +398,9 @@ export function AdminUpdatesSection({ active, draft, editingNoticeId, onDraftCha
         <div className="admin-list">
           {notices.map((notice) => (
             <div className="admin-list-item" key={notice.id}>
-              <header><b>{notice.title}</b><span>{notice.status === "published" ? "已发布" : "草稿"}</span></header>
+              <header><b>{notice.title}</b><span>{notice.status === "published" ? "已发布" : notice.status === "archived" ? "已归档" : "草稿"}</span></header>
               <p>{notice.version} · {formatDate(notice.published_at || notice.updated_at)}</p>
+              {notice.summary ? <p>{notice.summary}</p> : null}
               <small>{notice.items.join(" / ")}</small>
               {notice.email_campaign && (
                 <div className="admin-email-campaign">
@@ -394,7 +411,7 @@ export function AdminUpdatesSection({ active, draft, editingNoticeId, onDraftCha
               )}
               <div className="admin-notice-item-actions">
                 <button type="button" onClick={() => onEdit(notice)}>编辑</button>
-                {notice.status === "published" ? <button type="button" onClick={() => onUnpublish(notice.id)}>下线</button> : <button type="button" onClick={() => onPublish(notice.id)}>发布</button>}
+                {notice.status === "published" ? <button type="button" onClick={() => onUnpublish(notice.id)}>归档</button> : notice.status === "draft" ? <button type="button" onClick={() => onPublish(notice.id)}>发布</button> : null}
               </div>
             </div>
           ))}
