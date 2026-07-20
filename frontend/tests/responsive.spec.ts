@@ -820,8 +820,12 @@ test.describe("public pricing and mandatory notices", () => {
     expect(pendingRequests).toBe(1);
   });
 
-  test("logged-in user remains blocked while pending notices fail to load", async ({ page }) => {
+  test("notice check stays invisible while loading and does not block homepage on failure", async ({ page }) => {
     let pendingRequests = 0;
+    let releasePending: (() => void) | undefined;
+    const pendingResponse = new Promise<void>((resolve) => {
+      releasePending = resolve;
+    });
     await page.addInitScript((user) => {
       window.localStorage.setItem("ai_trade_token", "notice-token");
       window.localStorage.setItem("ai_trade_user", JSON.stringify(user));
@@ -830,20 +834,20 @@ test.describe("public pricing and mandatory notices", () => {
       const path = new URL(route.request().url()).pathname;
       if (path === "/api/update-notices/pending") {
         pendingRequests += 1;
+        await pendingResponse;
         return json(route, { error: "temporary failure" }, 503);
       }
       if (path === "/api/auth/me") return json(route, { user: { ...fixtureUser, role: "user" } });
       return json(route, {});
     });
     await page.goto("/", { waitUntil: "domcontentloaded" });
-    const dialog = page.locator(".site-update-notice-modal");
-    await expect(dialog).toBeVisible();
-    await expect(dialog.getByRole("button", { name: "重试加载公告" })).toBeVisible();
-    await expect(dialog.getByRole("button")).toHaveCount(1);
-    await expect(page.locator("body")).toHaveCSS("overflow", "hidden");
-    await dialog.getByRole("button", { name: "重试加载公告" }).dispatchEvent("click");
-    await expect.poll(() => pendingRequests).toBeGreaterThanOrEqual(2);
-    await expect(dialog).toBeVisible();
+    await expect.poll(() => pendingRequests).toBe(1);
+    await expect(page.locator(".site-update-notice-modal")).toHaveCount(0);
+    await expect(page.locator("body")).not.toHaveCSS("overflow", "hidden");
+    releasePending?.();
+    await page.waitForTimeout(100);
+    await expect(page.locator(".site-update-notice-modal")).toHaveCount(0);
+    expect(pendingRequests).toBe(1);
   });
 
   test("invalid requested plan blocks checkout until a valid plan is selected", async ({ page }) => {
