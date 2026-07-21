@@ -3913,6 +3913,26 @@ def _refresh_email_campaign_status(conn: sqlite3.Connection, campaign_id: int) -
     )
 
 
+def _pending_delivery_next_retry_at(
+    conn: sqlite3.Connection,
+    *,
+    delivery_table: str,
+    campaign_id: int,
+) -> str | None:
+    row = conn.execute(
+        f"""
+        SELECT MIN(next_attempt_at) AS next_retry_at
+        FROM {delivery_table}
+        WHERE campaign_id = ?
+          AND status = 'pending'
+          AND COALESCE(next_attempt_at, '') != ''
+        """,
+        (campaign_id,),
+    ).fetchone()
+    value = row["next_retry_at"] if row else None
+    return str(value) if value else None
+
+
 def _daily_top5_email_campaign_payload(conn: sqlite3.Connection, campaign_id: int) -> dict[str, Any]:
     row = conn.execute(
         "SELECT * FROM daily_top5_email_campaigns WHERE id = ?", (campaign_id,)
@@ -3956,6 +3976,11 @@ def _daily_top5_email_campaign_payload(conn: sqlite3.Connection, campaign_id: in
         "skipped": counts.get("skipped", 0),
         "full": variants.get("full", 0),
         "teaser": variants.get("teaser", 0),
+        "next_retry_at": _pending_delivery_next_retry_at(
+            conn,
+            delivery_table="daily_top5_email_deliveries",
+            campaign_id=campaign_id,
+        ),
         "created_at": row["created_at"],
         "started_at": row["started_at"],
         "finished_at": row["finished_at"],
@@ -4056,6 +4081,11 @@ def _ai_report_email_campaign_payload(conn: sqlite3.Connection, campaign_id: int
         "skipped": counts.get("skipped", 0),
         "full": variants.get("full", 0),
         "teaser": variants.get("teaser", 0),
+        "next_retry_at": _pending_delivery_next_retry_at(
+            conn,
+            delivery_table="ai_report_email_deliveries",
+            campaign_id=campaign_id,
+        ),
         "created_at": row["created_at"],
         "started_at": row["started_at"],
         "finished_at": row["finished_at"],

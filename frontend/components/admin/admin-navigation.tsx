@@ -1,6 +1,6 @@
-import { BarChart3, CreditCard, Megaphone, MessageSquare, Users } from "lucide-react";
+import { BarChart3, CreditCard, Mail, Megaphone, MessageSquare, Users } from "lucide-react";
 
-export type AdminSection = "overview" | "users" | "orders" | "feedback" | "updates";
+export type AdminSection = "overview" | "users" | "orders" | "feedback" | "updates" | "emails";
 
 export const adminSections: Array<{ key: AdminSection; label: string; icon: typeof BarChart3 }> = [
   { key: "overview", label: "总览", icon: BarChart3 },
@@ -8,6 +8,7 @@ export const adminSections: Array<{ key: AdminSection; label: string; icon: type
   { key: "orders", label: "订单处理", icon: CreditCard },
   { key: "feedback", label: "反馈建议", icon: MessageSquare },
   { key: "updates", label: "更新公告", icon: Megaphone },
+  { key: "emails", label: "邮件推送", icon: Mail },
 ];
 
 export function AdminNavigation({ active, onChange }: { active: AdminSection; onChange: (section: AdminSection) => void }) {

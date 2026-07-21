@@ -1,7 +1,7 @@
 "use client";
 
 import type { EChartsOption } from "echarts";
-import { Activity, CheckCircle2, CreditCard, Gift, Megaphone, MessageSquare, PauseCircle, PlayCircle, Search, Users, X } from "lucide-react";
+import { Activity, CheckCircle2, CreditCard, Gift, Mail, Megaphone, MessageSquare, PauseCircle, PlayCircle, Search, Users, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { AdminAnalyticsChart } from "@/components/admin/admin-analytics-chart";
 import type { HighFrequencyUser } from "@/components/admin/admin-analytics-types";
@@ -76,6 +76,18 @@ type DailyTop5EmailCampaign = EmailCampaign & {
   full: number;
   teaser: number;
   created_at: string;
+  next_retry_at?: string | null;
+  finished_at?: string | null;
+};
+
+type AiReportEmailCampaign = EmailCampaign & {
+  report_type: "market_day" | "ai_research" | string;
+  run_id: string;
+  report_date: string;
+  full: number;
+  teaser: number;
+  created_at: string;
+  next_retry_at?: string | null;
   finished_at?: string | null;
 };
 
@@ -100,7 +112,7 @@ type NoticeDraft = {
   itemsText: string;
 };
 
-function sectionClass(section: "users" | "feedback" | "orders" | "updates", active: boolean) {
+function sectionClass(section: "users" | "feedback" | "orders" | "updates" | "emails", active: boolean) {
   return `admin-section admin-section--${section}${active ? " is-active" : ""}`;
 }
 
@@ -571,9 +583,7 @@ export function AdminUpdatesSection({
   onRequestFormPublish,
   onCancelEdit,
   notices,
-  dailyTop5Campaigns,
   onRetryCampaign,
-  onRetryDailyTop5Campaign,
   onEdit,
   onUnpublish,
   onPublish,
@@ -586,9 +596,7 @@ export function AdminUpdatesSection({
   onRequestFormPublish: () => void;
   onCancelEdit: () => void;
   notices: UpdateNotice[];
-  dailyTop5Campaigns: DailyTop5EmailCampaign[];
   onRetryCampaign: (id: number) => void;
-  onRetryDailyTop5Campaign: (id: number) => void;
   onEdit: (notice: UpdateNotice) => void;
   onUnpublish: (id: number) => void;
   onPublish: (id: number) => void;
@@ -596,35 +604,6 @@ export function AdminUpdatesSection({
   const className = `admin-panel ${sectionClass("updates", active)}`;
   return (
     <section className="admin-grid">
-      <article className={className}>
-        <div className="admin-panel-head">
-          <Megaphone />
-          <h2>每日 TOP5 邮件推送</h2>
-        </div>
-        <p>完整报告上线后自动创建任务；同一交易日只推送一次，失败不会影响网站报告上线。</p>
-        <div className="admin-list">
-          {dailyTop5Campaigns.map((campaign) => (
-            <div className="admin-list-item" key={campaign.id}>
-              <header>
-                <b>{campaign.trade_date} · 每日 TOP5</b>
-                <span>{emailCampaignLabel(campaign.status)}</span>
-              </header>
-              <p>{formatDate(campaign.created_at)}</p>
-              <div className="admin-email-campaign">
-                <span>会员完整版 {campaign.full} · 普通用户摘要版 {campaign.teaser}</span>
-                <span>成功 {campaign.sent} · 待发送 {campaign.pending + campaign.sending} · 失败 {campaign.failed} · 跳过 {campaign.skipped}</span>
-                {campaign.failed > 0 && (
-                  <button type="button" onClick={() => onRetryDailyTop5Campaign(campaign.id)}>
-                    重试失败邮件
-                  </button>
-                )}
-              </div>
-            </div>
-          ))}
-          {!dailyTop5Campaigns.length && <p>暂时还没有每日 TOP5 邮件任务。</p>}
-        </div>
-      </article>
-
       <article className={className}>
         <div className="admin-panel-head">
           <Megaphone />
@@ -685,6 +664,126 @@ export function AdminUpdatesSection({
   );
 }
 
+export function AdminEmailCampaignsSection({
+  active,
+  dailyTop5Campaigns,
+  aiReportCampaigns,
+  onRetryDailyTop5Campaign,
+  onRetryAiReportCampaign,
+}: {
+  active: boolean;
+  dailyTop5Campaigns: DailyTop5EmailCampaign[];
+  aiReportCampaigns: AiReportEmailCampaign[];
+  onRetryDailyTop5Campaign: (id: number) => void;
+  onRetryAiReportCampaign: (id: number) => void;
+}) {
+  const className = `admin-panel ${sectionClass("emails", active)}`;
+  const marketDayCampaigns = aiReportCampaigns.filter((item) => item.report_type === "market_day");
+  const aiResearchCampaigns = aiReportCampaigns.filter((item) => item.report_type === "ai_research");
+
+  return (
+    <section className="admin-grid">
+      <article className={className}>
+        <div className="admin-panel-head">
+          <Mail />
+          <h2>每日 TOP5 邮件任务</h2>
+        </div>
+        <p>完整报告上线后自动创建任务；自动重试等待中的批次不提供手动强制重发。</p>
+        <div className="admin-list">
+          {dailyTop5Campaigns.map((campaign) => (
+            <EmailCampaignListItem
+              key={campaign.id}
+              title={`${campaign.trade_date} · 每日 TOP5`}
+              subtitle={formatDate(campaign.created_at)}
+              campaign={campaign}
+              contentSummary={`完整版 ${campaign.full} · 摘要版 ${campaign.teaser}`}
+              onRetry={() => onRetryDailyTop5Campaign(campaign.id)}
+            />
+          ))}
+          {!dailyTop5Campaigns.length && <p>暂无每日 TOP5 邮件任务。</p>}
+        </div>
+      </article>
+
+      <article className={className}>
+        <div className="admin-panel-head">
+          <Mail />
+          <h2>市场日报邮件任务</h2>
+        </div>
+        <div className="admin-list">
+          {marketDayCampaigns.map((campaign) => (
+            <EmailCampaignListItem
+              key={campaign.id}
+              title={`${campaign.report_date} · 市场日报`}
+              subtitle={formatDate(campaign.created_at)}
+              campaign={campaign}
+              contentSummary={`完整版 ${campaign.full} · 摘要版 ${campaign.teaser}`}
+              onRetry={() => onRetryAiReportCampaign(campaign.id)}
+            />
+          ))}
+          {!marketDayCampaigns.length && <p>暂无市场日报邮件任务。</p>}
+        </div>
+      </article>
+
+      <article className={className}>
+        <div className="admin-panel-head">
+          <Mail />
+          <h2>AI 复盘邮件任务</h2>
+        </div>
+        <div className="admin-list">
+          {aiResearchCampaigns.map((campaign) => (
+            <EmailCampaignListItem
+              key={campaign.id}
+              title={`${campaign.report_date} · AI 复盘`}
+              subtitle={formatDate(campaign.created_at)}
+              campaign={campaign}
+              contentSummary={`完整版 ${campaign.full} · 摘要版 ${campaign.teaser}`}
+              onRetry={() => onRetryAiReportCampaign(campaign.id)}
+            />
+          ))}
+          {!aiResearchCampaigns.length && <p>暂无 AI 复盘邮件任务。</p>}
+        </div>
+      </article>
+    </section>
+  );
+}
+
+function EmailCampaignListItem({
+  title,
+  subtitle,
+  campaign,
+  contentSummary,
+  onRetry,
+}: {
+  title: string;
+  subtitle: string;
+  campaign: EmailCampaign & { next_retry_at?: string | null };
+  contentSummary: string;
+  onRetry: () => void;
+}) {
+  const waitingForRetry = isWaitingForAutoRetry(campaign);
+  const shouldShowRetry = canRetryFailedCampaign(campaign);
+
+  return (
+    <div className="admin-list-item">
+      <header>
+        <b>{title}</b>
+        <span>{emailCampaignLabel(campaign.status)}</span>
+      </header>
+      <p>{subtitle}</p>
+      <div className="admin-email-campaign">
+        <span>{contentSummary}</span>
+        <span>{campaignDeliverySummary(campaign)}</span>
+        {waitingForRetry ? <span>等待自动重试：{formatDate(campaign.next_retry_at)}</span> : null}
+        {shouldShowRetry ? (
+          <button type="button" onClick={onRetry}>
+            重试失败邮件
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 function describeOrder(item: OrderItem) {
   if (item.product_type === "membership") return `会员订阅 · ${item.plan_name} · ¥${(item.amount_cents / 100).toFixed(2)}`;
   if (item.product_type === "credits") return `${item.credits} 次 · ¥${(item.amount_cents / 100).toFixed(2)} · 固定 1 元 / 次`;
@@ -712,6 +811,18 @@ function emailCampaignLabel(value: EmailCampaign["status"]) {
   if (value === "completed") return "已完成";
   if (value === "partial_failed") return "部分失败";
   return "发送失败";
+}
+
+function campaignDeliverySummary(campaign: EmailCampaign) {
+  return `成功 ${campaign.sent} · 待发送 ${campaign.pending} · 发送中 ${campaign.sending} · 失败 ${campaign.failed} · 跳过 ${campaign.skipped}`;
+}
+
+function isWaitingForAutoRetry(campaign: EmailCampaign & { next_retry_at?: string | null }) {
+  return Boolean(campaign.next_retry_at && (campaign.pending > 0 || campaign.sending > 0));
+}
+
+function canRetryFailedCampaign(campaign: EmailCampaign & { next_retry_at?: string | null }) {
+  return campaign.failed > 0 && !isWaitingForAutoRetry(campaign) && campaign.pending === 0 && campaign.sending === 0;
 }
 
 function orderStatusLabel(value: string) {

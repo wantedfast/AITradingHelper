@@ -412,6 +412,107 @@ class AIReportEmailTest(unittest.TestCase):
                 (campaign_id,),
             ).fetchone(), ("sent", 1))
 
+    def test_campaign_payload_exposes_earliest_pending_next_retry_at(self) -> None:
+        campaign = create_ai_report_email_campaign(
+            self.db_path, report_type="market_day", report=market_day_report()
+        )
+        campaign_id = int(campaign["id"])
+        first_retry_at = "2026-07-16T19:35:00+08:00"
+        second_retry_at = "2026-07-16T19:45:00+08:00"
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            with conn:
+                conn.execute(
+                    """
+                    UPDATE ai_report_email_deliveries
+                    SET next_attempt_at = ?
+                    WHERE campaign_id = ? AND email = 'member@example.test'
+                    """,
+                    (second_retry_at, campaign_id),
+                )
+                conn.execute(
+                    """
+                    UPDATE ai_report_email_deliveries
+                    SET next_attempt_at = ?
+                    WHERE campaign_id = ? AND email = 'ordinary@example.test'
+                    """,
+                    (first_retry_at, campaign_id),
+                )
+
+        refreshed = create_ai_report_email_campaign(
+            self.db_path, report_type="market_day", report=market_day_report()
+        )
+        self.assertEqual(refreshed["id"], campaign_id)
+        self.assertEqual(refreshed["next_retry_at"], first_retry_at)
+
+    def test_manual_retry_only_resets_failed_rows(self) -> None:
+        campaign = create_ai_report_email_campaign(
+            self.db_path, report_type="market_day", report=market_day_report()
+        )
+        campaign_id = int(campaign["id"])
+        pending_retry_at = "2026-07-16T19:55:00+08:00"
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            with conn:
+                conn.execute(
+                    """
+                    UPDATE ai_report_email_deliveries
+                    SET status = 'failed', attempt_count = 3, next_attempt_at = '2000-01-01',
+                        last_error = 'smtp down'
+                    WHERE campaign_id = ? AND email = 'ordinary@example.test'
+                    """,
+                    (campaign_id,),
+                )
+                conn.execute(
+                    """
+                    UPDATE ai_report_email_deliveries
+                    SET next_attempt_at = ?
+                    WHERE campaign_id = ? AND email = 'member@example.test'
+                    """,
+                    (pending_retry_at, campaign_id),
+                )
+                conn.execute(
+                    """
+                    UPDATE ai_report_email_deliveries
+                    SET status = 'sent', attempt_count = 2, sent_at = '2026-07-16T19:40:00+08:00',
+                        next_attempt_at = NULL
+                    WHERE campaign_id = ? AND email = 'inactive@example.test'
+                    """,
+                    (campaign_id,),
+                )
+                conn.execute(
+                    """
+                    UPDATE ai_report_email_deliveries
+                    SET status = 'skipped', next_attempt_at = NULL, last_error = 'not eligible'
+                    WHERE campaign_id = ? AND email = 'expired@example.test'
+                    """,
+                    (campaign_id,),
+                )
+
+        retried = retry_ai_report_email_campaign(self.db_path, campaign_id=campaign_id)
+        self.assertEqual(retried["failed"], 0)
+        self.assertEqual(retried["sent"], 1)
+        self.assertEqual(retried["skipped"], 3)
+        self.assertIsNotNone(retried["next_retry_at"])
+
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT email, status, attempt_count, next_attempt_at, last_error, sent_at
+                FROM ai_report_email_deliveries
+                WHERE campaign_id = ?
+                ORDER BY email
+                """,
+                (campaign_id,),
+            ).fetchall()
+        by_email = {str(row["email"]): row for row in rows}
+        self.assertEqual(str(by_email["inactive@example.test"]["status"]), "sent")
+        self.assertEqual(int(by_email["inactive@example.test"]["attempt_count"]), 2)
+        self.assertEqual(str(by_email["expired@example.test"]["status"]), "skipped")
+        self.assertEqual(str(by_email["member@example.test"]["next_attempt_at"]), pending_retry_at)
+        self.assertEqual(str(by_email["ordinary@example.test"]["status"]), "pending")
+        self.assertEqual(int(by_email["ordinary@example.test"]["attempt_count"]), 0)
+        self.assertIsNone(by_email["ordinary@example.test"]["last_error"])
+
 
 if __name__ == "__main__":
     unittest.main()
