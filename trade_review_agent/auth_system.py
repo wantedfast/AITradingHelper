@@ -10,6 +10,8 @@ import re
 import secrets
 import sqlite3
 import smtplib
+import threading
+import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -48,6 +50,8 @@ EMAIL_CODE_TTL_MINUTES = 10
 EMAIL_RESEND_SECONDS = 60
 UPDATE_EMAIL_MAX_ATTEMPTS = 3
 UPDATE_EMAIL_RETRY_MINUTES = (1, 5, 30)
+DAILY_TOP5_EMAIL_MAX_ATTEMPTS = 8
+DAILY_TOP5_EMAIL_RETRY_MINUTES = (1, 5, 15, 30, 60, 180, 360)
 CREDIT_PACKAGES = {
     "pack_10": {"plan_name": "10 次使用包", "credits": 10, "amount_cents": 990},
     "pack_50": {"plan_name": "50 次使用包", "credits": 50, "amount_cents": 3990},
@@ -2457,12 +2461,13 @@ def process_next_daily_top5_email(
                    c.trade_date, c.report_id, c.report_json
             FROM daily_top5_email_deliveries d
             JOIN daily_top5_email_campaigns c ON c.id = d.campaign_id
-            WHERE d.status = 'pending'
+            WHERE d.status IN ('pending', 'failed')
+              AND d.attempt_count < ?
               AND (d.next_attempt_at IS NULL OR d.next_attempt_at <= ?)
             ORDER BY d.id
             LIMIT 1
             """,
-            (now,),
+            (DAILY_TOP5_EMAIL_MAX_ATTEMPTS, now),
         ).fetchone()
         if not row:
             return False
@@ -2486,13 +2491,15 @@ def process_next_daily_top5_email(
             _send_daily_top5_email(delivery)
     except Exception as exc:
         with _connect(db_path) as conn:
-            if attempt >= UPDATE_EMAIL_MAX_ATTEMPTS:
+            if attempt >= DAILY_TOP5_EMAIL_MAX_ATTEMPTS:
                 conn.execute(
                     "UPDATE daily_top5_email_deliveries SET status = 'failed', last_error = ?, updated_at = ? WHERE id = ?",
                     (str(exc)[:500], _now(), delivery["id"]),
                 )
             else:
-                delay = UPDATE_EMAIL_RETRY_MINUTES[min(attempt - 1, len(UPDATE_EMAIL_RETRY_MINUTES) - 1)]
+                delay = DAILY_TOP5_EMAIL_RETRY_MINUTES[
+                    min(attempt - 1, len(DAILY_TOP5_EMAIL_RETRY_MINUTES) - 1)
+                ]
                 next_attempt = (datetime.now(CN_TZ) + timedelta(minutes=delay)).isoformat()
                 conn.execute(
                     """
@@ -3400,13 +3407,24 @@ def notify_credit_added(db_path: Path, *, user_id: int, credits: int, reason: st
         return {"sent": False, "error": str(exc)}
 
 
-def _smtp_message(email: str, *, subject: str, text: str, html: str | None = None) -> EmailMessage:
+def _smtp_message(
+    email: str,
+    *,
+    subject: str,
+    text: str,
+    html: str | None = None,
+    message_id: str = "",
+) -> EmailMessage:
     sender = os.getenv("SMTP_FROM", os.getenv("SMTP_USER", "")).strip()
     sender_name = os.getenv("SMTP_FROM_NAME", "盈航").strip()
     message = EmailMessage()
     message["Subject"] = subject
     message["From"] = f"{sender_name} <{sender}>"
     message["To"] = email
+    if message_id:
+        clean_id = re.sub(r"[^A-Za-z0-9._-]", "-", message_id).strip("-")[:180]
+        sender_domain = sender.rsplit("@", 1)[-1] if "@" in sender else "localhost"
+        message["Message-ID"] = f"<{clean_id}@{sender_domain}>"
     message.set_content(text)
     if html:
         message.add_alternative(html, subtype="html")
@@ -3433,10 +3451,38 @@ class UpdateEmailSMTPSession:
     the persistent delivery retry policy remains handled by ``process_next_update_email``.
     """
 
+    _cooldown_lock = threading.Lock()
+    _cooldown_until = 0.0
+
     def __init__(self) -> None:
         self._server: smtplib.SMTP | smtplib.SMTP_SSL | None = None
 
+    @classmethod
+    def _disconnect_cooldown_seconds(cls) -> float:
+        try:
+            configured = float(os.getenv("SMTP_DISCONNECT_COOLDOWN_SECONDS", "15"))
+        except ValueError:
+            configured = 15.0
+        return max(0.0, min(configured, 300.0))
+
+    @classmethod
+    def _wait_for_disconnect_cooldown(cls) -> None:
+        with cls._cooldown_lock:
+            delay = max(0.0, cls._cooldown_until - time.monotonic())
+        if delay:
+            time.sleep(delay)
+
+    @classmethod
+    def _record_disconnect(cls) -> None:
+        cooldown = cls._disconnect_cooldown_seconds()
+        if not cooldown:
+            return
+        deadline = time.monotonic() + cooldown
+        with cls._cooldown_lock:
+            cls._cooldown_until = max(cls._cooldown_until, deadline)
+
     def _connect(self) -> smtplib.SMTP | smtplib.SMTP_SSL:
+        self._wait_for_disconnect_cooldown()
         host, port, username, password, _sender, use_ssl = _smtp_connection_settings()
         if use_ssl:
             server: smtplib.SMTP | smtplib.SMTP_SSL = smtplib.SMTP_SSL(host, port, timeout=15)
@@ -3447,8 +3493,16 @@ class UpdateEmailSMTPSession:
         self._server = server
         return server
 
-    def send(self, email: str, *, subject: str, text: str, html: str | None = None) -> None:
-        message = _smtp_message(email, subject=subject, text=text, html=html)
+    def send(
+        self,
+        email: str,
+        *,
+        subject: str,
+        text: str,
+        html: str | None = None,
+        message_id: str = "",
+    ) -> None:
+        message = _smtp_message(email, subject=subject, text=text, html=html, message_id=message_id)
         for reconnect_attempt in range(2):
             try:
                 server = self._server or self._connect()
@@ -3456,6 +3510,7 @@ class UpdateEmailSMTPSession:
                 return
             except (smtplib.SMTPServerDisconnected, smtplib.SMTPConnectError, OSError, EOFError):
                 self.close()
+                self._record_disconnect()
                 if reconnect_attempt:
                     raise
 
@@ -3475,10 +3530,17 @@ class UpdateEmailSMTPSession:
                 pass
 
 
-def _send_smtp_message(email: str, *, subject: str, text: str, html: str | None = None) -> None:
+def _send_smtp_message(
+    email: str,
+    *,
+    subject: str,
+    text: str,
+    html: str | None = None,
+    message_id: str = "",
+) -> None:
     host, port, username, password, _sender, use_ssl = _smtp_connection_settings()
 
-    message = _smtp_message(email, subject=subject, text=text, html=html)
+    message = _smtp_message(email, subject=subject, text=text, html=html, message_id=message_id)
 
     if use_ssl:
         with smtplib.SMTP_SSL(host, port, timeout=15) as server:
@@ -4184,7 +4246,14 @@ def _send_daily_top5_email(
       <p style="margin:0;color:#57606a;font-size:12px;line-height:1.6;">可登录盈航，在账户菜单中关闭“邮件推送（产品更新与每日 AI 报告）”。</p>
     """, max_width=720)
     send = smtp_session.send if smtp_session is not None else _send_smtp_message
-    send(str(delivery["email"]), subject=f"盈航每日 TOP5｜{trade_date}", text=text, html=html)
+    send_kwargs: dict[str, Any] = {
+        "subject": f"盈航每日 TOP5｜{trade_date}",
+        "text": text,
+        "html": html,
+    }
+    if delivery.get("campaign_id") is not None and delivery.get("id") is not None:
+        send_kwargs["message_id"] = f"daily-top5-c{delivery['campaign_id']}-d{delivery['id']}"
+    send(str(delivery["email"]), **send_kwargs)
 
 
 _AI_REPORT_EMAIL_LABELS = {
