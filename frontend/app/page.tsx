@@ -221,6 +221,9 @@ export default function Page() {
             <Link href="/watch">AI 盯盘</Link>
             <Link href="/market-day">AI当日行情</Link>
             <Link href="/ai-research">AI研报</Link>
+            <button className="nav-action" type="button" onClick={scrollToFeedback}>
+              反馈
+            </button>
             <Link className="home-membership-nav" href="/billing">
               <Crown className="h-4 w-4" />
               {hydrated && hasActiveMembership(user) ? "会员已开通" : "开通会员"}
@@ -294,9 +297,6 @@ export default function Page() {
                 登录
               </Link>
             )}
-            <button className="nav-action" type="button" onClick={scrollToFeedback}>
-              反馈
-            </button>
           </nav>
           <div className="home-mobile-actions">
             {hydrated && !user ? (
