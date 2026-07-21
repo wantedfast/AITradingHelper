@@ -349,12 +349,18 @@ class UpdateNoticeTest(unittest.TestCase):
             "SMTP_PASSWORD": "secret",
             "SMTP_FROM": "updates@example.test",
             "SMTP_USE_SSL": "1",
+            "SMTP_DISCONNECT_COOLDOWN_SECONDS": "0",
         }
         with mock.patch.dict(os.environ, smtp_env, clear=False), mock.patch(
             "trade_review_agent.auth_system.smtplib.SMTP_SSL", side_effect=[first_server, second_server]
         ) as connect:
             session = UpdateEmailSMTPSession()
-            session.send("recipient@example.com", subject="Update", text="Body")
+            session.send(
+                "recipient@example.com",
+                subject="Update",
+                text="Body",
+                message_id="daily-top5-c3-d17",
+            )
             session.close()
 
         self.assertEqual(connect.call_count, 2)
@@ -362,8 +368,23 @@ class UpdateNoticeTest(unittest.TestCase):
         second_server.send_message.assert_called_once()
         self.assertEqual(first_server.send_message.call_args.args[0]["To"], "recipient@example.com")
         self.assertEqual(second_server.send_message.call_args.args[0]["To"], "recipient@example.com")
+        self.assertEqual(
+            first_server.send_message.call_args.args[0]["Message-ID"],
+            second_server.send_message.call_args.args[0]["Message-ID"],
+        )
         first_server.quit.assert_called_once_with()
         second_server.quit.assert_called_once_with()
+
+    def test_smtp_disconnect_cooldown_is_shared_across_workers(self):
+        UpdateEmailSMTPSession._cooldown_until = 0.0
+        with mock.patch.dict(os.environ, {"SMTP_DISCONNECT_COOLDOWN_SECONDS": "7"}, clear=False), mock.patch(
+            "trade_review_agent.auth_system.time.monotonic", side_effect=[100.0, 102.0]
+        ), mock.patch("trade_review_agent.auth_system.time.sleep") as sleep:
+            UpdateEmailSMTPSession._record_disconnect()
+            UpdateEmailSMTPSession._wait_for_disconnect_cooldown()
+
+        sleep.assert_called_once_with(5.0)
+        UpdateEmailSMTPSession._cooldown_until = 0.0
 
 
 if __name__ == "__main__":

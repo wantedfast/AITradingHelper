@@ -16,6 +16,7 @@ from unittest import mock
 from trade_review_agent.auth_system import (
     AuthError,
     CN_TZ,
+    DAILY_TOP5_EMAIL_MAX_ATTEMPTS,
     create_daily_top5_email_campaign,
     init_auth_db,
     process_next_daily_top5_email,
@@ -187,8 +188,8 @@ class DailyTop5EmailTest(unittest.TestCase):
         create_daily_top5_email_campaign(self.db_path, report=complete_report())
         sent: dict[str, dict[str, str]] = {}
 
-        def capture(email: str, *, subject: str, text: str, html: str) -> None:
-            sent[email] = {"subject": subject, "text": text, "html": html}
+        def capture(email: str, *, subject: str, text: str, html: str, message_id: str = "") -> None:
+            sent[email] = {"subject": subject, "text": text, "html": html, "message_id": message_id}
 
         with mock.patch.dict(os.environ, {"PUBLIC_SITE_URL": "https://trade.example.test/"}, clear=False), mock.patch(
             "trade_review_agent.auth_system._send_smtp_message", side_effect=capture
@@ -209,6 +210,7 @@ class DailyTop5EmailTest(unittest.TestCase):
             self.assertIn("https://trade.example.test/auction-strength?date=2026-07-16", message["html"])
             self.assertIn("AI", message["text"])
             self.assertIn("TOP5", message["subject"])
+            self.assertRegex(message["message_id"], r"^daily-top5-c\d+-d\d+$")
         self.assertEqual(len(sent), 4)
 
     def test_teaser_does_not_leak_a_stock_name_or_code_from_the_summary(self) -> None:
@@ -217,7 +219,7 @@ class DailyTop5EmailTest(unittest.TestCase):
         create_daily_top5_email_campaign(self.db_path, report=report)
         sent: dict[str, str] = {}
 
-        def capture(email: str, *, subject: str, text: str, html: str) -> None:
+        def capture(email: str, *, subject: str, text: str, html: str, message_id: str = "") -> None:
             sent[email] = text
 
         with mock.patch.dict(os.environ, {"PUBLIC_SITE_URL": "https://trade.example.test"}, clear=False), mock.patch(
@@ -252,7 +254,7 @@ class DailyTop5EmailTest(unittest.TestCase):
             ).fetchone()[0]
         self.assertEqual(sent_count, campaign["pending"])
 
-    def test_failure_stops_after_three_attempts_recovery_and_manual_retry_only_requeues_failed(self) -> None:
+    def test_failure_retries_automatically_until_daily_limit(self) -> None:
         campaign = create_daily_top5_email_campaign(self.db_path, report=complete_report())
         campaign_id = int(campaign["id"])
         with closing(sqlite3.connect(self.db_path)) as conn:
@@ -267,7 +269,7 @@ class DailyTop5EmailTest(unittest.TestCase):
                 )
         self.assertEqual(recover_daily_top5_email_queue(self.db_path), 1)
 
-        for attempt in range(3):
+        for attempt in range(DAILY_TOP5_EMAIL_MAX_ATTEMPTS):
             self.assertTrue(process_next_daily_top5_email(self.db_path, sender=lambda _delivery: (_ for _ in ()).throw(RuntimeError("smtp down"))))
             with closing(sqlite3.connect(self.db_path)) as conn:
                 with conn:
@@ -281,6 +283,51 @@ class DailyTop5EmailTest(unittest.TestCase):
             self.assertEqual(attempts, attempt + 1)
         self.assertEqual(status, "failed")
         self.assertFalse(process_next_daily_top5_email(self.db_path, sender=lambda _delivery: None))
+
+    def test_delivery_failed_under_old_limit_is_automatically_requeued(self) -> None:
+        campaign = create_daily_top5_email_campaign(self.db_path, report=complete_report())
+        campaign_id = int(campaign["id"])
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            with conn:
+                conn.execute(
+                    "DELETE FROM daily_top5_email_deliveries WHERE campaign_id = ? AND email != 'ordinary@example.test'",
+                    (campaign_id,),
+                )
+                conn.execute(
+                    """
+                    UPDATE daily_top5_email_deliveries
+                    SET status = 'failed', attempt_count = 3, next_attempt_at = '2000-01-01'
+                    WHERE campaign_id = ?
+                    """,
+                    (campaign_id,),
+                )
+
+        delivered: list[int] = []
+        self.assertTrue(
+            process_next_daily_top5_email(
+                self.db_path, sender=lambda delivery: delivered.append(int(delivery["id"]))
+            )
+        )
+        self.assertEqual(len(delivered), 1)
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            status, attempts = conn.execute(
+                "SELECT status, attempt_count FROM daily_top5_email_deliveries WHERE campaign_id = ?", (campaign_id,)
+            ).fetchone()
+        self.assertEqual((status, attempts), ("sent", 4))
+
+    def test_manual_retry_resets_a_terminal_failure(self) -> None:
+        campaign = create_daily_top5_email_campaign(self.db_path, report=complete_report())
+        campaign_id = int(campaign["id"])
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            with conn:
+                conn.execute(
+                    "DELETE FROM daily_top5_email_deliveries WHERE campaign_id = ? AND email != 'ordinary@example.test'",
+                    (campaign_id,),
+                )
+                conn.execute(
+                    "UPDATE daily_top5_email_deliveries SET status = 'failed', attempt_count = ? WHERE campaign_id = ?",
+                    (DAILY_TOP5_EMAIL_MAX_ATTEMPTS, campaign_id),
+                )
 
         retried = retry_daily_top5_email_campaign(self.db_path, campaign_id=campaign_id)
         self.assertEqual(retried["pending"], 1)
