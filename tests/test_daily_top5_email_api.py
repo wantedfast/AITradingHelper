@@ -6,6 +6,7 @@ import tempfile
 import threading
 import unittest
 from contextlib import closing
+from datetime import datetime
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
@@ -13,7 +14,7 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from trade_review_agent.api import simple_api
-from trade_review_agent.auth_system import init_auth_db
+from trade_review_agent.auth_system import CN_TZ, init_auth_db
 from tests.test_daily_top5_email import complete_report
 
 
@@ -23,6 +24,7 @@ class DailyTop5EmailApiTest(unittest.TestCase):
         root = Path(self.temp_dir.name)
         self.db_path = root / "auth.sqlite"
         self.report_path = root / "auction-strength.jsonl"
+        self.trade_date = datetime.now(CN_TZ).date().isoformat()
         init_auth_db(self.db_path)
         now = "2026-07-16T09:00:00+08:00"
         with closing(sqlite3.connect(self.db_path)) as conn:
@@ -85,7 +87,7 @@ class DailyTop5EmailApiTest(unittest.TestCase):
                 return exc.code, json.loads(exc.read())
 
     def test_incomplete_webhook_then_complete_webhook_creates_exactly_one_campaign(self) -> None:
-        incomplete = complete_report()
+        incomplete = complete_report(trade_date=self.trade_date)
         incomplete["top5_strong_stocks"] = [{"rank": index} for index in range(1, 6)]
         status, payload = self.request("/api/auction-strength", method="POST", payload=incomplete, webhook=True)
         self.assertEqual(status, 202)
@@ -93,7 +95,7 @@ class DailyTop5EmailApiTest(unittest.TestCase):
         with closing(sqlite3.connect(self.db_path)) as conn:
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM daily_top5_email_campaigns").fetchone()[0], 0)
 
-        complete = complete_report(report_id="complete-run")
+        complete = complete_report(trade_date=self.trade_date, report_id="complete-run")
         first_status, first = self.request("/api/auction-strength", method="POST", payload=complete, webhook=True)
         second_status, second = self.request("/api/auction-strength", method="POST", payload=complete, webhook=True)
         self.assertEqual((first_status, second_status), (202, 202))
@@ -105,14 +107,40 @@ class DailyTop5EmailApiTest(unittest.TestCase):
 
     def test_dashboard_exposes_campaign_and_retry_requires_admin(self) -> None:
         status, posted = self.request(
-            "/api/auction-strength", method="POST", payload=complete_report(), webhook=True
+            "/api/auction-strength",
+            method="POST",
+            payload=complete_report(trade_date=self.trade_date),
+            webhook=True,
         )
         self.assertEqual(status, 202)
         campaign_id = int(posted["email_campaign"]["id"])
+        next_retry_at = "2026-07-16T10:15:00+08:00"
         with closing(sqlite3.connect(self.db_path)) as conn:
             with conn:
                 conn.execute(
-                    "UPDATE daily_top5_email_deliveries SET status = 'failed', attempt_count = 3 WHERE campaign_id = ?",
+                    """
+                    INSERT INTO users (
+                        phone, username, email, email_verified, update_emails_enabled,
+                        password_hash, password_salt, role, status, invite_code, created_at
+                    ) VALUES (?, ?, ?, 1, 1, 'hash', 'salt', 'user', 'active', ?, ?)
+                    """,
+                    ("top5-extra", "top5-extra", "top5-extra@example.test", "TOP5EXTRA", "2026-07-16T09:00:00+08:00"),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO daily_top5_email_deliveries (
+                        campaign_id, user_id, email, content_variant, membership_active,
+                        status, attempt_count, next_attempt_at, last_error, updated_at
+                    ) VALUES (?, last_insert_rowid(), ?, 'teaser', 0, 'pending', 0, ?, NULL, ?)
+                    """,
+                    (campaign_id, "top5-extra@example.test", next_retry_at, next_retry_at),
+                )
+                conn.execute(
+                    """
+                    UPDATE daily_top5_email_deliveries
+                    SET status = 'failed', attempt_count = 3, next_attempt_at = NULL
+                    WHERE campaign_id = ? AND email = 'user@example.test'
+                    """,
                     (campaign_id,),
                 )
                 conn.execute(
@@ -122,19 +150,22 @@ class DailyTop5EmailApiTest(unittest.TestCase):
         dashboard_status, dashboard = self.request("/api/admin/dashboard?days=30", token="admin-token")
         self.assertEqual(dashboard_status, 200)
         self.assertEqual(dashboard["daily_top5_email_failed_count"], 1)
-        self.assertEqual(dashboard["daily_top5_email_campaigns"][0]["trade_date"], "2026-07-16")
+        self.assertEqual(dashboard["daily_top5_email_campaigns"][0]["trade_date"], self.trade_date)
         self.assertEqual(dashboard["daily_top5_email_campaigns"][0]["failed"], 1)
+        self.assertEqual(dashboard["daily_top5_email_campaigns"][0]["next_retry_at"], next_retry_at)
 
         forbidden_status, _ = self.request(
             f"/api/admin/daily-top5-email-campaigns/{campaign_id}/retry", method="POST", token="user-token", payload={}
         )
+        simple_api.UPDATE_EMAIL_QUEUE_WAKE.clear()
         retry_status, retried = self.request(
             f"/api/admin/daily-top5-email-campaigns/{campaign_id}/retry", method="POST", token="admin-token", payload={}
         )
         self.assertEqual(forbidden_status, 403)
         self.assertEqual(retry_status, 200)
-        self.assertEqual(retried["email_campaign"]["pending"], 1)
+        self.assertEqual(retried["email_campaign"]["pending"], 2)
         self.assertEqual(retried["email_campaign"]["failed"], 0)
+        self.assertTrue(simple_api.UPDATE_EMAIL_QUEUE_WAKE.is_set())
 
 
 if __name__ == "__main__":

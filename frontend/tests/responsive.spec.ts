@@ -1240,30 +1240,66 @@ test.describe("independent admin access", () => {
     await expect(page.locator(".admin-user-search-meta")).toContainText("0 / 3");
   });
 
-  test("admin shows Daily TOP5 mail delivery counts and retries failures", async ({ page }) => {
+  test("admin separates automated email campaigns from update notices and retries terminal failures", async ({ page }) => {
     await installStableApiFixtures(page);
-    let retriedCampaignId = "";
+    let retriedTop5CampaignId = "";
+    let retriedAiCampaignId = "";
     await page.route("**/api/admin/daily-top5-email-campaigns/*/retry", (route) => {
-      retriedCampaignId = new URL(route.request().url()).pathname.split("/").at(-2) || "";
+      retriedTop5CampaignId = new URL(route.request().url()).pathname.split("/").at(-2) || "";
       return json(route, { email_campaign: { id: 17, status: "pending" } });
+    });
+    await page.route("**/api/admin/ai-report-email-campaigns/*/retry", (route) => {
+      retriedAiCampaignId = new URL(route.request().url()).pathname.split("/").at(-2) || "";
+      return json(route, { email_campaign: { id: 19, status: "pending" } });
     });
     await page.route("**/api/admin/dashboard**", (route) => json(route, {
       totals: { users: 2, credits: 20, feedback_pending: 0, orders_paid: 0 },
-      usage_by_day: [], new_users_by_day: [], feedback: [], orders: [], top_users: [], credit_grant_campaigns: [], update_notices: [],
+      usage_by_day: [], new_users_by_day: [], feedback: [], orders: [], managed_users: [], top_users: [], credit_grant_campaigns: [], update_notices: [],
       daily_top5_email_failed_count: 1,
+      ai_report_email_failed_count: 1,
       daily_top5_email_campaigns: [{
         id: 17, trade_date: "2026-07-16", report_id: "report-17", status: "partial_failed",
         total: 6, pending: 0, sending: 0, sent: 4, failed: 1, skipped: 1, full: 2, teaser: 4,
-        created_at: "2026-07-16T09:26:00+08:00", started_at: null, finished_at: null,
+        created_at: "2026-07-16T09:26:00+08:00", next_retry_at: null, started_at: null, finished_at: null,
       }],
+      ai_report_email_campaigns: [
+        {
+          id: 18, report_type: "market_day", run_id: "market-18", report_date: "2026-07-16", status: "pending",
+          total: 5, pending: 2, sending: 0, sent: 2, failed: 0, skipped: 1, full: 1, teaser: 3,
+          created_at: "2026-07-16T16:00:00+08:00", next_retry_at: "2026-07-16T16:30:00+08:00",
+        },
+        {
+          id: 19, report_type: "ai_research", run_id: "research-19", report_date: "2026-07-16", status: "partial_failed",
+          total: 5, pending: 0, sending: 0, sent: 3, failed: 1, skipped: 1, full: 1, teaser: 3,
+          created_at: "2026-07-16T07:30:00+08:00", next_retry_at: null,
+        },
+      ],
     }));
-    await page.goto("/admin?section=updates&days=30", { waitUntil: "domcontentloaded" });
-    await expect(page.getByRole("heading", { name: "每日 TOP5 邮件推送" })).toBeVisible();
-    await expect(page.getByText("会员完整版 2 · 普通用户摘要版 4")).toBeVisible();
-    await expect(page.getByText("成功 4 · 待发送 0 · 失败 1 · 跳过 1")).toBeVisible();
-    await page.getByRole("button", { name: "重试失败邮件" }).click();
-    await expect.poll(() => retriedCampaignId).toBe("17");
-    await expectNoGlobalHorizontalOverflow(page, "Daily TOP5 email campaigns");
+    await page.goto("/admin?section=emails&days=30", { waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("button", { name: "邮件推送" }).first()).toHaveAttribute("aria-current", "page");
+
+    const top5Panel = page.locator("article").filter({ has: page.getByRole("heading", { name: "每日 TOP5 邮件任务" }) });
+    const marketPanel = page.locator("article").filter({ has: page.getByRole("heading", { name: "市场日报邮件任务" }) });
+    const researchPanel = page.locator("article").filter({ has: page.getByRole("heading", { name: "AI 复盘邮件任务" }) });
+    await expect(top5Panel.getByText("完整版 2 · 摘要版 4")).toBeVisible();
+    await expect(top5Panel.getByText("成功 4 · 待发送 0 · 发送中 0 · 失败 1 · 跳过 1")).toBeVisible();
+    await expect(marketPanel.getByText("等待自动重试：2026-07-16 16:30")).toBeVisible();
+    await expect(marketPanel.getByRole("button", { name: "重试失败邮件" })).toHaveCount(0);
+    await expect(researchPanel.getByRole("button", { name: "重试失败邮件" })).toBeVisible();
+
+    await top5Panel.getByRole("button", { name: "重试失败邮件" }).click();
+    await expect.poll(() => retriedTop5CampaignId).toBe("17");
+    await researchPanel.getByRole("button", { name: "重试失败邮件" }).click();
+    await expect.poll(() => retriedAiCampaignId).toBe("19");
+
+    await page.getByRole("button", { name: "总览" }).first().click();
+    await page.getByRole("button", { name: /失败 TOP5 邮件/ }).click();
+    await expect(page.getByRole("heading", { name: "每日 TOP5 邮件任务" })).toBeVisible();
+    await page.getByRole("button", { name: "总览" }).first().click();
+    await page.getByRole("button", { name: /失败公告邮件/ }).click();
+    await expect(page.getByRole("heading", { name: "公告列表" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "每日 TOP5 邮件任务" })).toHaveCount(0);
+    await expectNoGlobalHorizontalOverflow(page, "automated email campaigns");
   });
 
   test("admin publishes an update notice with the restored simple form and email delivery", async ({ page }) => {
