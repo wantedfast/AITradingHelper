@@ -384,7 +384,7 @@ export default function AuctionStrengthPage() {
               {selectedDate || "等待数据"} · {hasAccess ? selectedReport?.analysis_time || "09:25 集合竞价后" : billingStatus === "pending_view" ? "确认后查看" : "等待数据"}
             </p>
             <h1>{hasAccess ? selectedReport?.summary.one_sentence || "当前日期暂无每日 TOP5 数据。" : billingStatus === "pending_view" ? `查看今天的每日 TOP5 将扣除 ${billingCost} 次使用机会` : "当前日期暂无每日 TOP5 数据"}</h1>
-            <span className="auction-buy-note">建议以买限价格买入，优先选择开盘方向向上个股</span>
+            <span className="auction-buy-note">建议选择观察开盘方向，优先选择开盘向上，买限买入。</span>
             <p>{hasAccess ? selectedReport?.global_conclusion.one_sentence_for_930 || "当日数据进入后，页面会自动刷新并展示 9:30 前执行重点。" : billingStatus === "pending_view" ? "同一交易日只扣一次；今天已经付费后再切回来会直接显示。" : "没有数据不会扣除使用次数，可以稍后刷新或选择其他日期。"}</p>
           </div>
           <div className="auction-status-strip">
