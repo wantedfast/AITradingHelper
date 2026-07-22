@@ -52,6 +52,17 @@ UPDATE_EMAIL_MAX_ATTEMPTS = 3
 UPDATE_EMAIL_RETRY_MINUTES = (1, 5, 30)
 DAILY_TOP5_EMAIL_MAX_ATTEMPTS = 8
 DAILY_TOP5_EMAIL_RETRY_MINUTES = (1, 5, 15, 30, 60, 180, 360)
+PERMANENT_EMAIL_ERROR_PREFIX = "[permanent] "
+PERMANENT_EMAIL_ERROR_MARKERS = (
+    "blacklisted by the recipient",
+    "user unknown",
+    "no such user",
+    "recipient address rejected",
+    "mailbox not found",
+    "recipient not found",
+    "account does not exist",
+    "invalid recipient",
+)
 CREDIT_PACKAGES = {
     "pack_10": {"plan_name": "10 次使用包", "credits": 10, "amount_cents": 990},
     "pack_50": {"plan_name": "50 次使用包", "credits": 50, "amount_cents": 3990},
@@ -2180,6 +2191,7 @@ def retry_daily_top5_email_campaign(db_path: Path, *, campaign_id: int) -> dict[
             SET status = 'pending', attempt_count = 0, next_attempt_at = ?,
                 last_error = NULL, updated_at = ?
             WHERE campaign_id = ? AND status = 'failed'
+              AND COALESCE(last_error, '') NOT LIKE '[permanent] %'
             """,
             (now, now, campaign_id),
         )
@@ -2309,6 +2321,20 @@ def retry_ai_report_email_campaign(db_path: Path, *, campaign_id: int) -> dict[s
         return _ai_report_email_campaign_payload(conn, campaign_id)
 
 
+def _is_permanent_email_error(value: object) -> bool:
+    message = str(value or "").strip().lower()
+    return message.startswith(PERMANENT_EMAIL_ERROR_PREFIX) or any(
+        marker in message for marker in PERMANENT_EMAIL_ERROR_MARKERS
+    )
+
+
+def _stored_email_error(exc: Exception) -> str:
+    message = str(exc)[:500]
+    if _is_permanent_email_error(message) and not message.lower().startswith(PERMANENT_EMAIL_ERROR_PREFIX):
+        return f"{PERMANENT_EMAIL_ERROR_PREFIX}{message}"[:500]
+    return message
+
+
 def recover_update_email_queue(db_path: Path) -> int:
     cutoff = (datetime.now(CN_TZ) - timedelta(minutes=10)).isoformat()
     with _connect(db_path) as conn:
@@ -2326,6 +2352,30 @@ def recover_update_email_queue(db_path: Path) -> int:
 def recover_daily_top5_email_queue(db_path: Path) -> int:
     cutoff = (datetime.now(CN_TZ) - timedelta(minutes=10)).isoformat()
     with _connect(db_path) as conn:
+        affected_campaigns: set[int] = set()
+        normalized = 0
+        for row in conn.execute(
+            """
+            SELECT id, campaign_id, last_error
+            FROM daily_top5_email_deliveries
+            WHERE status IN ('pending', 'sending') AND last_error IS NOT NULL
+            """
+        ).fetchall():
+            if not _is_permanent_email_error(row["last_error"]):
+                continue
+            error = str(row["last_error"] or "")
+            if not error.lower().startswith(PERMANENT_EMAIL_ERROR_PREFIX):
+                error = f"{PERMANENT_EMAIL_ERROR_PREFIX}{error}"[:500]
+            conn.execute(
+                """
+                UPDATE daily_top5_email_deliveries
+                SET status = 'failed', next_attempt_at = NULL, last_error = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (error, _now(), row["id"]),
+            )
+            affected_campaigns.add(int(row["campaign_id"]))
+            normalized += 1
         cursor = conn.execute(
             """
             UPDATE daily_top5_email_deliveries
@@ -2334,7 +2384,9 @@ def recover_daily_top5_email_queue(db_path: Path) -> int:
             """,
             (_now(), _now(), cutoff),
         )
-        return int(cursor.rowcount)
+        for campaign_id in affected_campaigns:
+            _refresh_daily_top5_email_campaign_status(conn, campaign_id)
+        return normalized + int(cursor.rowcount)
 
 
 def recover_ai_report_email_queue(db_path: Path) -> int:
@@ -2463,6 +2515,7 @@ def process_next_daily_top5_email(
             JOIN daily_top5_email_campaigns c ON c.id = d.campaign_id
             WHERE d.status IN ('pending', 'failed')
               AND d.attempt_count < ?
+              AND NOT (d.status = 'failed' AND COALESCE(d.last_error, '') LIKE '[permanent] %')
               AND (d.next_attempt_at IS NULL OR d.next_attempt_at <= ?)
             ORDER BY d.id
             LIMIT 1
@@ -2490,11 +2543,16 @@ def process_next_daily_top5_email(
         else:
             _send_daily_top5_email(delivery)
     except Exception as exc:
+        error = _stored_email_error(exc)
         with _connect(db_path) as conn:
-            if attempt >= DAILY_TOP5_EMAIL_MAX_ATTEMPTS:
+            if _is_permanent_email_error(error) or attempt >= DAILY_TOP5_EMAIL_MAX_ATTEMPTS:
                 conn.execute(
-                    "UPDATE daily_top5_email_deliveries SET status = 'failed', last_error = ?, updated_at = ? WHERE id = ?",
-                    (str(exc)[:500], _now(), delivery["id"]),
+                    """
+                    UPDATE daily_top5_email_deliveries
+                    SET status = 'failed', next_attempt_at = NULL, last_error = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (error, _now(), delivery["id"]),
                 )
             else:
                 delay = DAILY_TOP5_EMAIL_RETRY_MINUTES[
@@ -2507,7 +2565,7 @@ def process_next_daily_top5_email(
                     SET status = 'pending', next_attempt_at = ?, last_error = ?, updated_at = ?
                     WHERE id = ?
                     """,
-                    (next_attempt, str(exc)[:500], _now(), delivery["id"]),
+                    (next_attempt, error, _now(), delivery["id"]),
                 )
             _refresh_daily_top5_email_campaign_status(conn, int(delivery["campaign_id"]))
     else:
@@ -3933,6 +3991,23 @@ def _pending_delivery_next_retry_at(
     return str(value) if value else None
 
 
+def _permanent_email_failure_count(
+    conn: sqlite3.Connection,
+    *,
+    delivery_table: str,
+    campaign_id: int,
+) -> int:
+    row = conn.execute(
+        f"""
+        SELECT COUNT(*) AS count
+        FROM {delivery_table}
+        WHERE campaign_id = ? AND status = 'failed' AND last_error LIKE ?
+        """,
+        (campaign_id, f"{PERMANENT_EMAIL_ERROR_PREFIX}%"),
+    ).fetchone()
+    return int(row["count"] if row else 0)
+
+
 def _daily_top5_email_campaign_payload(conn: sqlite3.Connection, campaign_id: int) -> dict[str, Any]:
     row = conn.execute(
         "SELECT * FROM daily_top5_email_campaigns WHERE id = ?", (campaign_id,)
@@ -3963,6 +4038,12 @@ def _daily_top5_email_campaign_payload(conn: sqlite3.Connection, campaign_id: in
             (campaign_id,),
         ).fetchall()
     }
+    permanent_failed = _permanent_email_failure_count(
+        conn,
+        delivery_table="daily_top5_email_deliveries",
+        campaign_id=campaign_id,
+    )
+    failed = counts.get("failed", 0)
     return {
         "id": int(row["id"]),
         "trade_date": str(row["trade_date"]),
@@ -3972,7 +4053,9 @@ def _daily_top5_email_campaign_payload(conn: sqlite3.Connection, campaign_id: in
         "pending": counts.get("pending", 0),
         "sending": counts.get("sending", 0),
         "sent": counts.get("sent", 0),
-        "failed": counts.get("failed", 0),
+        "failed": failed,
+        "permanent_failed": permanent_failed,
+        "retryable_failed": max(0, failed - permanent_failed),
         "skipped": counts.get("skipped", 0),
         "full": variants.get("full", 0),
         "teaser": variants.get("teaser", 0),

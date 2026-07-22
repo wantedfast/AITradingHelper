@@ -112,6 +112,8 @@ type EmailCampaign = {
   sending: number;
   sent: number;
   failed: number;
+  permanent_failed?: number;
+  retryable_failed?: number;
   skipped: number;
 };
 
