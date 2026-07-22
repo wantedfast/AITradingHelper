@@ -408,6 +408,25 @@ for (const viewport of viewports) {
 test.describe("homepage guest acquisition", () => {
   test.use({ viewport: { width: 390, height: 844 } });
 
+  test("financial disclaimer links users to the rewarded feedback form", async ({ page }) => {
+    await page.route("**/api/**", (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path === "/api/update-notices/latest") return json(route, { notice: null });
+      if (path === "/api/auction-strength/performance") return json(route, { rows: [] });
+      return json(route, {});
+    });
+
+    await page.goto("/", { waitUntil: "domcontentloaded" });
+    const disclaimer = page.locator(".financial-disclaimer").first();
+    await disclaimer.locator("summary").click();
+    await expect(disclaimer.getByText("有效反馈被采纳后，可获赠 10 次使用次数。")).toBeVisible();
+    const feedbackLink = disclaimer.getByRole("link", { name: "提交反馈" });
+    await expect(feedbackLink).toHaveAttribute("href", "/#feedback");
+    await feedbackLink.click();
+    await expect(page).toHaveURL(/\/#feedback$/);
+    await expect(page.locator("#feedback")).toBeVisible();
+  });
+
   test("guest start action opens the combined login and registration page", async ({ page }) => {
     await page.route("**/api/update-notices/latest", (route) => json(route, { notice: null }));
     await page.route("**/api/auction-strength/performance", (route) => json(route, { rows: [] }));
