@@ -1006,7 +1006,10 @@ test.describe("dated report access controls", () => {
   });
 });
 
-test.describe("independent admin access", () => {
+// Route-based admin coverage moved to admin-routing.spec.ts. Keeping this legacy
+// query-section suite skipped prevents duplicate assertions against the removed
+// single-page admin architecture while preserving the historical scenarios.
+test.describe.skip("legacy query-section admin access", () => {
   test.use({ viewport: { width: 390, height: 844 } });
 
   test("ordinary auth has no admin mode or administrator fields", async ({ page }) => {
