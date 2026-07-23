@@ -1840,6 +1840,454 @@ def admin_dashboard(db_path: Path, days: int = 14) -> dict[str, Any]:
         }
 
 
+def list_admin_users(
+    db_path: Path,
+    *,
+    query: str = "",
+    status: str = "all",
+    page: int = 1,
+    page_size: int = 25,
+) -> dict[str, Any]:
+    normalized_status = _normalize_admin_choice(status, allowed={"all", "active", "disabled"})
+    normalized_query = _normalize_admin_query(query)
+    page = _normalize_admin_page(page)
+    page_size = _normalize_admin_page_size(page_size, default=25, maximum=100)
+    where = ["u.role = 'user'"]
+    params: list[Any] = []
+    if normalized_status != "all":
+        where.append("u.status = ?")
+        params.append(normalized_status)
+    if normalized_query:
+        like = _admin_like(normalized_query)
+        where.append(
+            "("
+            "LOWER(COALESCE(u.username, '')) LIKE ? OR "
+            "LOWER(COALESCE(u.email, '')) LIKE ? OR "
+            "LOWER(COALESCE(u.phone, '')) LIKE ? OR "
+            "CAST(u.id AS TEXT) = ?"
+            ")"
+        )
+        params.extend([like, like, like, normalized_query])
+    where_sql = " AND ".join(where)
+    offset = (page - 1) * page_size
+    with _connect(db_path) as conn:
+        total = int(
+            conn.execute(f"SELECT COUNT(*) AS count FROM users u WHERE {where_sql}", tuple(params)).fetchone()["count"]
+        )
+        rows = conn.execute(
+            f"""
+            SELECT u.id, u.phone, u.username, u.email, u.role, u.status, u.created_at, u.last_login_at,
+                   COALESCE(usage.used_count, 0) AS used_count,
+                   COALESCE(ledger.credits, 0) AS credits
+            FROM users u
+            LEFT JOIN (
+                SELECT user_id, COALESCE(SUM(credits_spent), 0) AS used_count
+                FROM usage_events
+                GROUP BY user_id
+            ) usage ON usage.user_id = u.id
+            LEFT JOIN (
+                SELECT user_id, COALESCE(SUM(delta), 0) AS credits
+                FROM credit_ledger
+                GROUP BY user_id
+            ) ledger ON ledger.user_id = u.id
+            WHERE {where_sql}
+            ORDER BY u.created_at DESC, u.id DESC
+            LIMIT ? OFFSET ?
+            """,
+            (*params, page_size, offset),
+        ).fetchall()
+        campaigns = [
+            _credit_grant_campaign_payload(row)
+            for row in conn.execute(
+                "SELECT * FROM credit_grant_campaigns ORDER BY id DESC LIMIT 5"
+            ).fetchall()
+        ]
+        return {
+            **_admin_page_payload(page=page, page_size=page_size, total=total),
+            "items": [dict(row) for row in rows],
+            "campaigns": campaigns,
+            "filters": {"query": normalized_query, "status": normalized_status},
+        }
+
+
+def list_admin_orders(
+    db_path: Path,
+    *,
+    query: str = "",
+    status: str = "all",
+    page: int = 1,
+    page_size: int = 20,
+) -> dict[str, Any]:
+    normalized_status = _normalize_admin_choice(status, allowed={"all", "pending", "submitted", "paid", "rejected"})
+    normalized_query = _normalize_admin_query(query)
+    page = _normalize_admin_page(page)
+    page_size = _normalize_admin_page_size(page_size, default=20, maximum=100)
+    where = ["1 = 1"]
+    params: list[Any] = []
+    if normalized_status != "all":
+        where.append("o.status = ?")
+        params.append(normalized_status)
+    if normalized_query:
+        like = _admin_like(normalized_query)
+        where.append(
+            "("
+            "LOWER(COALESCE(o.order_no, '')) LIKE ? OR "
+            "LOWER(COALESCE(o.plan_name, '')) LIKE ? OR "
+            "LOWER(COALESCE(u.username, '')) LIKE ? OR "
+            "LOWER(COALESCE(u.email, '')) LIKE ? OR "
+            "LOWER(COALESCE(u.phone, '')) LIKE ?"
+            ")"
+        )
+        params.extend([like, like, like, like, like])
+    where_sql = " AND ".join(where)
+    offset = (page - 1) * page_size
+    with _connect(db_path) as conn:
+        total = int(
+            conn.execute(
+                f"""
+                SELECT COUNT(*) AS count
+                FROM orders o
+                JOIN users u ON u.id = o.user_id
+                WHERE {where_sql}
+                """,
+                tuple(params),
+            ).fetchone()["count"]
+        )
+        rows = conn.execute(
+            f"""
+            SELECT o.*, u.phone, u.username, u.email
+            FROM orders o
+            JOIN users u ON u.id = o.user_id
+            WHERE {where_sql}
+            ORDER BY o.created_at DESC, o.id DESC
+            LIMIT ? OFFSET ?
+            """,
+            (*params, page_size, offset),
+        ).fetchall()
+        return {
+            **_admin_page_payload(page=page, page_size=page_size, total=total),
+            "items": [
+                _order_payload(row)
+                | {"phone": row["phone"], "username": row["username"], "email": row["email"]}
+                for row in rows
+            ],
+            "filters": {"query": normalized_query, "status": normalized_status},
+        }
+
+
+def list_admin_feedback(
+    db_path: Path,
+    *,
+    query: str = "",
+    status: str = "all",
+    page: int = 1,
+    page_size: int = 20,
+) -> dict[str, Any]:
+    normalized_status = _normalize_admin_choice(status, allowed={"all", "pending", "accepted", "rejected"})
+    normalized_query = _normalize_admin_query(query)
+    page = _normalize_admin_page(page)
+    page_size = _normalize_admin_page_size(page_size, default=20, maximum=100)
+    where = ["1 = 1"]
+    params: list[Any] = []
+    if normalized_status != "all":
+        where.append("f.status = ?")
+        params.append(normalized_status)
+    if normalized_query:
+        like = _admin_like(normalized_query)
+        where.append(
+            "("
+            "LOWER(COALESCE(f.category, '')) LIKE ? OR "
+            "LOWER(COALESCE(f.content, '')) LIKE ? OR "
+            "LOWER(COALESCE(f.contact, '')) LIKE ? OR "
+            "LOWER(COALESCE(u.phone, '')) LIKE ?"
+            ")"
+        )
+        params.extend([like, like, like, like])
+    where_sql = " AND ".join(where)
+    offset = (page - 1) * page_size
+    with _connect(db_path) as conn:
+        total = int(
+            conn.execute(
+                f"""
+                SELECT COUNT(*) AS count
+                FROM feedback f
+                JOIN users u ON u.id = f.user_id
+                WHERE {where_sql}
+                """,
+                tuple(params),
+            ).fetchone()["count"]
+        )
+        rows = conn.execute(
+            f"""
+            SELECT f.*, u.phone
+            FROM feedback f
+            JOIN users u ON u.id = f.user_id
+            WHERE {where_sql}
+            ORDER BY f.created_at DESC, f.id DESC
+            LIMIT ? OFFSET ?
+            """,
+            (*params, page_size, offset),
+        ).fetchall()
+        return {
+            **_admin_page_payload(page=page, page_size=page_size, total=total),
+            "items": [_feedback_payload(row) for row in rows],
+            "filters": {"query": normalized_query, "status": normalized_status},
+        }
+
+
+def list_admin_update_notices(
+    db_path: Path,
+    *,
+    query: str = "",
+    status: str = "all",
+    page: int = 1,
+    page_size: int = 12,
+) -> dict[str, Any]:
+    normalized_status = _normalize_admin_choice(status, allowed={"all", "draft", "published", "archived"})
+    normalized_query = _normalize_admin_query(query)
+    page = _normalize_admin_page(page)
+    page_size = _normalize_admin_page_size(page_size, default=12, maximum=100)
+    where = ["1 = 1"]
+    params: list[Any] = []
+    if normalized_status != "all":
+        where.append("status = ?")
+        params.append(normalized_status)
+    if normalized_query:
+        like = _admin_like(normalized_query)
+        where.append(
+            "("
+            "LOWER(COALESCE(title, '')) LIKE ? OR "
+            "LOWER(COALESCE(version, '')) LIKE ? OR "
+            "LOWER(COALESCE(summary, '')) LIKE ?"
+            ")"
+        )
+        params.extend([like, like, like])
+    where_sql = " AND ".join(where)
+    offset = (page - 1) * page_size
+    with _connect(db_path) as conn:
+        total = int(
+            conn.execute(
+                f"SELECT COUNT(*) AS count FROM update_notices WHERE {where_sql}",
+                tuple(params),
+            ).fetchone()["count"]
+        )
+        rows = conn.execute(
+            f"""
+            SELECT *
+            FROM update_notices
+            WHERE {where_sql}
+            ORDER BY COALESCE(published_at, updated_at, created_at) DESC, id DESC
+            LIMIT ? OFFSET ?
+            """,
+            (*params, page_size, offset),
+        ).fetchall()
+        return {
+            **_admin_page_payload(page=page, page_size=page_size, total=total),
+            "items": [_update_notice_payload(row, conn=conn) for row in rows],
+            "filters": {"query": normalized_query, "status": normalized_status},
+        }
+
+
+def list_admin_email_campaigns(
+    db_path: Path,
+    *,
+    kind: str = "all",
+    status: str = "all",
+    date_from: str = "",
+    date_to: str = "",
+    page: int = 1,
+    page_size: int = 20,
+) -> dict[str, Any]:
+    normalized_kind = _normalize_admin_choice(
+        kind,
+        allowed={"all", "update_notice", "daily_top5", "market_day", "ai_research"},
+    )
+    normalized_status = _normalize_admin_choice(
+        status,
+        allowed={"all", "pending", "sending", "completed", "partial_failed", "failed"},
+    )
+    normalized_date_from = _normalize_admin_date(date_from)
+    normalized_date_to = _normalize_admin_date(date_to)
+    page = _normalize_admin_page(page)
+    page_size = _normalize_admin_page_size(page_size, default=20, maximum=100)
+    with _connect(db_path) as conn:
+        items: list[dict[str, Any]] = []
+        for row in conn.execute(
+            """
+            SELECT c.id, n.title, n.version
+            FROM update_email_campaigns c
+            JOIN update_notices n ON n.id = c.notice_id
+            ORDER BY c.created_at DESC, c.id DESC
+            """
+        ).fetchall():
+            payload = _email_campaign_payload(conn, int(row["id"]))
+            items.append(
+                {
+                    **payload,
+                    "kind": "update_notice",
+                    "title": str(row["title"] or "更新公告"),
+                    "summary": str(row["version"] or ""),
+                    "retry_type": "update_notice",
+                }
+            )
+        for row in conn.execute(
+            "SELECT id FROM daily_top5_email_campaigns ORDER BY created_at DESC, id DESC"
+        ).fetchall():
+            payload = _daily_top5_email_campaign_payload(conn, int(row["id"]))
+            items.append(
+                {
+                    **payload,
+                    "kind": "daily_top5",
+                    "title": f"{payload['trade_date']} · 每日 TOP5",
+                    "summary": f"完整版 {payload['full']} · 摘要版 {payload['teaser']}",
+                    "retry_type": "daily_top5",
+                }
+            )
+        for row in conn.execute(
+            "SELECT id FROM ai_report_email_campaigns ORDER BY created_at DESC, id DESC"
+        ).fetchall():
+            payload = _ai_report_email_campaign_payload(conn, int(row["id"]))
+            kind_value = str(payload["report_type"] or "")
+            items.append(
+                {
+                    **payload,
+                    "kind": kind_value,
+                    "title": (
+                        f"{payload['report_date']} · 市场日报"
+                        if kind_value == "market_day"
+                        else f"{payload['report_date']} · AI 复盘"
+                    ),
+                    "summary": f"完整版 {payload['full']} · 摘要版 {payload['teaser']}",
+                    "retry_type": "ai_report",
+                }
+            )
+    filtered = [
+        item
+        for item in items
+        if (normalized_kind == "all" or str(item.get("kind") or "") == normalized_kind)
+        and (
+            normalized_status == "all"
+            or str(item.get("status") or "") == normalized_status
+            or (normalized_status == "failed" and str(item.get("status") or "") == "partial_failed")
+        )
+        and (not normalized_date_from or str(item.get("created_at") or "")[:10] >= normalized_date_from)
+        and (not normalized_date_to or str(item.get("created_at") or "")[:10] <= normalized_date_to)
+    ]
+    filtered.sort(key=lambda item: (str(item.get("created_at") or ""), int(item.get("id") or 0)), reverse=True)
+    total = len(filtered)
+    offset = (page - 1) * page_size
+    return {
+        **_admin_page_payload(page=page, page_size=page_size, total=total),
+        "items": filtered[offset: offset + page_size],
+        "filters": {
+            "kind": normalized_kind,
+            "status": normalized_status,
+            "date_from": normalized_date_from,
+            "date_to": normalized_date_to,
+        },
+    }
+
+
+def get_admin_email_campaign_detail(db_path: Path, *, kind: str, campaign_id: int) -> dict[str, Any]:
+    normalized_kind = _normalize_admin_choice(
+        kind,
+        allowed={"update_notice", "daily_top5", "market_day", "ai_research"},
+    )
+    if campaign_id <= 0:
+        raise AuthError("邮件任务不存在", 404)
+    if normalized_kind == "update_notice":
+        campaign_table = "update_email_campaigns"
+        delivery_table = "update_email_deliveries"
+        payload_builder = _email_campaign_payload
+    elif normalized_kind == "daily_top5":
+        campaign_table = "daily_top5_email_campaigns"
+        delivery_table = "daily_top5_email_deliveries"
+        payload_builder = _daily_top5_email_campaign_payload
+    else:
+        campaign_table = "ai_report_email_campaigns"
+        delivery_table = "ai_report_email_deliveries"
+        payload_builder = _ai_report_email_campaign_payload
+
+    with _connect(db_path) as conn:
+        campaign_row = conn.execute(
+            f"SELECT id FROM {campaign_table} WHERE id = ?",
+            (campaign_id,),
+        ).fetchone()
+        if not campaign_row:
+            raise AuthError("邮件任务不存在", 404)
+        campaign = payload_builder(conn, campaign_id)
+        if normalized_kind in {"market_day", "ai_research"} and str(campaign.get("report_type") or "") != normalized_kind:
+            raise AuthError("邮件任务不存在", 404)
+        deliveries = [
+            {
+                "email": str(row["email"] or ""),
+                "status": str(row["status"] or ""),
+                "attempt_count": int(row["attempt_count"] or 0),
+                "last_error": str(row["last_error"] or ""),
+                "next_attempt_at": row["next_attempt_at"],
+                "updated_at": row["updated_at"],
+            }
+            for row in conn.execute(
+                f"""
+                SELECT email, status, attempt_count, last_error, next_attempt_at, updated_at
+                FROM {delivery_table}
+                WHERE campaign_id = ? AND status = 'failed'
+                ORDER BY updated_at DESC, id DESC
+                """,
+                (campaign_id,),
+            ).fetchall()
+        ]
+        return {
+            "kind": normalized_kind,
+            "campaign": campaign,
+            "failed_deliveries": deliveries,
+        }
+
+
+def _admin_page_payload(*, page: int, page_size: int, total: int) -> dict[str, int]:
+    total_pages = max(1, (int(total) + page_size - 1) // page_size)
+    return {
+        "page": page,
+        "page_size": page_size,
+        "total": int(total),
+        "total_pages": total_pages,
+    }
+
+
+def _normalize_admin_page(value: object) -> int:
+    try:
+        page = int(value or 1)
+    except (TypeError, ValueError):
+        page = 1
+    return max(1, page)
+
+
+def _normalize_admin_page_size(value: object, *, default: int, maximum: int) -> int:
+    try:
+        page_size = int(value or default)
+    except (TypeError, ValueError):
+        page_size = default
+    return max(1, min(page_size, maximum))
+
+
+def _normalize_admin_choice(value: object, *, allowed: set[str]) -> str:
+    normalized = str(value or "").strip().lower() or "all"
+    return normalized if normalized in allowed else "all"
+
+
+def _normalize_admin_query(value: object) -> str:
+    return str(value or "").strip().lower()[:120]
+
+
+def _admin_like(value: str) -> str:
+    return f"%{value.replace('%', '').replace('_', '')}%"
+
+
+def _normalize_admin_date(value: object) -> str:
+    text = str(value or "").strip()
+    return text if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text) else ""
+
+
 def latest_published_update_notice(db_path: Path) -> dict[str, Any] | None:
     with _connect(db_path) as conn:
         row = conn.execute(

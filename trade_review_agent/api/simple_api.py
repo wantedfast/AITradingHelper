@@ -28,6 +28,12 @@ from trade_review_agent.auth_system import (
     AuthError,
     acknowledge_update_notice,
     admin_dashboard,
+    get_admin_email_campaign_detail,
+    list_admin_email_campaigns,
+    list_admin_feedback,
+    list_admin_orders,
+    list_admin_update_notices,
+    list_admin_users,
     bind_user_email,
     confirm_credit_order,
     confirm_membership_order,
@@ -183,6 +189,15 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             if path == "/api/admin/dashboard":
                 self._admin_dashboard()
                 return
+            if path == "/api/admin/users":
+                self._admin_users()
+                return
+            if path == "/api/admin/orders":
+                self._admin_orders()
+                return
+            if path == "/api/admin/feedback":
+                self._admin_feedback()
+                return
             if path == "/api/public/membership/plans":
                 self._public_membership_plans()
                 return
@@ -197,6 +212,12 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/admin/update-notices":
                 self._admin_update_notices()
+                return
+            if path == "/api/admin/emails":
+                self._admin_emails()
+                return
+            if re.fullmatch(r"/api/admin/emails/(update_notice|daily_top5|market_day|ai_research)/\d+", path):
+                self._admin_email_detail(path)
                 return
             if path == "/api/pay/packages":
                 self._pay_packages()
@@ -1255,13 +1276,44 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
 
     def _admin_dashboard(self) -> None:
         self._require_admin()
-        query = urlparse(self.path).query
-        days = 14
-        for part in query.split("&"):
-            key, _, value = part.partition("=")
-            if key == "days" and value.isdigit():
-                days = int(value)
+        days = self._query_int("days", default=14)
         self._json(admin_dashboard(AUTH_DB, days=days))
+
+    def _admin_users(self) -> None:
+        self._require_admin()
+        self._json(
+            list_admin_users(
+                AUTH_DB,
+                query=self._query_value("q"),
+                status=self._query_value("status") or "all",
+                page=self._query_int("page", default=1),
+                page_size=self._query_int("page_size", default=25),
+            )
+        )
+
+    def _admin_orders(self) -> None:
+        self._require_admin()
+        self._json(
+            list_admin_orders(
+                AUTH_DB,
+                query=self._query_value("q"),
+                status=self._query_value("status") or "all",
+                page=self._query_int("page", default=1),
+                page_size=self._query_int("page_size", default=20),
+            )
+        )
+
+    def _admin_feedback(self) -> None:
+        self._require_admin()
+        self._json(
+            list_admin_feedback(
+                AUTH_DB,
+                query=self._query_value("q"),
+                status=self._query_value("status") or "all",
+                page=self._query_int("page", default=1),
+                page_size=self._query_int("page_size", default=20),
+            )
+        )
 
     def _latest_update_notice(self) -> None:
         self._require_user()
@@ -1269,7 +1321,40 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
 
     def _admin_update_notices(self) -> None:
         self._require_admin()
-        self._json({"notices": list_update_notices(AUTH_DB)})
+        self._json(
+            list_admin_update_notices(
+                AUTH_DB,
+                query=self._query_value("q"),
+                status=self._query_value("status") or "all",
+                page=self._query_int("page", default=1),
+                page_size=self._query_int("page_size", default=12),
+            )
+        )
+
+    def _admin_emails(self) -> None:
+        self._require_admin()
+        self._json(
+            list_admin_email_campaigns(
+                AUTH_DB,
+                kind=self._query_value("kind") or "all",
+                status=self._query_value("status") or "all",
+                date_from=self._query_value("date_from"),
+                date_to=self._query_value("date_to"),
+                page=self._query_int("page", default=1),
+                page_size=self._query_int("page_size", default=20),
+            )
+        )
+
+    def _admin_email_detail(self, path: str) -> None:
+        self._require_admin()
+        parts = path.split("/")
+        self._json(
+            get_admin_email_campaign_detail(
+                AUTH_DB,
+                kind=parts[4],
+                campaign_id=int(parts[5]),
+            )
+        )
 
     def _admin_update_notice_action(self, path: str) -> None:
         admin = self._require_admin()
@@ -1973,6 +2058,19 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
 
     def _request_path(self) -> str:
         return urlparse(self.path).path
+
+    def _query_value(self, key: str) -> str:
+        values = parse_qs(urlparse(self.path).query, keep_blank_values=True).get(key, [])
+        return values[-1].strip() if values else ""
+
+    def _query_int(self, key: str, *, default: int) -> int:
+        value = self._query_value(key)
+        if not value:
+            return default
+        try:
+            return int(value)
+        except ValueError:
+            return default
 
     def _json(self, payload: dict, status: int = 200, *, cache_control: str = "") -> None:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")

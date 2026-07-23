@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { BarChart3, CreditCard, Mail, Megaphone, MessageSquare, Users } from "lucide-react";
 
 export type AdminSection = "overview" | "users" | "orders" | "feedback" | "updates" | "emails";
@@ -11,20 +12,27 @@ export const adminSections: Array<{ key: AdminSection; label: string; icon: type
   { key: "emails", label: "邮件推送", icon: Mail },
 ];
 
-export function AdminNavigation({ active, onChange }: { active: AdminSection; onChange: (section: AdminSection) => void }) {
+export function adminSectionPath(section: AdminSection) {
+  return `/admin/${section}`;
+}
+
+export function isAdminSection(value: string): value is AdminSection {
+  return adminSections.some((item) => item.key === value);
+}
+
+export function AdminNavigation({ active }: { active: AdminSection }) {
   return (
     <nav className="admin-section-nav" aria-label="管理台分区">
       {adminSections.map(({ key, label, icon: Icon }) => (
-        <button
+        <Link
           key={key}
-          type="button"
           aria-current={active === key ? "page" : undefined}
           className={active === key ? "active" : ""}
-          onClick={() => onChange(key)}
+          href={adminSectionPath(key)}
         >
           <Icon aria-hidden="true" />
           <span>{label}</span>
-        </button>
+        </Link>
       ))}
     </nav>
   );
