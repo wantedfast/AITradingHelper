@@ -1007,8 +1007,8 @@ def public_membership_catalog(*, include_payment_assets: bool = False) -> dict[s
     }
 
 
-def public_credit_catalog() -> dict[str, Any]:
-    return {
+def public_credit_catalog(*, include_payment_assets: bool = False) -> dict[str, Any]:
+    catalog = {
         "checkout": credit_checkout_config(),
         "pricing": {
             "unit_price_cents": 100,
@@ -1021,6 +1021,12 @@ def public_credit_catalog() -> dict[str, Any]:
             "support_text": "人工核款，确认后到账；退款、发票请联系人工客服处理。",
         },
     }
+    if include_payment_assets:
+        catalog["payment_assets"] = {
+            "alipay_qr_url": _payment_qr_data_uri("PAYMENT_ALIPAY_QR_FILE", "alipay-qr.jpg"),
+            "wechat_qr_url": _payment_qr_data_uri("PAYMENT_WECHAT_QR_FILE", "wechat-qr.jpg"),
+        }
+    return catalog
 
 
 def _normalize_credit_purchase_quantity(credits: int) -> int:

@@ -51,6 +51,11 @@ const creditCatalog = {
   },
 };
 
+const creditPaymentAssets = {
+  alipay_qr_url: "/pay/alipay-qr.jpg",
+  wechat_qr_url: "/pay/wechat-qr.jpg",
+};
+
 const fixtureUser = {
   id: 1,
   phone: "13800000000",
@@ -942,6 +947,37 @@ test.describe("public pricing and mandatory notices", () => {
     const authUrl = new URL(page.url());
     expect(authUrl.searchParams.get("credits")).toBe("12");
     expect(decodeURIComponent(authUrl.searchParams.get("redirect") || "")).toContain("/credits?credits=12");
+  });
+
+  test("authenticated credits order renders the configured payment QR codes", async ({ page }) => {
+    await page.addInitScript((user) => {
+      window.localStorage.setItem("ai_trade_token", "credits-order-token");
+      window.localStorage.setItem("ai_trade_user", JSON.stringify(user));
+    }, fixtureUser);
+    await page.route("**/api/**", async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path === "/api/update-notices/pending") return json(route, { notices: [] });
+      if (path === "/api/public/credits/catalog") return json(route, creditCatalog);
+      if (path === "/api/pay/credits/orders/latest") return json(route, {
+        ...creditCatalog,
+        payment_assets: creditPaymentAssets,
+        user: fixtureUser,
+        order: {
+          id: 91,
+          order_no: "CREDIT-PENDING",
+          plan_name: "12 次使用",
+          credits: 12,
+          amount_cents: 1200,
+          status: "pending",
+        },
+      });
+      if (path === "/api/orders/91") return json(route, { order: null });
+      return json(route, {});
+    });
+    await page.goto("/credits", { waitUntil: "domcontentloaded" });
+    await expect(page.getByAltText("支付宝收款二维码")).toBeVisible();
+    await expect(page.getByAltText("微信收款二维码")).toBeVisible();
+    await expect(page.getByText("收款码暂未配置")).toHaveCount(0);
   });
 });
 

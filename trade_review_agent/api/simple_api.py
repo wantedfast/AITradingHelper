@@ -1106,7 +1106,7 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
         user = self._require_user()
         order = latest_credit_order(AUTH_DB, user_id=int(user["id"]))
         refreshed = get_current_user(AUTH_DB, self._bearer_token())
-        self._json({"order": order, "user": refreshed, **public_credit_catalog()})
+        self._json({"order": order, "user": refreshed, **public_credit_catalog(include_payment_assets=True)})
 
     def _latest_membership_order(self) -> None:
         user = self._require_user()
@@ -1134,7 +1134,7 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             credits=payload.get("credits"),
         )
         refreshed = get_current_user(AUTH_DB, self._bearer_token())
-        self._json({"order": order, "user": refreshed, **public_credit_catalog()})
+        self._json({"order": order, "user": refreshed, **public_credit_catalog(include_payment_assets=True)})
 
     def _submit_credit_payment(self, path: str) -> None:
         user = self._require_user()

@@ -25,6 +25,7 @@ from trade_review_agent.auth_system import (
     list_pending_update_notices,
     list_update_notices,
     publish_update_notice,
+    public_credit_catalog,
     public_membership_catalog,
     reject_membership_order,
     unpublish_update_notice,
@@ -167,6 +168,13 @@ class ProductScopeTest(unittest.TestCase):
         self.assertTrue(private["plans"][0]["alipay_qr_url"].startswith("data:image/"))
         self.assertTrue(private["plans"][0]["wechat_qr_url"].startswith("data:image/"))
         self.assertNotIn("/pay/", json.dumps(private))
+
+        public_credits = public_credit_catalog()
+        private_credits = public_credit_catalog(include_payment_assets=True)
+        self.assertNotIn("payment_assets", public_credits)
+        self.assertTrue(private_credits["payment_assets"]["alipay_qr_url"].startswith("data:image/"))
+        self.assertTrue(private_credits["payment_assets"]["wechat_qr_url"].startswith("data:image/"))
+        self.assertNotIn("/pay/", json.dumps(private_credits))
 
 
 class PublicBoundaryApiTest(unittest.TestCase):
