@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useMemo, useState } from "react";
@@ -41,10 +42,16 @@ type CreditPricing = {
   currency: string;
 };
 
+type CreditPaymentAssets = {
+  alipay_qr_url?: string;
+  wechat_qr_url?: string;
+};
+
 export type CreditCatalogPayload = {
   checkout: CheckoutInfo;
   pricing: CreditPricing;
   rules: CreditRules;
+  payment_assets?: CreditPaymentAssets;
   order?: CreditOrder | null;
   user?: UserProfile | null;
 };
@@ -83,6 +90,7 @@ function CreditsPageContent({ initialCatalog }: { initialCatalog: CreditCatalogP
   });
   const [pricing, setPricing] = useState<CreditPricing>(initialCatalog?.pricing || { unit_price_cents: 100, currency: "CNY" });
   const [rules, setRules] = useState<CreditRules>(initialCatalog?.rules || { min_credits: 1, max_credits: 10000, price_text: "1 元 / 次", support_text: "人工核款，确认后到账；退款、发票请联系人工客服处理。" });
+  const [paymentAssets, setPaymentAssets] = useState<CreditPaymentAssets>(initialCatalog?.payment_assets || {});
   const [creditsInput, setCreditsInput] = useState(normalizeCreditsInput(requestedCredits, initialCatalog?.rules?.min_credits || 5));
   const [invalidRequestedCredits, setInvalidRequestedCredits] = useState(Boolean(requestedCredits) && !isPositiveInteger(requestedCredits));
   const [order, setOrder] = useState<CreditOrder | null>(null);
@@ -135,6 +143,7 @@ function CreditsPageContent({ initialCatalog }: { initialCatalog: CreditCatalogP
       setCheckout(payload.checkout);
       setPricing(payload.pricing);
       setRules(payload.rules);
+      setPaymentAssets(payload.payment_assets || {});
       const invalidCredits = Boolean(requestedCredits) && !isPositiveInteger(requestedCredits);
       setInvalidRequestedCredits(invalidCredits);
       if (invalidCredits) setMessage("购买次数必须是正整数，请重新输入。");
@@ -143,9 +152,11 @@ function CreditsPageContent({ initialCatalog }: { initialCatalog: CreditCatalogP
         setCheckout(latest.checkout);
         setPricing(latest.pricing);
         setRules(latest.rules);
+        setPaymentAssets(latest.payment_assets || {});
         setOrder(latest.order || null);
         if (latest.user) storeUser(latest.user);
       } else {
+        setPaymentAssets({});
         setOrder(null);
       }
     } catch (error) {
@@ -174,6 +185,7 @@ function CreditsPageContent({ initialCatalog }: { initialCatalog: CreditCatalogP
       setCheckout(payload.checkout);
       setPricing(payload.pricing);
       setRules(payload.rules);
+      setPaymentAssets(payload.payment_assets || {});
       if (payload.user) storeUser(payload.user);
       setMessage("订单已创建。付款后提交付款信息，系统会通知管理员人工核款。");
     } catch (error) {
@@ -313,6 +325,10 @@ function CreditsPageContent({ initialCatalog }: { initialCatalog: CreditCatalogP
 
             {activeOrder ? (
               <>
+                <div className="billing-qr-row">
+                  <QrBox title="支付宝" src={paymentAssets.alipay_qr_url || ""} />
+                  <QrBox title="微信" src={paymentAssets.wechat_qr_url || ""} />
+                </div>
                 <div className="billing-order">
                   <span>订单号</span>
                   <b>{activeOrder.order_no}</b>
@@ -411,6 +427,15 @@ function isPositiveInteger(raw: string) {
 function parsePositiveInteger(raw: string) {
   if (!isPositiveInteger(raw)) return 0;
   return Number(raw);
+}
+
+function QrBox({ title, src }: { title: string; src: string }) {
+  return (
+    <div className="billing-qr">
+      {src ? <Image src={src} alt={`${title}收款二维码`} width={180} height={180} unoptimized /> : <span>收款码暂未配置</span>}
+      <code>{title}收款码</code>
+    </div>
+  );
 }
 
 function orderStatusText(status: string) {

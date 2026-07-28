@@ -527,6 +527,29 @@ class CreditPurchaseApiTest(unittest.TestCase):
             ledger_count = int(conn.execute("SELECT COUNT(*) FROM credit_ledger").fetchone()[0])
         self.assertEqual(ledger_count, 0)
 
+    def test_credit_checkout_api_keeps_qr_assets_private_to_authenticated_order_endpoints(self) -> None:
+        public_status, public_payload = self.request("/api/public/credits/catalog", method="GET", payload=None)
+        self.assertEqual(public_status, 200)
+        self.assertNotIn("payment_assets", public_payload)
+
+        latest_status, latest_payload = self.request("/api/pay/credits/orders/latest", method="GET", token="api-user-token", payload=None)
+        self.assertEqual(latest_status, 200)
+        self.assertIn("payment_assets", latest_payload)
+        self.assertTrue(latest_payload["payment_assets"]["alipay_qr_url"].startswith("data:image/"))
+        self.assertTrue(latest_payload["payment_assets"]["wechat_qr_url"].startswith("data:image/"))
+        self.assertIsNone(latest_payload["order"])
+
+        create_status, create_payload = self.request(
+            "/api/pay/credits/orders",
+            token="api-user-token",
+            payload={"credits": 5},
+        )
+        self.assertEqual(create_status, 200)
+        self.assertEqual(create_payload["order"]["credits"], 5)
+        self.assertIn("payment_assets", create_payload)
+        self.assertTrue(create_payload["payment_assets"]["alipay_qr_url"].startswith("data:image/"))
+        self.assertTrue(create_payload["payment_assets"]["wechat_qr_url"].startswith("data:image/"))
+
     def test_admin_adjustment_requires_request_id_and_rejects_admin_target(self) -> None:
         missing_status, _ = self.request(
             f"/api/admin/users/{self.user_id}/credits",
