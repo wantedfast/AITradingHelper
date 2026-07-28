@@ -1192,12 +1192,17 @@
   background: transparent;
 }
 
-.account-invite-hint {
+.account-invite-hint,
+.account-email-delivery-hint {
   margin-top: -2px;
   color: rgba(245, 215, 122, 0.82);
   font-size: 13px;
   font-weight: 800;
   line-height: 1.55;
+}
+
+.account-email-delivery-hint {
+  margin-top: -8px;
 }
 
 .account-code-row {

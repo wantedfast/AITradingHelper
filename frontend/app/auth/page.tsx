@@ -271,6 +271,9 @@ function AuthContent() {
                   sending={sendingEmail}
                   countdown={emailCountdown}
                 />
+                <small className="account-email-delivery-hint">
+                  QQ 邮箱验证码可能被归入垃圾邮件，如未收到请检查垃圾箱。
+                </small>
                 <PasswordField value={password} onChange={setPassword} placeholder="至少 8 位密码" />
               </>
             )}
