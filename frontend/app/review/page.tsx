@@ -11,7 +11,6 @@ import {
   CircleHelp,
   ClipboardCheck,
   CalendarClock,
-  FileText,
   FileUp,
   Globe2,
   LineChart,
@@ -244,7 +243,7 @@ export default function ReviewPage() {
   const [agentSummaryData, setAgentSummaryData] = useState<AgentSummaryData | null>(null);
   const [agentSummaryLoading, setAgentSummaryLoading] = useState(false);
   const [reportCount, setReportCount] = useState(0);
-  const [researchModelTier, setResearchModelTier] = useState<"standard" | "better">("standard");
+  const researchModelTier = "standard";
   const [researchModelLabel, setResearchModelLabel] = useState(STANDARD_REPORT_LABEL);
   const [generationStage, setGenerationStage] = useState("idle");
   const [errorText, setErrorText] = useState("");
@@ -362,7 +361,7 @@ export default function ReviewPage() {
   }
 
   function selectedResearchModelLabel() {
-    return researchModelTier === "better" ? BETTER_REPORT_LABEL : STANDARD_REPORT_LABEL;
+    return STANDARD_REPORT_LABEL;
   }
 
   function normalizePayloadTier(value?: string) {
@@ -727,32 +726,6 @@ export default function ReviewPage() {
             </div>
             {(
               <>
-                <div className="report-mode-toggle" aria-label="报告详细程度">
-                  <button
-                    className={researchModelTier === "standard" ? "active" : ""}
-                    type="button"
-                    onClick={() => setResearchModelTier("standard")}
-                    disabled={generating}
-                  >
-                    <FileText />
-                    <span>
-                      <b>{copy.modeFast}</b>
-                      <small>{copy.modeFastDesc}</small>
-                    </span>
-                  </button>
-                  <button
-                    className={researchModelTier === "better" ? "active" : ""}
-                    type="button"
-                    onClick={() => setResearchModelTier("better")}
-                    disabled={generating}
-                  >
-                    <ClipboardCheck />
-                    <span>
-                      <b>{copy.modeDetail}</b>
-                      <small>{copy.modeDetailDesc}</small>
-                    </span>
-                  </button>
-                </div>
                 <div className="upload-action-row">
                   <button className="primary-gold-action" type="button" onClick={generateReport} disabled={generating}>
                     {generating ? <Loader2 className="spin-icon" /> : <Upload />}

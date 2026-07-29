@@ -144,9 +144,8 @@ DATED_REPORT_RETENTION_DAYS = 5
 _dated_report_retention_lock = threading.RLock()
 
 def normalize_research_model_tier(value: object = None) -> str:
-    text = str(value or "").strip().lower()
-    if text in {"1", "true", "yes", "on", "better", "premium", "gpt55", "gpt-5.5"}:
-        return "better"
+    # The detailed report tier is disabled. Always normalize requests from
+    # current and legacy clients to the supported standard report pipeline.
     return "standard"
 
 
