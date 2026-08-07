@@ -94,6 +94,41 @@ class UpdateNoticeTest(unittest.TestCase):
             self.assertEqual(updated["items"], ["One", "Two"])
             self.assertEqual(notices[0]["id"], notice["id"])
 
+    def test_long_markdown_notice_is_stored_without_silent_truncation(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "auth.sqlite"
+            admin_id = self._create_admin(db_path)
+            markdown = "# 每日公告\n\n" + ("很长的正文内容。" * 3500)
+
+            notice = create_update_notice(
+                db_path,
+                title="Markdown 公告",
+                version="2026-08-07",
+                items=[],
+                admin_id=admin_id,
+                summary="支持长正文",
+                content_markdown=markdown,
+            )
+
+            self.assertEqual(notice["content_markdown"], markdown)
+            self.assertGreater(len(notice["content_markdown"]), 20000)
+            self.assertEqual(notice["items"], ["支持长正文"])
+
+    def test_markdown_notice_derives_legacy_items_from_lists(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "auth.sqlite"
+            admin_id = self._create_admin(db_path)
+            notice = create_update_notice(
+                db_path,
+                title="Markdown 公告",
+                version="2026-08-07",
+                items=[],
+                admin_id=admin_id,
+                content_markdown="## 更新\n- 支持 **Markdown**\n1. 查看 [使用说明](https://example.test/docs)",
+            )
+
+            self.assertEqual(notice["items"], ["支持 Markdown", "查看 使用说明"])
+
     def test_email_campaign_snapshots_verified_opted_in_recipients_and_is_idempotent(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "auth.sqlite"

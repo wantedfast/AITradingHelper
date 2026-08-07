@@ -807,7 +807,14 @@ test.describe("public pricing and mandatory notices", () => {
 
   test("logged-in user sees only the newest notice and acknowledgement clears without old backlog", async ({ page }) => {
     let pendingRequests = 0;
-    const newestNotice = { id: 2, title: "Newest notice", version: "v2", items: ["Newest item"], published_at: "2026-07-19T10:00:00+08:00" };
+    const newestNotice = {
+      id: 2,
+      title: "Newest notice",
+      version: "v2",
+      items: ["Newest item"],
+      content_markdown: "## 本次更新\n- 支持 **Markdown**\n- 查看 [说明](https://example.test/docs)\n<script>alert(1)</script>",
+      published_at: "2026-07-19T10:00:00+08:00",
+    };
     await page.addInitScript((user) => {
       window.localStorage.setItem("ai_trade_token", "notice-single-token");
       window.localStorage.setItem("ai_trade_user", JSON.stringify(user));
@@ -828,6 +835,11 @@ test.describe("public pricing and mandatory notices", () => {
     await expect.poll(() => pendingRequests).toBe(1);
     const dialog = page.locator(".site-update-notice-modal");
     await expect(dialog).toContainText("Newest notice");
+    await expect(dialog.getByRole("heading", { name: "本次更新" })).toBeVisible();
+    await expect(dialog.locator("strong")).toHaveText("Markdown");
+    await expect(dialog.getByRole("link", { name: "说明" })).toHaveAttribute("href", "https://example.test/docs");
+    await expect(dialog.locator("script")).toHaveCount(0);
+    await expect(dialog).toContainText("<script>alert(1)</script>");
     const backdrop = page.locator(".site-update-notice-backdrop");
     await expect(backdrop).toHaveCSS("position", "fixed");
     await expect(backdrop).toHaveCSS("display", "grid");
@@ -1355,9 +1367,8 @@ test.describe.skip("legacy query-section admin access", () => {
 
     await page.goto("/admin?section=updates&days=30", { waitUntil: "domcontentloaded" });
     await page.getByPlaceholder("公告标题，例如：本周更新").fill("发布流程回归");
-    await page.getByPlaceholder("每行一条更新内容（必填）").fill("修复公告发布\n恢复邮件推送");
-    await expect(page.getByPlaceholder("公告摘要（最多 240 字）")).toHaveCount(0);
-    await expect(page.getByPlaceholder("公告正文（支持安全 Markdown 文本，不执行 HTML）")).toHaveCount(0);
+    await page.getByPlaceholder("公告摘要（可选，会显示在正文前）").fill("发布流程摘要");
+    await page.getByPlaceholder(/^Markdown 正文（必填）/).fill("## 本次更新\n- 修复公告发布\n- 恢复 **邮件推送**");
 
     await page.getByRole("button", { name: "保存并发布" }).click();
     await expect(page.getByRole("dialog", { name: "如何发布本次更新？" })).toBeVisible();
@@ -1366,12 +1377,11 @@ test.describe.skip("legacy query-section admin access", () => {
     await expect.poll(() => publishedPayload).not.toBeNull();
     expect(publishedPayload).toMatchObject({
       title: "发布流程回归",
-      items_text: "修复公告发布\n恢复邮件推送",
+      summary: "发布流程摘要",
+      content_markdown: "## 本次更新\n- 修复公告发布\n- 恢复 **邮件推送**",
       status: "published",
       send_email: true,
     });
-    expect(publishedPayload).not.toHaveProperty("summary");
-    expect(publishedPayload).not.toHaveProperty("content_markdown");
     await expect(page.getByText(/公告已发布，邮件任务已创建/)).toBeVisible();
   });
 
