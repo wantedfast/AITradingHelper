@@ -128,7 +128,8 @@ type DashboardPayload = {
 type NoticeDraft = {
   title: string;
   version: string;
-  itemsText: string;
+  summary: string;
+  contentMarkdown: string;
 };
 
 type AdminEmailItem = {
@@ -171,7 +172,8 @@ type GrantDraft = {
 const defaultNoticeDraft: NoticeDraft = {
   title: "",
   version: todayDateInputValue(),
-  itemsText: "",
+  summary: "",
+  contentMarkdown: "",
 };
 
 export function AdminOverviewPage() {
@@ -738,7 +740,8 @@ export function AdminUpdatesPage() {
       const body = JSON.stringify({
         title: draft.title,
         version: draft.version,
-        items_text: draft.itemsText,
+        summary: draft.summary,
+        content_markdown: draft.contentMarkdown,
         status: "draft",
       });
       if (editingNoticeId) {
@@ -755,7 +758,7 @@ export function AdminUpdatesPage() {
   }
 
   function publish(sendEmail: boolean) {
-    if (!draft.title.trim() || !draft.version.trim() || !draft.itemsText.trim()) {
+    if (!draft.title.trim() || !draft.version.trim() || !draft.contentMarkdown.trim()) {
       setMessage("请完整填写公告标题、日期和更新内容。");
       return;
     }
@@ -773,7 +776,12 @@ export function AdminUpdatesPage() {
           if (editingNoticeId) {
             await apiFetch(`/api/admin/update-notices/${editingNoticeId}`, {
               method: "POST",
-              body: JSON.stringify({ title: draft.title, version: draft.version, items_text: draft.itemsText }),
+              body: JSON.stringify({
+                title: draft.title,
+                version: draft.version,
+                summary: draft.summary,
+                content_markdown: draft.contentMarkdown,
+              }),
             });
             await apiFetch(`/api/admin/update-notices/${editingNoticeId}/publish`, {
               method: "POST",
@@ -785,7 +793,8 @@ export function AdminUpdatesPage() {
               body: JSON.stringify({
                 title: draft.title,
                 version: draft.version,
-                items_text: draft.itemsText,
+                summary: draft.summary,
+                content_markdown: draft.contentMarkdown,
                 status: "published",
                 send_email: sendEmail,
                 request_id: requestId,
@@ -808,7 +817,8 @@ export function AdminUpdatesPage() {
     setDraft({
       title: notice.title,
       version: notice.version,
-      itemsText: notice.items.join("\n"),
+      summary: notice.summary || "",
+      contentMarkdown: notice.content_markdown || notice.items.map((item) => `- ${item}`).join("\n"),
     });
   }
 
@@ -906,7 +916,14 @@ export function AdminUpdatesPage() {
           <div className="admin-notice-form">
             <input value={draft.title} onChange={(event) => setDraft((current) => ({ ...current, title: event.target.value }))} placeholder="公告标题，例如：本周更新" />
             <input type="date" value={draft.version} onChange={(event) => setDraft((current) => ({ ...current, version: event.target.value }))} aria-label="公告日期" />
-            <textarea value={draft.itemsText} onChange={(event) => setDraft((current) => ({ ...current, itemsText: event.target.value }))} placeholder="每行一条更新内容（必填）" rows={7} />
+            <input value={draft.summary} onChange={(event) => setDraft((current) => ({ ...current, summary: event.target.value }))} placeholder="公告摘要（可选，会显示在正文前）" />
+            <textarea
+              value={draft.contentMarkdown}
+              onChange={(event) => setDraft((current) => ({ ...current, contentMarkdown: event.target.value }))}
+              placeholder={"Markdown 正文（必填）\n\n## 本次更新\n- 支持 **重点内容**\n- 查看 [使用说明](https://example.com)"}
+              rows={12}
+            />
+            <small>支持标题、列表、引用、粗体/斜体、代码和 http(s) 链接；正文过长时会明确提示，不会静默截断。</small>
             <div className="admin-notice-actions">
               <button type="button" onClick={() => void saveDraft()}>{editingNoticeId ? "保存修改" : "保存草稿"}</button>
               <button type="button" onClick={() => publish(true)}>保存并发布</button>
