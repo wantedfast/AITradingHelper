@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { usePathname } from "next/navigation";
 import { ApiError, apiFetch, getAuthToken, getStoredUser, storeUser, type UserProfile } from "@/lib/auth-client";
 
@@ -84,12 +84,8 @@ export function UpdateNoticeGate() {
   }, [homepageGateEnabled, notices.length]);
 
   const activeNotice = notices[0] || null;
-  const markdownLines = useMemo(
-    () =>
-      (activeNotice?.content_markdown || "")
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .filter(Boolean),
+  const markdownBlocks = useMemo(
+    () => renderNoticeMarkdown(activeNotice?.content_markdown || "", activeNotice?.id || 0),
     [activeNotice],
   );
 
@@ -128,11 +124,9 @@ export function UpdateNoticeGate() {
           {activeNotice.published_at ? ` · 发布时间 ${String(activeNotice.published_at).slice(0, 16).replace("T", " ")}` : ""}
         </p>
         {activeNotice.summary ? <p className="site-update-notice-summary">{activeNotice.summary}</p> : null}
-        {markdownLines.length ? (
+        {markdownBlocks.length ? (
           <div className="site-update-notice-body">
-            {markdownLines.map((line, index) => (
-              <p key={`${activeNotice.id}-${index}`}>{line.replace(/^[-*]\s*/, "")}</p>
-            ))}
+            {markdownBlocks}
           </div>
         ) : (
           <ul className="site-update-notice-list">
@@ -148,4 +142,96 @@ export function UpdateNoticeGate() {
       </section>
     </div>
   );
+}
+
+const INLINE_MARKDOWN_RE = /(`[^`\n]+`|\[[^\]\n]+\]\(https?:\/\/[^\s)]+\)|\*\*[^*\n]+\*\*|__[^_\n]+__|\*[^*\n]+\*|_[^_\n]+_)/g;
+
+function renderMarkdownInline(value: string, keyPrefix: string): ReactNode[] {
+  const nodes: ReactNode[] = [];
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+  INLINE_MARKDOWN_RE.lastIndex = 0;
+  while ((match = INLINE_MARKDOWN_RE.exec(value)) !== null) {
+    if (match.index > cursor) nodes.push(value.slice(cursor, match.index));
+    const token = match[0];
+    const key = `${keyPrefix}-${match.index}`;
+    if (token.startsWith("`")) {
+      nodes.push(<code key={key}>{token.slice(1, -1)}</code>);
+    } else if (token.startsWith("[")) {
+      const separator = token.indexOf("](");
+      const label = token.slice(1, separator);
+      const href = token.slice(separator + 2, -1);
+      nodes.push(<a key={key} href={href} target="_blank" rel="noreferrer">{label}</a>);
+    } else if (token.startsWith("**") || token.startsWith("__")) {
+      nodes.push(<strong key={key}>{token.slice(2, -2)}</strong>);
+    } else {
+      nodes.push(<em key={key}>{token.slice(1, -1)}</em>);
+    }
+    cursor = match.index + token.length;
+  }
+  if (cursor < value.length) nodes.push(value.slice(cursor));
+  return nodes;
+}
+
+function renderNoticeMarkdown(markdown: string, noticeId: number): ReactNode[] {
+  const lines = markdown.split(/\r?\n/);
+  const blocks: ReactNode[] = [];
+  let index = 0;
+  while (index < lines.length) {
+    const trimmed = lines[index].trim();
+    if (!trimmed) {
+      index += 1;
+      continue;
+    }
+    if (trimmed.startsWith("```")) {
+      const code: string[] = [];
+      index += 1;
+      while (index < lines.length && !lines[index].trim().startsWith("```")) {
+        code.push(lines[index]);
+        index += 1;
+      }
+      if (index < lines.length) index += 1;
+      blocks.push(<pre key={`${noticeId}-code-${index}`}><code>{code.join("\n")}</code></pre>);
+      continue;
+    }
+    const heading = /^(#{1,3})\s+(.+)$/.exec(trimmed);
+    if (heading) {
+      const content = renderMarkdownInline(heading[2], `${noticeId}-heading-${index}`);
+      blocks.push(heading[1].length === 1
+        ? <h3 key={`${noticeId}-heading-${index}`}>{content}</h3>
+        : <h4 key={`${noticeId}-heading-${index}`}>{content}</h4>);
+      index += 1;
+      continue;
+    }
+    const unordered = /^\s*[-*+]\s+(.+)$/.exec(lines[index]);
+    const ordered = /^\s*\d+[.)]\s+(.+)$/.exec(lines[index]);
+    if (unordered || ordered) {
+      const isOrdered = Boolean(ordered);
+      const items: ReactNode[] = [];
+      while (index < lines.length) {
+        const item = (isOrdered ? /^\s*\d+[.)]\s+(.+)$/.exec(lines[index]) : /^\s*[-*+]\s+(.+)$/.exec(lines[index]));
+        if (!item) break;
+        items.push(<li key={`${noticeId}-item-${index}`}>{renderMarkdownInline(item[1], `${noticeId}-item-${index}`)}</li>);
+        index += 1;
+      }
+      blocks.push(isOrdered
+        ? <ol key={`${noticeId}-list-${index}`}>{items}</ol>
+        : <ul key={`${noticeId}-list-${index}`}>{items}</ul>);
+      continue;
+    }
+    const quote = /^>\s?(.*)$/.exec(trimmed);
+    if (quote) {
+      blocks.push(<blockquote key={`${noticeId}-quote-${index}`}>{renderMarkdownInline(quote[1], `${noticeId}-quote-${index}`)}</blockquote>);
+      index += 1;
+      continue;
+    }
+    const paragraph: string[] = [trimmed];
+    index += 1;
+    while (index < lines.length && lines[index].trim() && !/^(#{1,3})\s+|^```|^\s*[-*+]\s+|^\s*\d+[.)]\s+|^>/.test(lines[index])) {
+      paragraph.push(lines[index].trim());
+      index += 1;
+    }
+    blocks.push(<p key={`${noticeId}-paragraph-${index}`}>{renderMarkdownInline(paragraph.join(" "), `${noticeId}-paragraph-${index}`)}</p>);
+  }
+  return blocks;
 }

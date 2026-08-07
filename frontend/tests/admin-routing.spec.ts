@@ -389,7 +389,8 @@ async function installAdminFixtures(page: Page, options: FixtureOptions = {}) {
         title: String(body.title || "Created notice"),
         version: String(body.version || "2026-07-23"),
         items: String(body.items_text || "").split(/\r?\n/).filter(Boolean),
-        summary: "",
+        summary: String(body.summary || ""),
+        content_markdown: String(body.content_markdown || ""),
         status: String(body.status || "draft"),
         created_at: "2026-07-23T10:00:00+08:00",
         updated_at: "2026-07-23T10:00:00+08:00",
@@ -610,7 +611,8 @@ test.describe("admin routing", () => {
 
     await page.goto("/admin/updates?status=all", { waitUntil: "domcontentloaded" });
     await page.getByPlaceholder("公告标题，例如：本周更新").fill("Route Publish Notice");
-    await page.getByPlaceholder("每行一条更新内容（必填）").fill("修复路由\n增加邮件发布");
+    await page.getByPlaceholder("公告摘要（可选，会显示在正文前）").fill("路由发布摘要");
+    await page.getByPlaceholder(/^Markdown 正文（必填）/).fill("## 更新\n- 修复路由\n- 增加邮件发布");
     await page.getByRole("button", { name: "保存并发布" }).click();
 
     await expect(page.getByRole("dialog")).toBeVisible();
@@ -619,7 +621,8 @@ test.describe("admin routing", () => {
 
     expect(capture.noticeCreateBody).toMatchObject({
       title: "Route Publish Notice",
-      items_text: "修复路由\n增加邮件发布",
+      summary: "路由发布摘要",
+      content_markdown: "## 更新\n- 修复路由\n- 增加邮件发布",
       status: "published",
       send_email: true,
     });

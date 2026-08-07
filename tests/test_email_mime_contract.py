@@ -164,6 +164,38 @@ class EmailMimeContractTest(unittest.TestCase):
         self.assertIn("First &lt;svg onload=alert(1)&gt;", html)
         self._assert_standard_link(html, "https://trade.example.test")
 
+    def test_update_notice_renders_safe_markdown_in_html_and_plain_text(self) -> None:
+        markdown = """## 今日更新
+
+- 支持 **Markdown** 排版
+- 查看 [使用说明](https://docs.example.test/guide)
+
+> 请先阅读风险提示
+
+`<script>alert(1)</script>`
+<img src=x onerror=alert(1)>
+[危险链接](javascript:alert(1))
+"""
+        delivery = {
+            "email": "reader@example.test",
+            "title": "每日公告",
+            "version": "2026-08-07",
+            "summary": "今日重点",
+            "content_markdown": markdown,
+            "items_json": "[]",
+        }
+        with mock.patch("trade_review_agent.auth_system._send_smtp_message", side_effect=self._capture_mime):
+            auth_system._send_update_notice_email(delivery)
+
+        text, html = self._assert_mime_and_light_html(self.messages.pop())
+        self.assertIn("## 今日更新", text)
+        self.assertIn("<h3", html)
+        self.assertIn("<strong>Markdown</strong>", html)
+        self.assertIn('href="https://docs.example.test/guide"', html)
+        self.assertNotIn('href="javascript:', html)
+        self.assertNotRegex(html, r"<(?:script|img)\b")
+        self.assertIn("&lt;img src=x onerror=alert(1)&gt;", html)
+
     def test_top5_full_and_teaser_generate_safe_light_mime_without_data_table_or_leak(self) -> None:
         report = _top5_report()
         report["top5_strong_stocks"][0]["reason"] = "Reason <script>alert('reason')</script>"

@@ -2893,7 +2893,7 @@ def process_next_update_email(
         row = conn.execute(
             """
             SELECT d.id, d.campaign_id, d.email, d.attempt_count,
-                   n.title, n.version, n.items_json
+                   n.title, n.version, n.items_json, n.summary, n.content_markdown
             FROM update_email_deliveries d
             JOIN update_email_campaigns c ON c.id = d.campaign_id
             JOIN update_notices n ON n.id = c.notice_id
@@ -4681,25 +4681,133 @@ def _send_update_notice_email(
     items = [str(item) for item in items if str(item).strip()]
     title = str(delivery.get("title") or "产品更新")
     version = str(delivery.get("version") or "")
+    summary = str(delivery.get("summary") or "").strip()
+    content_markdown = str(delivery.get("content_markdown") or "").strip()
+    if not content_markdown:
+        content_markdown = "\n".join(f"- {item}" for item in items)
     site_url = os.getenv("PUBLIC_SITE_URL", "").strip().rstrip("/")
     if not site_url:
         raise AuthError("PUBLIC_SITE_URL 未配置", 500)
-    text_items = "\n".join(f"- {item}" for item in items)
-    text = f"盈航产品更新：{title}\n\n版本/日期：{version}\n\n{text_items}\n\n查看网站：{site_url}\n"
-    html_items = "".join(
-        f'<li style="margin:8px 0;color:#1f2328;line-height:1.7;">{_html_escape(item)}</li>' for item in items
+    text_summary = f"{summary}\n\n" if summary else ""
+    text = f"盈航产品更新：{title}\n\n版本/日期：{version}\n\n{text_summary}{content_markdown}\n\n查看网站：{site_url}\n"
+    summary_html = (
+        f'<p style="margin:0 0 20px;color:#57606a;font-size:15px;line-height:1.7;">{_html_escape(summary)}</p>'
+        if summary else ""
     )
+    content_html = _safe_markdown_email_html(content_markdown)
     html = _light_email_document(f"""
       <p style="margin:0 0 8px;color:#57606a;font-size:13px;">盈航 · 产品更新</p>
       <h1 style="margin:0 0 12px;color:#1f2328;font-size:24px;line-height:1.35;">{_html_escape(title)}</h1>
       <p style="margin:0 0 20px;color:#57606a;font-size:14px;">{_html_escape(version)}</p>
-      <ul style="margin:0 0 20px;padding-left:24px;color:#1f2328;">{html_items}</ul>
+      {summary_html}
+      <div style="margin:0 0 24px;color:#1f2328;">{content_html}</div>
       <p style="margin:0 0 8px;color:#1f2328;"><a href="{_html_escape(site_url)}" style="color:#0969da;text-decoration:underline;">打开盈航查看</a></p>
       <p style="margin:0 0 20px;color:#57606a;font-size:13px;word-break:break-all;">{_html_escape(site_url)}</p>
       <p style="margin:0;color:#57606a;font-size:12px;line-height:1.6;">你可以登录盈航，在账户菜单中关闭邮件推送。</p>
     """, max_width=600)
     send = smtp_session.send if smtp_session is not None else _send_smtp_message
     send(str(delivery["email"]), subject=f"盈航产品更新｜{title}", text=text, html=html)
+
+
+_MARKDOWN_INLINE_RE = re.compile(
+    r"(`[^`\n]+`|\[[^\]\n]+\]\(https?://[^\s)]+\)|\*\*[^*\n]+\*\*|__[^_\n]+__|\*[^*\n]+\*|_[^_\n]+_)"
+)
+
+
+def _safe_markdown_inline_html(value: str) -> str:
+    """Render a deliberately small inline Markdown subset without raw HTML."""
+    parts: list[str] = []
+    cursor = 0
+    for match in _MARKDOWN_INLINE_RE.finditer(str(value)):
+        parts.append(_html_escape(str(value)[cursor:match.start()]))
+        token = match.group(0)
+        if token.startswith("`"):
+            parts.append(f'<code style="padding:2px 5px;background:#f6f8fa;border-radius:4px;">{_html_escape(token[1:-1])}</code>')
+        elif token.startswith("["):
+            label, href = token[1:].split("](", 1)
+            href = href[:-1]
+            parts.append(
+                f'<a href="{_html_escape(href)}" style="color:#0969da;text-decoration:underline;">{_html_escape(label)}</a>'
+            )
+        elif token.startswith(("**", "__")):
+            parts.append(f"<strong>{_html_escape(token[2:-2])}</strong>")
+        else:
+            parts.append(f"<em>{_html_escape(token[1:-1])}</em>")
+        cursor = match.end()
+    parts.append(_html_escape(str(value)[cursor:]))
+    return "".join(parts)
+
+
+def _safe_markdown_email_html(markdown: str) -> str:
+    """Render email-safe Markdown; raw HTML and non-http(s) links stay escaped text."""
+    lines = str(markdown or "").splitlines()
+    html_parts: list[str] = []
+    list_type = ""
+    code_lines: list[str] | None = None
+
+    def close_list() -> None:
+        nonlocal list_type
+        if list_type:
+            html_parts.append(f"</{list_type}>")
+            list_type = ""
+
+    for line in lines:
+        if line.strip().startswith("```"):
+            close_list()
+            if code_lines is None:
+                code_lines = []
+            else:
+                html_parts.append(
+                    '<pre style="margin:12px 0;padding:14px;background:#f6f8fa;border-radius:6px;overflow:auto;white-space:pre-wrap;">'
+                    f'<code>{_html_escape(chr(10).join(code_lines))}</code></pre>'
+                )
+                code_lines = None
+            continue
+        if code_lines is not None:
+            code_lines.append(line)
+            continue
+        if not line.strip():
+            close_list()
+            continue
+        heading = re.match(r"^(#{1,3})\s+(.+)$", line.strip())
+        if heading:
+            close_list()
+            level = len(heading.group(1)) + 1
+            html_parts.append(
+                f'<h{level} style="margin:22px 0 10px;color:#1f2328;line-height:1.4;">'
+                f'{_safe_markdown_inline_html(heading.group(2))}</h{level}>'
+            )
+            continue
+        bullet = re.match(r"^\s*[-*+]\s+(.+)$", line)
+        ordered = re.match(r"^\s*\d+[.)]\s+(.+)$", line)
+        if bullet or ordered:
+            wanted = "ul" if bullet else "ol"
+            if list_type != wanted:
+                close_list()
+                list_type = wanted
+                html_parts.append(f'<{wanted} style="margin:10px 0;padding-left:24px;color:#1f2328;">')
+            html_parts.append(
+                f'<li style="margin:7px 0;color:#1f2328;line-height:1.7;">{_safe_markdown_inline_html((bullet or ordered).group(1))}</li>'
+            )
+            continue
+        close_list()
+        quote = re.match(r"^\s*>\s?(.*)$", line)
+        if quote:
+            html_parts.append(
+                '<blockquote style="margin:12px 0;padding:8px 14px;border-left:4px solid #d0d7de;color:#57606a;line-height:1.7;">'
+                f'{_safe_markdown_inline_html(quote.group(1))}</blockquote>'
+            )
+        else:
+            html_parts.append(
+                f'<p style="margin:10px 0;color:#1f2328;line-height:1.7;">{_safe_markdown_inline_html(line.strip())}</p>'
+            )
+    close_list()
+    if code_lines is not None:
+        html_parts.append(
+            '<pre style="margin:12px 0;padding:14px;background:#f6f8fa;border-radius:6px;overflow:auto;white-space:pre-wrap;">'
+            f'<code>{_html_escape(chr(10).join(code_lines))}</code></pre>'
+        )
+    return "".join(html_parts)
 
 
 def _send_daily_top5_email(
@@ -5056,6 +5164,22 @@ def _now() -> str:
     return datetime.now(CN_TZ).isoformat()
 
 
+def _update_notice_items_from_markdown(markdown: str, *, fallback: str) -> list[str]:
+    """Keep the legacy items contract useful while Markdown remains the source of truth."""
+    items: list[str] = []
+    for line in str(markdown or "").splitlines():
+        match = re.match(r"^\s*(?:[-*+]\s+|\d+[.)]\s+)(.+)$", line)
+        if not match:
+            continue
+        value = match.group(1).strip()
+        value = re.sub(r"\[([^\]]+)\]\(https?://[^\s)]+\)", r"\1", value)
+        value = re.sub(r"(?:\*\*|__)(.+?)(?:\*\*|__)", r"\1", value)
+        value = re.sub(r"[`*_]", "", value).strip()
+        if value:
+            items.append(value)
+    return items or [fallback]
+
+
 def _normalize_update_notice_input(
     title: str,
     version: str,
@@ -5066,12 +5190,12 @@ def _normalize_update_notice_input(
     expires_at: str,
     status: str,
 ) -> tuple[str, str, list[str], str, str, str, str, str]:
-    title = str(title or "").strip()[:80]
-    version = str(version or "").strip()[:40]
-    summary = str(summary or "").strip()[:240]
-    content_markdown = str(content_markdown or "").strip()[:20000]
+    title = str(title or "").strip()
+    version = str(version or "").strip()
+    summary = str(summary or "").strip()
+    content_markdown = str(content_markdown or "").strip()
     audience = str(audience or "registered_users").strip() or "registered_users"
-    expires_at = str(expires_at or "").strip()[:40]
+    expires_at = str(expires_at or "").strip()
     status = str(status or "draft").strip()
     if status not in {"draft", "published", "archived"}:
         raise AuthError("更新公告状态不正确", 400)
@@ -5083,14 +5207,20 @@ def _normalize_update_notice_input(
         raise AuthError("更新公告受众不正确", 400)
     if not isinstance(items, list):
         raise AuthError("更新公告内容必须是列表", 400)
-    normalized_items = [str(item).strip()[:240] for item in items if str(item).strip()]
-    if not normalized_items:
+    if len(title) > 200 or len(version) > 80 or len(summary) > 5000 or len(content_markdown) > 200000:
+        raise AuthError("更新公告内容过长，请精简后重试", 400)
+    normalized_items = [str(item).strip() for item in items if str(item).strip()]
+    if not normalized_items and content_markdown:
+        normalized_items = _update_notice_items_from_markdown(content_markdown, fallback=summary or title)
+    if len(normalized_items) > 1000 or any(len(item) > 20000 for item in normalized_items):
+        raise AuthError("更新公告条目过多或单条内容过长", 400)
+    if not normalized_items and not content_markdown:
         raise AuthError("更新公告内容不能为空", 400)
     if not summary:
-        summary = normalized_items[0]
+        summary = normalized_items[0] if normalized_items else title
     if not content_markdown:
-        content_markdown = "\n".join(f"- {item}" for item in normalized_items[:12])
-    return title, version, normalized_items[:12], summary, content_markdown, audience, expires_at, status
+        content_markdown = "\n".join(f"- {item}" for item in normalized_items)
+    return title, version, normalized_items, summary, content_markdown, audience, expires_at, status
 
 
 def _amount_yuan_to_cents(value: str) -> int:

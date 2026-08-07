@@ -15583,7 +15583,11 @@ button.radar-core,
   margin-top: 4px;
 }
 
-.site-update-notice-body p {
+.site-update-notice-body p,
+.site-update-notice-body ul,
+.site-update-notice-body ol,
+.site-update-notice-body blockquote,
+.site-update-notice-body pre {
   margin: 0;
   padding: 13px 15px;
   border: 1px solid rgba(111, 213, 223, 0.14);
@@ -15593,6 +15597,27 @@ button.radar-core,
   line-height: 1.65;
   overflow-wrap: anywhere;
 }
+
+.site-update-notice-body h3,
+.site-update-notice-body h4 {
+  margin: 8px 0 0;
+  color: var(--terminal-gold);
+  line-height: 1.4;
+}
+
+.site-update-notice-body h3 { font-size: 19px; }
+.site-update-notice-body h4 { font-size: 16px; }
+
+.site-update-notice-body ul,
+.site-update-notice-body ol {
+  padding-left: 38px;
+}
+
+.site-update-notice-body li { margin: 6px 0; }
+.site-update-notice-body blockquote { border-left: 3px solid var(--terminal-gold); color: rgba(242, 238, 224, 0.72); }
+.site-update-notice-body pre { overflow-x: auto; white-space: pre-wrap; }
+.site-update-notice-body code { font-family: var(--font-mono); color: #b9edf1; }
+.site-update-notice-body a { color: #8fe7ef; text-decoration: underline; text-underline-offset: 3px; }
 
 .site-update-notice-list {
   display: grid;
