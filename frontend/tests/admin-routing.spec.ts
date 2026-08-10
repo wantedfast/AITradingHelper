@@ -130,6 +130,24 @@ const defaultEmails = [
     teaser: 4,
   },
   {
+    id: 44,
+    kind: "daily_top5_close",
+    retry_type: "daily_top5_close",
+    title: "Daily Top5 Close 2026-07-16",
+    summary: "Terminal failed daily top5 close campaign",
+    status: "partial_failed",
+    total: 6,
+    pending: 0,
+    sending: 0,
+    sent: 5,
+    failed: 1,
+    skipped: 0,
+    created_at: "2026-07-16T15:12:00+08:00",
+    next_retry_at: null,
+    full: 6,
+    teaser: 0,
+  },
+  {
     id: 42,
     kind: "market_day",
     retry_type: "ai_report",
@@ -421,12 +439,12 @@ async function installAdminFixtures(page: Page, options: FixtureOptions = {}) {
       return json(route, { email_campaign: { id: Number(path.split("/")[4]), status: "pending" } });
     }
 
-    if (/^\/api\/admin\/(daily-top5-email-campaigns|ai-report-email-campaigns)\/\d+\/retry$/.test(path) && method === "POST") {
+    if (/^\/api\/admin\/(daily-top5-email-campaigns|daily-top5-close-email-campaigns|ai-report-email-campaigns)\/\d+\/retry$/.test(path) && method === "POST") {
       capture!.emailRetryPaths?.push(path);
       return json(route, { email_campaign: { id: Number(path.split("/")[4]), status: "pending" } });
     }
 
-    if (/^\/api\/admin\/emails\/(update_notice|daily_top5|market_day|ai_research)\/\d+$/.test(path)) {
+    if (/^\/api\/admin\/emails\/(update_notice|daily_top5|daily_top5_close|market_day|ai_research)\/\d+$/.test(path)) {
       return json(route, {
         kind: path.split("/")[4],
         campaign: { status: "partial_failed", total: 6, pending: 0, sending: 0, sent: 4, failed: 1, skipped: 1 },
@@ -603,6 +621,28 @@ test.describe("admin routing", () => {
 
     expect(capture.emailRetryPaths).toEqual(["/api/admin/daily-top5-email-campaigns/41/retry"]);
     await expect(page.getByText("失败邮件已重新加入发送队列。")).toBeVisible();
+  });
+
+  test("emails support the daily_top5_close kind filter, detail route, and close-campaign retry endpoint", async ({ page }) => {
+    const capture: AdminCapture = { adminLoginBodies: [], emailRetryPaths: [] };
+    await installAdminFixtures(page, { capture });
+
+    await page.goto("/admin/emails?kind=daily_top5_close", { waitUntil: "domcontentloaded" });
+
+    await expect(page.getByRole("combobox").first()).toHaveValue("daily_top5_close");
+    await expect(page.getByText("Daily Top5 Close 2026-07-16")).toBeVisible();
+    await expect(page.getByText("Daily Top5 2026-07-16")).toHaveCount(0);
+
+    const closeItem = page.locator(".admin-list-item").filter({ has: page.getByText("Daily Top5 Close 2026-07-16") });
+    await closeItem.getByRole("button", { name: "查看失败详情" }).click();
+    const detailDialog = page.getByRole("dialog", { name: "失败邮件详情" });
+    await expect(detailDialog.getByText("failed-recipient@example.com")).toBeVisible();
+    await detailDialog.getByRole("button", { name: "关闭失败邮件详情" }).click();
+
+    await closeItem.getByRole("button", { name: "重试失败邮件" }).click();
+    await page.getByRole("dialog").getByRole("button", { name: "重试失败邮件" }).click();
+
+    expect(capture.emailRetryPaths).toEqual(["/api/admin/daily-top5-close-email-campaigns/44/retry"]);
   });
 
   test("updates publish with email from the simple form and keep mobile notice actions evenly laid out", async ({ page }) => {
