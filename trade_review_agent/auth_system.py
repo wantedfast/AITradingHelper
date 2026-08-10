@@ -30,6 +30,11 @@ from trade_review_agent.legal_agreements import (
     REGISTRATION_AGREEMENT_VERSION,
     registration_agreement_payload,
 )
+from trade_review_agent.outlook_graph import (
+    configure_outlook_graph_runtime,
+    init_outlook_graph_schema,
+    send_outlook_mime,
+)
 
 
 CN_TZ = ZoneInfo("Asia/Shanghai")
@@ -457,6 +462,7 @@ def init_auth_db(db_path: Path) -> None:
         _ensure_order_columns(conn)
         _ensure_update_notice_columns(conn)
         _ensure_daily_top5_close_email_schema(conn)
+        init_outlook_graph_schema(conn)
         conn.executescript(
             """
             CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username) WHERE username IS NOT NULL AND username != '';
@@ -464,6 +470,7 @@ def init_auth_db(db_path: Path) -> None:
             """
         )
         _ensure_admin(conn)
+    configure_outlook_graph_runtime(db_path)
 
 
 def _ensure_user_columns(conn: sqlite3.Connection) -> None:
@@ -3862,8 +3869,8 @@ def notify_admin_membership_payment(*, order: dict[str, Any], user: dict[str, An
         if provider in {"log", "debug", "local"}:
             _write_email_debug_log(admin_email, text, None)
             return {"sent": False, "skipped": True, "provider": "log", "email": _mask_email(admin_email), "error": "EMAIL_PROVIDER=log，仅写入本地日志，未真实发送邮件"}
-        _send_smtp_message(admin_email, subject=subject, text=text, html=html)
-        return {"sent": True, "provider": "smtp", "email": _mask_email(admin_email)}
+        _send_email_message(admin_email, subject=subject, text=text, html=html)
+        return {"sent": True, "provider": provider, "email": _mask_email(admin_email)}
     except Exception as exc:
         return {"sent": False, "error": str(exc)}
 
@@ -3918,8 +3925,8 @@ def notify_admin_credit_payment(*, order: dict[str, Any], user: dict[str, Any]) 
         if provider in {"log", "debug", "local"}:
             _write_email_debug_log(admin_email, text, None)
             return {"sent": False, "skipped": True, "provider": "log", "email": _mask_email(admin_email), "error": "EMAIL_PROVIDER=log，仅写入本地日志，未真实发送邮件"}
-        _send_smtp_message(admin_email, subject=subject, text=text, html=html)
-        return {"sent": True, "provider": "smtp", "email": _mask_email(admin_email)}
+        _send_email_message(admin_email, subject=subject, text=text, html=html)
+        return {"sent": True, "provider": provider, "email": _mask_email(admin_email)}
     except Exception as exc:
         return {"sent": False, "error": str(exc)}
 
@@ -4402,9 +4409,9 @@ def _send_email_code(email: str, code: str, log_path: Path | None) -> dict[str, 
     if provider in {"log", "debug", "local"}:
         _write_email_debug_log(email, code, log_path)
         raise AuthError("邮箱验证码本地测试模式已关闭，请配置 EMAIL_PROVIDER=smtp 和 SMTP 邮件服务后发送。", 500)
-    if provider == "smtp":
+    if provider in {"smtp", "outlook_graph"}:
         _send_smtp_email(email, code)
-        return {"provider": "smtp"}
+        return {"provider": provider}
     raise AuthError(f"不支持的邮件服务商：{provider}", 500)
 
 
@@ -4417,7 +4424,7 @@ def _send_smtp_email(email: str, code: str) -> None:
       <p style="margin:0 0 20px;color:#1f2328;font-size:32px;line-height:1.3;letter-spacing:6px;font-weight:700;">{_html_escape(code)}</p>
       <p style="margin:0;color:#1f2328;line-height:1.7;">验证码 {EMAIL_CODE_TTL_MINUTES} 分钟内有效。若不是你本人操作，请忽略这封邮件。</p>
     """, max_width=520)
-    _send_smtp_message(email, subject=subject, text=text, html=html)
+    _send_email_message(email, subject=subject, text=text, html=html)
 
 
 def notify_credit_added(db_path: Path, *, user_id: int, credits: int, reason: str) -> dict[str, Any]:
@@ -4445,7 +4452,7 @@ def notify_credit_added(db_path: Path, *, user_id: int, credits: int, reason: st
           <p style="margin:8px 0;color:#1f2328;"><strong>当前剩余次数：</strong>{balance} 次。</p>
           <p style="margin:20px 0 0;color:#57606a;font-size:13px;line-height:1.6;">如有疑问，请联系平台管理员。</p>
         """, max_width=560)
-        _send_smtp_message(email, subject="盈航使用次数已增加", text=text, html=html)
+        _send_email_message(email, subject="盈航使用次数已增加", text=text, html=html)
         return {"sent": True, "email": _mask_email(email)}
     except Exception as exc:
         return {"sent": False, "error": str(exc)}
@@ -4458,8 +4465,9 @@ def _smtp_message(
     text: str,
     html: str | None = None,
     message_id: str = "",
+    sender: str = "",
 ) -> EmailMessage:
-    sender = os.getenv("SMTP_FROM", os.getenv("SMTP_USER", "")).strip()
+    sender = sender.strip() or os.getenv("SMTP_FROM", os.getenv("SMTP_USER", "")).strip()
     sender_name = os.getenv("SMTP_FROM_NAME", "盈航").strip()
     message = EmailMessage()
     message["Subject"] = subject
@@ -4546,6 +4554,23 @@ class UpdateEmailSMTPSession:
         html: str | None = None,
         message_id: str = "",
     ) -> None:
+        provider = os.getenv("EMAIL_PROVIDER", "smtp").strip().lower() or "smtp"
+        if provider == "outlook_graph":
+            sender = os.getenv("OUTLOOK_GRAPH_FROM", "").strip()
+            if not sender:
+                raise AuthError("OUTLOOK_GRAPH_FROM 未配置", 500)
+            message = _smtp_message(
+                email,
+                subject=subject,
+                text=text,
+                html=html,
+                message_id=message_id,
+                sender=sender,
+            )
+            send_outlook_mime(message.as_bytes())
+            return
+        if provider != "smtp":
+            raise AuthError(f"不支持的邮件服务商：{provider}", 500)
         message = _smtp_message(email, subject=subject, text=text, html=html, message_id=message_id)
         for reconnect_attempt in range(2):
             try:
@@ -4595,6 +4620,54 @@ def _send_smtp_message(
             server.starttls()
             server.login(username, password)
             server.send_message(message)
+
+
+def _send_email_message(
+    email: str,
+    *,
+    subject: str,
+    text: str,
+    html: str | None = None,
+    message_id: str = "",
+) -> None:
+    provider = os.getenv("EMAIL_PROVIDER", "smtp").strip().lower() or "smtp"
+    if provider == "smtp":
+        _send_smtp_message(email, subject=subject, text=text, html=html, message_id=message_id)
+        return
+    if provider == "outlook_graph":
+        sender = os.getenv("OUTLOOK_GRAPH_FROM", "").strip()
+        if not sender:
+            raise AuthError("OUTLOOK_GRAPH_FROM 未配置", 500)
+        message = _smtp_message(
+            email,
+            subject=subject,
+            text=text,
+            html=html,
+            message_id=message_id,
+            sender=sender,
+        )
+        send_outlook_mime(message.as_bytes())
+        return
+    raise AuthError(f"不支持的邮件服务商：{provider}", 500)
+
+
+def send_email_provider_test(email: str) -> dict[str, Any]:
+    recipient = email.strip().lower()
+    if not EMAIL_RE.fullmatch(recipient):
+        raise AuthError("测试收件邮箱格式不正确", 400)
+    provider = os.getenv("EMAIL_PROVIDER", "smtp").strip().lower() or "smtp"
+    if provider not in {"smtp", "outlook_graph"}:
+        raise AuthError("当前邮件服务商不支持真实测试发送", 400)
+    text = "这是一封来自盈航邮件管理后台的发件通道测试邮件。收到此邮件说明当前邮件服务配置有效。"
+    html = _light_email_document(
+        """
+        <h1 style="margin:0 0 20px;color:#1f2328;font-size:24px;line-height:1.35;">盈航邮件通道测试</h1>
+        <p style="margin:0;color:#1f2328;line-height:1.7;">这是一封来自盈航邮件管理后台的发件通道测试邮件。收到此邮件说明当前邮件服务配置有效。</p>
+        """,
+        max_width=560,
+    )
+    _send_email_message(recipient, subject="盈航邮件通道测试", text=text, html=html)
+    return {"sent": True, "provider": provider, "email": _mask_email(recipient)}
 
 
 def _html_escape(value: str) -> str:
@@ -5352,7 +5425,7 @@ def _send_update_notice_email(
       <p style="margin:0 0 20px;color:#57606a;font-size:13px;word-break:break-all;">{_html_escape(site_url)}</p>
       <p style="margin:0;color:#57606a;font-size:12px;line-height:1.6;">你可以登录盈航，在账户菜单中关闭邮件推送。</p>
     """, max_width=600)
-    send = smtp_session.send if smtp_session is not None else _send_smtp_message
+    send = smtp_session.send if smtp_session is not None else _send_email_message
     send(str(delivery["email"]), subject=f"盈航产品更新｜{title}", text=text, html=html)
 
 
@@ -5567,7 +5640,7 @@ def _send_daily_top5_email(
       <p style="margin:0 0 12px;color:#57606a;font-size:12px;line-height:1.6;">{_html_escape(disclaimer)}</p>
       <p style="margin:0;color:#57606a;font-size:12px;line-height:1.6;">可登录盈航，在账户菜单中关闭“邮件推送（产品更新与每日 AI 报告）”。</p>
     """, max_width=720)
-    send = smtp_session.send if smtp_session is not None else _send_smtp_message
+    send = smtp_session.send if smtp_session is not None else _send_email_message
     send_kwargs: dict[str, Any] = {
         "subject": f"盈航每日 TOP5｜{trade_date}",
         "text": text,
@@ -5642,7 +5715,7 @@ def _send_daily_top5_close_email(
       <p style="margin:0 0 12px;color:#57606a;font-size:12px;line-height:1.6;">{_html_escape(disclaimer)}</p>
       <p style="margin:0;color:#57606a;font-size:12px;line-height:1.6;">可登录盈航，在账户菜单中关闭邮件推送。</p>
     """, max_width=720)
-    send = smtp_session.send if smtp_session is not None else _send_smtp_message
+    send = smtp_session.send if smtp_session is not None else _send_email_message
     send_kwargs: dict[str, Any] = {
         "subject": f"盈航每日 TOP5 收盘表现｜{trade_date}",
         "text": text,
@@ -5756,7 +5829,7 @@ def _send_ai_report_email(
       <p style="margin:0 0 12px;color:#57606a;font-size:12px;line-height:1.6;">{_html_escape(disclaimer)}</p>
       <p style="margin:0;color:#57606a;font-size:12px;line-height:1.6;">可登录盈航，在账户菜单中关闭邮件推送。</p>
     """, max_width=720)
-    send = smtp_session.send if smtp_session is not None else _send_smtp_message
+    send = smtp_session.send if smtp_session is not None else _send_email_message
     send(
         str(delivery["email"]),
         subject=f"盈航{product_name}｜{report_date}",

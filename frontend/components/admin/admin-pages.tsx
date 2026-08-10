@@ -174,6 +174,32 @@ type AdminEmailFailureDetail = {
   }>;
 };
 
+type AdminEmailProviderStatus = {
+  provider: "smtp" | "outlook_graph" | "log";
+  worker_count?: number;
+  smtp: {
+    configured: boolean;
+    from_masked: string;
+  };
+  outlook: {
+    configured: boolean;
+    connected: boolean;
+    account_masked: string;
+    connected_at?: string;
+    updated_at?: string;
+    reconnect_required: boolean;
+    last_error?: string;
+  };
+};
+
+type OutlookDeviceConnection = {
+  mode: "device_code";
+  verification_uri: string;
+  user_code: string;
+  expires_at: string;
+  interval_seconds: string;
+};
+
 type GrantDraft = {
   credits: string;
   reason: string;
@@ -996,14 +1022,126 @@ export function AdminEmailsPage() {
   const status = params.get("status") || "all";
   const dateFrom = params.get("date_from") || "";
   const dateTo = params.get("date_to") || "";
+  const outlookResult = params.get("outlook") || "";
   const page = parsePage(params.get("page"));
   const emails = useAdminData<PagedResult<AdminEmailItem>>(`/api/admin/emails?${buildQuery({ kind, status, date_from: dateFrom, date_to: dateTo, page, page_size: 20 })}`);
+  const emailProvider = useAdminData<AdminEmailProviderStatus>("/api/admin/email-provider");
   const [message, setMessage] = useState("");
+  const [providerAction, setProviderAction] = useState("");
+  const [testEmail, setTestEmail] = useState("");
+  const [outlookDevice, setOutlookDevice] = useState<OutlookDeviceConnection | null>(null);
   const [confirmIntent, setConfirmIntent] = useState<AdminConfirmIntent | null>(null);
   const [confirmSubmitting, setConfirmSubmitting] = useState(false);
   const [detail, setDetail] = useState<AdminEmailFailureDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState("");
+
+  useEffect(() => {
+    if (outlookResult === "connected") {
+      setMessage("Outlook 已连接并设为当前发件通道。");
+      void emailProvider.reload();
+    } else if (outlookResult === "cancelled") {
+      setMessage("已取消 Outlook 授权，当前发件通道未改变。");
+    } else if (outlookResult === "error") {
+      setMessage("Outlook 授权失败或已过期，请重新连接。");
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [outlookResult]);
+
+  async function connectOutlook() {
+    setProviderAction("connect");
+    setMessage("");
+    try {
+      const result = await apiFetch<({ mode: "authorization_code"; authorization_url: string } | OutlookDeviceConnection)>("/api/admin/email-provider/outlook/connect", { method: "POST" });
+      if (result.mode === "device_code") {
+        setOutlookDevice(result);
+        setMessage("请打开微软授权页并输入设备代码，完成后点击“检查授权结果”。");
+        setProviderAction("");
+      } else {
+        window.location.assign(result.authorization_url);
+      }
+    } catch (error) {
+      setMessage(errorMessage(error, "创建 Outlook 授权链接失败"));
+      setProviderAction("");
+    }
+  }
+
+  async function pollOutlookConnection() {
+    setProviderAction("poll");
+    setMessage("");
+    try {
+      const result = await apiFetch<{ status: string; connected: boolean }>("/api/admin/email-provider/outlook/poll", { method: "POST" });
+      if (result.connected) {
+        setOutlookDevice(null);
+        await emailProvider.reload();
+        setMessage("Outlook 已连接并设为当前发件通道。");
+      } else if (result.status === "pending") {
+        setMessage("微软授权尚未完成，请完成登录同意后再检查。");
+      } else {
+        setOutlookDevice(null);
+        setMessage("设备授权已失效或被取消，请重新连接 Outlook。");
+      }
+    } catch (error) {
+      setMessage(errorMessage(error, "检查 Outlook 授权失败"));
+    } finally {
+      setProviderAction("");
+    }
+  }
+
+  async function selectEmailProvider(provider: "smtp" | "outlook_graph") {
+    setProviderAction(`select-${provider}`);
+    setMessage("");
+    try {
+      await apiFetch("/api/admin/email-provider/select", {
+        method: "POST",
+        body: JSON.stringify({ provider }),
+      });
+      await emailProvider.reload();
+      setMessage(provider === "outlook_graph" ? "已切换为 Outlook Graph 发件。" : "已切换为 SMTP 发件。");
+    } catch (error) {
+      setMessage(errorMessage(error, "切换邮件通道失败"));
+    } finally {
+      setProviderAction("");
+    }
+  }
+
+  async function sendProviderTest() {
+    setProviderAction("test");
+    setMessage("");
+    try {
+      const result = await apiFetch<{ provider: string; email: string }>("/api/admin/email-provider/test", {
+        method: "POST",
+        body: JSON.stringify({ email: testEmail }),
+      });
+      setMessage(`测试邮件已通过 ${result.provider} 发送至 ${result.email}。`);
+    } catch (error) {
+      setMessage(errorMessage(error, "测试邮件发送失败"));
+    } finally {
+      setProviderAction("");
+    }
+  }
+
+  function confirmDisconnectOutlook() {
+    setConfirmIntent({
+      actionLabel: "断开 Outlook 连接？",
+      confirmLabel: "确认断开",
+      busyLabel: "正在断开...",
+      description: "服务器保存的加密授权令牌将被删除；如果当前使用 Outlook，会自动回退到 SMTP。",
+      details: [emailProvider.data?.outlook.account_masked || "当前 Outlook 账号"],
+      danger: true,
+      onConfirm: async () => {
+        setConfirmSubmitting(true);
+        try {
+          await apiFetch("/api/admin/email-provider/outlook/disconnect", { method: "POST" });
+          await emailProvider.reload();
+          setMessage("Outlook 已断开，授权令牌已从服务器删除。");
+          setConfirmIntent(null);
+        } finally {
+          setConfirmSubmitting(false);
+        }
+      },
+    });
+  }
 
   async function openFailureDetail(item: AdminEmailItem) {
     setDetail(null);
@@ -1085,6 +1223,49 @@ export function AdminEmailsPage() {
         )}
       />
       {message ? <div className="admin-alert">{message}</div> : null}
+      <PageState loading={emailProvider.loading} error={emailProvider.error} hasData={Boolean(emailProvider.data)} onRetry={emailProvider.reload}>
+        {emailProvider.data ? (
+          <section className="admin-panel">
+            <div className="admin-panel-head">
+              <Mail aria-hidden="true" />
+              <h2>发件通道</h2>
+            </div>
+            <div className="admin-list">
+              <article className="admin-list-item">
+                <header><b>当前通道</b><span>{emailProvider.data.provider === "outlook_graph" ? "Outlook Graph" : emailProvider.data.provider === "smtp" ? "SMTP" : "仅日志"}</span></header>
+                <p>邮件 worker：{emailProvider.data.worker_count ?? "-"} · SMTP：{emailProvider.data.smtp.configured ? emailProvider.data.smtp.from_masked || "已配置" : "未配置"}</p>
+                <div className="admin-email-campaign">
+                  <button type="button" disabled={!emailProvider.data.smtp.configured || Boolean(providerAction) || emailProvider.data.provider === "smtp"} onClick={() => selectEmailProvider("smtp")}>使用 SMTP</button>
+                  <button type="button" disabled={!emailProvider.data.outlook.connected || Boolean(providerAction) || emailProvider.data.provider === "outlook_graph"} onClick={() => selectEmailProvider("outlook_graph")}>使用 Outlook</button>
+                </div>
+              </article>
+              <article className="admin-list-item">
+                <header><b>Outlook / Hotmail</b><span>{emailProvider.data.outlook.connected ? "已连接" : emailProvider.data.outlook.reconnect_required ? "需要重新连接" : emailProvider.data.outlook.configured ? "等待授权" : "等待服务器配置"}</span></header>
+                <p>{emailProvider.data.outlook.account_masked || "尚未配置发件账号"}{emailProvider.data.outlook.connected_at ? ` · 连接于 ${formatDate(emailProvider.data.outlook.connected_at)}` : ""}</p>
+                {emailProvider.data.outlook.last_error ? <small>{emailProvider.data.outlook.last_error}</small> : null}
+                <div className="admin-email-campaign">
+                  <button type="button" disabled={!emailProvider.data.outlook.configured || Boolean(providerAction)} onClick={connectOutlook}>{emailProvider.data.outlook.connected ? "重新连接 Outlook" : "连接 Outlook"}</button>
+                  {emailProvider.data.outlook.connected ? <button type="button" disabled={Boolean(providerAction)} onClick={confirmDisconnectOutlook}>断开连接</button> : null}
+                </div>
+                {outlookDevice ? (
+                  <div className="admin-email-campaign">
+                    <span>设备代码：<strong>{outlookDevice.user_code}</strong> · 有效期至 {formatDate(outlookDevice.expires_at)}</span>
+                    <a href={outlookDevice.verification_uri} target="_blank" rel="noreferrer">打开微软授权页</a>
+                    <button type="button" disabled={Boolean(providerAction)} onClick={pollOutlookConnection}>{providerAction === "poll" ? "检查中..." : "检查授权结果"}</button>
+                  </div>
+                ) : null}
+              </article>
+              <article className="admin-list-item">
+                <header><b>发送测试邮件</b><span>使用当前通道</span></header>
+                <div className="admin-notice-item-actions">
+                  <input type="email" value={testEmail} placeholder="收件邮箱" aria-label="测试邮件收件邮箱" onChange={(event) => setTestEmail(event.target.value)} />
+                  <button type="button" disabled={!testEmail.trim() || Boolean(providerAction) || emailProvider.data.provider === "log"} onClick={sendProviderTest}>{providerAction === "test" ? "发送中..." : "发送测试邮件"}</button>
+                </div>
+              </article>
+            </div>
+          </section>
+        ) : null}
+      </PageState>
       <PageState loading={emails.loading} error={emails.error} hasData={Boolean(emails.data)} onRetry={emails.reload}>
         {emails.data ? (
           <section className="admin-panel">

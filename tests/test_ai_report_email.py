@@ -239,7 +239,7 @@ class AIReportEmailTest(unittest.TestCase):
 
         sent: dict[tuple[str, str], dict[str, str]] = {}
 
-        def capture(email: str, *, subject: str, text: str, html: str) -> None:
+        def capture(email: str, *, subject: str, text: str, html: str, message_id: str = "") -> None:
             product = "research" if "研报" in subject else "market"
             sent[(email, product)] = {"subject": subject, "text": text, "html": html}
 
@@ -275,8 +275,8 @@ class AIReportEmailTest(unittest.TestCase):
     def test_both_report_types_build_text_plain_and_light_html_mime(self) -> None:
         messages: list[EmailMessage] = []
 
-        def capture(email: str, *, subject: str, text: str, html: str) -> None:
-            messages.append(auth_system._smtp_message(email, subject=subject, text=text, html=html))
+        def capture(email: str, *, subject: str, text: str, html: str, message_id: str = "") -> None:
+            messages.append(auth_system._smtp_message(email, subject=subject, text=text, html=html, message_id=message_id))
 
         with mock.patch.dict(
             os.environ,
@@ -330,7 +330,7 @@ class AIReportEmailTest(unittest.TestCase):
         }]
         captured: dict[str, str] = {}
 
-        def capture(_email: str, *, subject: str, text: str, html: str) -> None:
+        def capture(_email: str, *, subject: str, text: str, html: str, message_id: str = "") -> None:
             captured.update(subject=subject, text=text, html=html)
 
         with mock.patch.dict(

@@ -242,6 +242,8 @@ type AdminCapture = {
   noticePublishBody?: Record<string, unknown>;
   noticeRetryPath?: string;
   emailRetryPaths?: string[];
+  emailProviderSelectBody?: Record<string, unknown>;
+  emailProviderTestBody?: Record<string, unknown>;
 };
 
 type FixtureOptions = {
@@ -294,6 +296,20 @@ async function installAdminFixtures(page: Page, options: FixtureOptions = {}) {
     orders: clone(defaultOrders),
     notices: clone(defaultNotices),
     emails: clone(defaultEmails),
+    emailProvider: {
+      provider: "smtp",
+      worker_count: 1,
+      smtp: { configured: true, from_masked: "no****@qq.com" },
+      outlook: {
+        configured: true,
+        connected: true,
+        account_masked: "wa****************@hotmail.com",
+        connected_at: "2026-08-10T22:00:00+08:00",
+        updated_at: "2026-08-10T22:00:00+08:00",
+        reconnect_required: false,
+        last_error: "",
+      },
+    },
   };
 
   if (options.seedAuth !== false) {
@@ -442,6 +458,33 @@ async function installAdminFixtures(page: Page, options: FixtureOptions = {}) {
     if (/^\/api\/admin\/(daily-top5-email-campaigns|daily-top5-close-email-campaigns|ai-report-email-campaigns)\/\d+\/retry$/.test(path) && method === "POST") {
       capture!.emailRetryPaths?.push(path);
       return json(route, { email_campaign: { id: Number(path.split("/")[4]), status: "pending" } });
+    }
+
+    if (path === "/api/admin/email-provider" && method === "GET") {
+      return json(route, state.emailProvider);
+    }
+
+    if (path === "/api/admin/email-provider/select" && method === "POST") {
+      const body = readJson(route);
+      capture!.emailProviderSelectBody = body;
+      state.emailProvider.provider = String(body.provider || "smtp");
+      return json(route, state.emailProvider);
+    }
+
+    if (path === "/api/admin/email-provider/test" && method === "POST") {
+      const body = readJson(route);
+      capture!.emailProviderTestBody = body;
+      return json(route, { sent: true, provider: state.emailProvider.provider, email: "te**@example.com" });
+    }
+
+    if (path === "/api/admin/email-provider/outlook/connect" && method === "POST") {
+      return json(route, { authorization_url: "https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize" }, 201);
+    }
+
+    if (path === "/api/admin/email-provider/outlook/disconnect" && method === "POST") {
+      state.emailProvider.outlook.connected = false;
+      state.emailProvider.provider = "smtp";
+      return json(route, state.emailProvider);
     }
 
     if (/^\/api\/admin\/emails\/(update_notice|daily_top5|daily_top5_close|market_day|ai_research)\/\d+$/.test(path)) {
@@ -621,6 +664,24 @@ test.describe("admin routing", () => {
 
     expect(capture.emailRetryPaths).toEqual(["/api/admin/daily-top5-email-campaigns/41/retry"]);
     await expect(page.getByText("失败邮件已重新加入发送队列。")).toBeVisible();
+  });
+
+  test("emails manage the active provider and send a safe test message", async ({ page }) => {
+    const capture: AdminCapture = { adminLoginBodies: [], emailProviderSelectBody: {}, emailProviderTestBody: {} };
+    await installAdminFixtures(page, { capture });
+
+    await page.goto("/admin/emails", { waitUntil: "domcontentloaded" });
+    await expect(page.getByText("邮件 worker：1")).toBeVisible();
+    await expect(page.getByText("wa****************@hotmail.com", { exact: false })).toBeVisible();
+
+    await page.getByRole("button", { name: "使用 Outlook" }).click();
+    expect(capture.emailProviderSelectBody).toEqual({ provider: "outlook_graph" });
+    await expect(page.getByText("已切换为 Outlook Graph 发件。")).toBeVisible();
+
+    await page.getByRole("textbox", { name: "测试邮件收件邮箱" }).fill("tester@example.com");
+    await page.getByRole("button", { name: "发送测试邮件" }).click();
+    expect(capture.emailProviderTestBody).toEqual({ email: "tester@example.com" });
+    await expect(page.getByText(/测试邮件已通过 outlook_graph/)).toBeVisible();
   });
 
   test("emails support the daily_top5_close kind filter, detail route, and close-campaign retry endpoint", async ({ page }) => {
