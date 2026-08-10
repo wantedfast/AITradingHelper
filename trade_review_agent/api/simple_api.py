@@ -4460,7 +4460,7 @@ def _start_update_email_queue_worker() -> None:
     recover_daily_top5_email_queue(AUTH_DB)
     recover_daily_top5_close_email_queue(AUTH_DB)
     recover_ai_report_email_queue(AUTH_DB)
-    for worker_index in range(UPDATE_EMAIL_WORKER_COUNT):
+    for worker_index in range(_configured_update_email_worker_count()):
         thread = threading.Thread(
             target=_update_email_queue_worker,
             args=(worker_index + 1,),
@@ -4468,6 +4468,15 @@ def _start_update_email_queue_worker() -> None:
             daemon=True,
         )
         thread.start()
+
+
+def _configured_update_email_worker_count() -> int:
+    raw = os.getenv("UPDATE_EMAIL_WORKER_COUNT", str(UPDATE_EMAIL_WORKER_COUNT)).strip()
+    try:
+        configured = int(raw)
+    except ValueError:
+        configured = UPDATE_EMAIL_WORKER_COUNT
+    return max(1, min(configured, 16))
 
 
 def run(host: str = "0.0.0.0", port: int = 8600) -> None:
