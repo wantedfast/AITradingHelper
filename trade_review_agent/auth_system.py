@@ -14,12 +14,17 @@ import threading
 import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from email.message import EmailMessage
 from pathlib import Path
 from typing import Any, Callable, Iterator
 from zoneinfo import ZoneInfo
 
+from trade_review_agent.auction_strength.close_email import (
+    close_email_cutoff_at,
+    close_email_due_at,
+    collect_close_email_snapshot,
+)
 from trade_review_agent.legal_agreements import (
     REGISTRATION_AGREEMENT_TYPE,
     REGISTRATION_AGREEMENT_VERSION,
@@ -63,6 +68,7 @@ PERMANENT_EMAIL_ERROR_MARKERS = (
     "account does not exist",
     "invalid recipient",
 )
+DAILY_TOP5_CLOSE_EMAIL_RETRY_MINUTES = 5
 CREDIT_PACKAGES = {
     "pack_10": {"plan_name": "10 次使用包", "credits": 10, "amount_cents": 990},
     "pack_50": {"plan_name": "50 次使用包", "credits": 50, "amount_cents": 3990},
@@ -346,6 +352,44 @@ def init_auth_db(db_path: Path) -> None:
                 UNIQUE (campaign_id, user_id)
             );
 
+            CREATE TABLE IF NOT EXISTS daily_top5_close_email_campaigns (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                trade_date TEXT NOT NULL UNIQUE,
+                report_id TEXT NOT NULL,
+                report_json TEXT NOT NULL,
+                close_report_json TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'pending',
+                calculation_status TEXT NOT NULL DEFAULT 'pending',
+                calculation_attempt_count INTEGER NOT NULL DEFAULT 0,
+                calculation_due_at TEXT,
+                next_calculation_at TEXT,
+                calculation_started_at TEXT,
+                calculation_ready_at TEXT,
+                calculation_override_requested_at TEXT,
+                calculation_last_error TEXT,
+                created_at TEXT NOT NULL,
+                started_at TEXT,
+                finished_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS daily_top5_close_email_deliveries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                campaign_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                email TEXT NOT NULL DEFAULT '',
+                content_variant TEXT NOT NULL DEFAULT 'full',
+                membership_active INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'pending',
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                next_attempt_at TEXT,
+                last_error TEXT,
+                sent_at TEXT,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (campaign_id) REFERENCES daily_top5_close_email_campaigns(id),
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                UNIQUE (campaign_id, user_id)
+            );
+
             CREATE TABLE IF NOT EXISTS sms_codes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 phone TEXT NOT NULL,
@@ -400,6 +444,10 @@ def init_auth_db(db_path: Path) -> None:
                 ON ai_report_email_deliveries(status, next_attempt_at, id);
             CREATE INDEX IF NOT EXISTS idx_ai_report_email_campaigns_date
                 ON ai_report_email_campaigns(report_type, report_date, id);
+            CREATE INDEX IF NOT EXISTS idx_daily_top5_close_email_campaigns_queue
+                ON daily_top5_close_email_campaigns(calculation_status, next_calculation_at, id);
+            CREATE INDEX IF NOT EXISTS idx_daily_top5_close_email_deliveries_queue
+                ON daily_top5_close_email_deliveries(status, next_attempt_at, id);
             CREATE INDEX IF NOT EXISTS idx_sms_codes_phone ON sms_codes(phone, purpose, created_at);
             CREATE INDEX IF NOT EXISTS idx_email_codes_email ON email_codes(email, purpose, created_at);
             CREATE INDEX IF NOT EXISTS idx_agreement_acceptances_user ON agreement_acceptances(user_id, accepted_at);
@@ -408,6 +456,7 @@ def init_auth_db(db_path: Path) -> None:
         _ensure_user_columns(conn)
         _ensure_order_columns(conn)
         _ensure_update_notice_columns(conn)
+        _ensure_daily_top5_close_email_schema(conn)
         conn.executescript(
             """
             CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username) WHERE username IS NOT NULL AND username != '';
@@ -466,6 +515,24 @@ def _ensure_update_notice_columns(conn: sqlite3.Connection) -> None:
         "content_markdown": "ALTER TABLE update_notices ADD COLUMN content_markdown TEXT NOT NULL DEFAULT ''",
         "audience": "ALTER TABLE update_notices ADD COLUMN audience TEXT NOT NULL DEFAULT 'registered_users'",
         "expires_at": "ALTER TABLE update_notices ADD COLUMN expires_at TEXT",
+    }
+    for column, statement in migrations.items():
+        if column not in columns:
+            conn.execute(statement)
+
+
+def _ensure_daily_top5_close_email_schema(conn: sqlite3.Connection) -> None:
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(daily_top5_close_email_campaigns)").fetchall()}
+    migrations = {
+        "close_report_json": "ALTER TABLE daily_top5_close_email_campaigns ADD COLUMN close_report_json TEXT NOT NULL DEFAULT ''",
+        "calculation_status": "ALTER TABLE daily_top5_close_email_campaigns ADD COLUMN calculation_status TEXT NOT NULL DEFAULT 'pending'",
+        "calculation_attempt_count": "ALTER TABLE daily_top5_close_email_campaigns ADD COLUMN calculation_attempt_count INTEGER NOT NULL DEFAULT 0",
+        "calculation_due_at": "ALTER TABLE daily_top5_close_email_campaigns ADD COLUMN calculation_due_at TEXT",
+        "next_calculation_at": "ALTER TABLE daily_top5_close_email_campaigns ADD COLUMN next_calculation_at TEXT",
+        "calculation_started_at": "ALTER TABLE daily_top5_close_email_campaigns ADD COLUMN calculation_started_at TEXT",
+        "calculation_ready_at": "ALTER TABLE daily_top5_close_email_campaigns ADD COLUMN calculation_ready_at TEXT",
+        "calculation_override_requested_at": "ALTER TABLE daily_top5_close_email_campaigns ADD COLUMN calculation_override_requested_at TEXT",
+        "calculation_last_error": "ALTER TABLE daily_top5_close_email_campaigns ADD COLUMN calculation_last_error TEXT",
     }
     for column, statement in migrations.items():
         if column not in columns:
@@ -1801,6 +1868,23 @@ def admin_dashboard(db_path: Path, days: int = 14) -> dict[str, Any]:
                 "SELECT COUNT(*) AS count FROM daily_top5_email_deliveries WHERE status = 'failed'"
             ).fetchone()["count"]
         )
+        daily_top5_close_campaign_rows = conn.execute(
+            "SELECT id FROM daily_top5_close_email_campaigns ORDER BY trade_date DESC, id DESC LIMIT 20"
+        ).fetchall()
+        daily_top5_close_email_campaigns = [
+            _daily_top5_close_email_campaign_payload(conn, int(row["id"]))
+            for row in daily_top5_close_campaign_rows
+        ]
+        daily_top5_close_email_failed_count = int(
+            conn.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM daily_top5_close_email_campaigns
+                WHERE status IN ('failed', 'partial_failed')
+                   OR calculation_status = 'failed'
+                """
+            ).fetchone()["count"]
+        )
         ai_report_campaign_rows = conn.execute(
             "SELECT id FROM ai_report_email_campaigns ORDER BY report_date DESC, id DESC LIMIT 30"
         ).fetchall()
@@ -1841,6 +1925,8 @@ def admin_dashboard(db_path: Path, days: int = 14) -> dict[str, Any]:
             "update_notices": [_update_notice_payload(row, conn=conn) for row in _update_notice_rows(conn)],
             "daily_top5_email_campaigns": daily_top5_email_campaigns,
             "daily_top5_email_failed_count": daily_top5_email_failed_count,
+            "daily_top5_close_email_campaigns": daily_top5_close_email_campaigns,
+            "daily_top5_close_email_failed_count": daily_top5_close_email_failed_count,
             "ai_report_email_campaigns": ai_report_email_campaigns,
             "ai_report_email_failed_count": ai_report_email_failed_count,
         }
@@ -2106,7 +2192,7 @@ def list_admin_email_campaigns(
 ) -> dict[str, Any]:
     normalized_kind = _normalize_admin_choice(
         kind,
-        allowed={"all", "update_notice", "daily_top5", "market_day", "ai_research"},
+        allowed={"all", "update_notice", "daily_top5", "daily_top5_close", "market_day", "ai_research"},
     )
     normalized_status = _normalize_admin_choice(
         status,
@@ -2147,6 +2233,19 @@ def list_admin_email_campaigns(
                     "title": f"{payload['trade_date']} · 每日 TOP5",
                     "summary": f"完整版 {payload['full']} · 摘要版 {payload['teaser']}",
                     "retry_type": "daily_top5",
+                }
+            )
+        for row in conn.execute(
+            "SELECT id FROM daily_top5_close_email_campaigns ORDER BY created_at DESC, id DESC"
+        ).fetchall():
+            payload = _daily_top5_close_email_campaign_payload(conn, int(row["id"]))
+            items.append(
+                {
+                    **payload,
+                    "kind": "daily_top5_close",
+                    "title": f"{payload['trade_date']} · 每日 TOP5 收盘表现",
+                    "summary": payload.get("calculation_last_error") or f"完整版 {payload['full']} · 待发 {payload['pending']}",
+                    "retry_type": "daily_top5_close",
                 }
             )
         for row in conn.execute(
@@ -2197,7 +2296,7 @@ def list_admin_email_campaigns(
 def get_admin_email_campaign_detail(db_path: Path, *, kind: str, campaign_id: int) -> dict[str, Any]:
     normalized_kind = _normalize_admin_choice(
         kind,
-        allowed={"update_notice", "daily_top5", "market_day", "ai_research"},
+        allowed={"update_notice", "daily_top5", "daily_top5_close", "market_day", "ai_research"},
     )
     if campaign_id <= 0:
         raise AuthError("邮件任务不存在", 404)
@@ -2209,6 +2308,10 @@ def get_admin_email_campaign_detail(db_path: Path, *, kind: str, campaign_id: in
         campaign_table = "daily_top5_email_campaigns"
         delivery_table = "daily_top5_email_deliveries"
         payload_builder = _daily_top5_email_campaign_payload
+    elif normalized_kind == "daily_top5_close":
+        campaign_table = "daily_top5_close_email_campaigns"
+        delivery_table = "daily_top5_close_email_deliveries"
+        payload_builder = _daily_top5_close_email_campaign_payload
     else:
         campaign_table = "ai_report_email_campaigns"
         delivery_table = "ai_report_email_deliveries"
@@ -2245,6 +2348,7 @@ def get_admin_email_campaign_detail(db_path: Path, *, kind: str, campaign_id: in
         ]
         return {
             "kind": normalized_kind,
+            **campaign,
             "campaign": campaign,
             "failed_deliveries": deliveries,
         }
@@ -2657,6 +2761,119 @@ def retry_daily_top5_email_campaign(db_path: Path, *, campaign_id: int) -> dict[
         return _daily_top5_email_campaign_payload(conn, campaign_id)
 
 
+def create_daily_top5_close_email_campaign(
+    db_path: Path,
+    *,
+    report: dict[str, Any],
+    now_dt: datetime | None = None,
+) -> dict[str, Any]:
+    trade_date = str(report.get("trade_date") or "").strip()
+    report_id = str(report.get("id") or report.get("request_id") or "").strip()
+    strong_stocks = report.get("top5_strong_stocks")
+    conclusion = report.get("global_conclusion")
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", trade_date):
+        raise AuthError("每日 TOP5 收盘交易日期无效", 400)
+    if not _has_complete_daily_top5_stocks(strong_stocks):
+        raise AuthError("每日 TOP5 报告尚未包含完整的 5 只强势标的", 409)
+    if not isinstance(conclusion, dict) or not _has_complete_daily_top5_conclusion(conclusion):
+        raise AuthError("每日 TOP5 报告尚未包含全局结论", 409)
+
+    current_dt = (now_dt or datetime.now(CN_TZ)).astimezone(CN_TZ)
+    due_at = close_email_due_at(trade_date)
+    cutoff_at = close_email_cutoff_at(trade_date)
+    next_calculation_at = max(current_dt, due_at).isoformat() if current_dt <= cutoff_at else None
+    calculation_status = "pending" if next_calculation_at else "failed"
+    calculation_error = "" if next_calculation_at else "Top5 报告在 16:00 后到达，已转为人工重试"
+    status = "pending" if next_calculation_at else "failed"
+    report_json = json.dumps(report, ensure_ascii=False, separators=(",", ":"))
+    now = current_dt.isoformat()
+
+    with _connect(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        existing = conn.execute(
+            "SELECT id FROM daily_top5_close_email_campaigns WHERE trade_date = ?",
+            (trade_date,),
+        ).fetchone()
+        if existing:
+            return _daily_top5_close_email_campaign_payload(conn, int(existing["id"]))
+        campaign_id = int(
+            conn.execute(
+                """
+                INSERT INTO daily_top5_close_email_campaigns (
+                    trade_date, report_id, report_json, status, calculation_status,
+                    calculation_due_at, next_calculation_at, calculation_last_error, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    trade_date,
+                    report_id,
+                    report_json,
+                    status,
+                    calculation_status,
+                    due_at.isoformat(),
+                    next_calculation_at,
+                    calculation_error,
+                    now,
+                ),
+            ).lastrowid
+        )
+        return _daily_top5_close_email_campaign_payload(conn, campaign_id)
+
+
+def retry_daily_top5_close_email_campaign(
+    db_path: Path,
+    *,
+    campaign_id: int,
+    now_dt: datetime | None = None,
+) -> dict[str, Any]:
+    with _connect(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        existing = conn.execute(
+            "SELECT id FROM daily_top5_close_email_campaigns WHERE id = ?",
+            (campaign_id,),
+        ).fetchone()
+        if not existing:
+            raise AuthError("每日 TOP5 收盘邮件任务不存在", 404)
+        delivery_count = int(
+            conn.execute(
+                "SELECT COUNT(*) AS count FROM daily_top5_close_email_deliveries WHERE campaign_id = ?",
+                (campaign_id,),
+            ).fetchone()["count"]
+        )
+        current_dt = (now_dt or datetime.now(CN_TZ)).astimezone(CN_TZ)
+        now = current_dt.isoformat()
+        if delivery_count == 0:
+            conn.execute(
+                """
+                UPDATE daily_top5_close_email_campaigns
+                SET status = 'pending',
+                    finished_at = NULL,
+                    calculation_status = 'pending',
+                    next_calculation_at = ?,
+                    calculation_override_requested_at = ?,
+                    calculation_last_error = NULL
+                WHERE id = ?
+                """,
+                (now, now, campaign_id),
+            )
+        else:
+            cursor = conn.execute(
+                """
+                UPDATE daily_top5_close_email_deliveries
+                SET status = 'pending', attempt_count = 0, next_attempt_at = ?,
+                    last_error = NULL, updated_at = ?
+                WHERE campaign_id = ? AND status = 'failed'
+                """,
+                (now, now, campaign_id),
+            )
+            if cursor.rowcount:
+                conn.execute(
+                    "UPDATE daily_top5_close_email_campaigns SET status = 'pending', finished_at = NULL WHERE id = ?",
+                    (campaign_id,),
+                )
+        return _daily_top5_close_email_campaign_payload(conn, campaign_id)
+
+
 AI_REPORT_EMAIL_TYPES = {"market_day", "ai_research"}
 
 
@@ -2841,6 +3058,65 @@ def recover_daily_top5_email_queue(db_path: Path) -> int:
         for campaign_id in affected_campaigns:
             _refresh_daily_top5_email_campaign_status(conn, campaign_id)
         return normalized + int(cursor.rowcount)
+
+
+def recover_daily_top5_close_email_queue(db_path: Path, *, now_dt: datetime | None = None) -> int:
+    current_dt = (now_dt or datetime.now(CN_TZ)).astimezone(CN_TZ)
+    now = current_dt.isoformat()
+    cutoff = (current_dt - timedelta(minutes=10)).isoformat()
+    with _connect(db_path) as conn:
+        delivery_cursor = conn.execute(
+            """
+            UPDATE daily_top5_close_email_deliveries
+            SET status = 'pending', next_attempt_at = ?, updated_at = ?
+            WHERE status = 'sending' AND updated_at < ?
+            """,
+            (now, now, cutoff),
+        )
+        campaign_rows = conn.execute(
+            """
+            SELECT id, trade_date, calculation_override_requested_at
+            FROM daily_top5_close_email_campaigns
+            WHERE calculation_status = 'calculating'
+              AND COALESCE(calculation_started_at, '') < ?
+            """,
+            (cutoff,),
+        ).fetchall()
+        recovered = int(delivery_cursor.rowcount)
+        for row in campaign_rows:
+            trade_date = str(row["trade_date"] or "").strip()
+            cutoff_at = close_email_cutoff_at(trade_date)
+            manual_override = bool(str(row["calculation_override_requested_at"] or "").strip())
+            if current_dt <= cutoff_at or manual_override:
+                conn.execute(
+                    """
+                    UPDATE daily_top5_close_email_campaigns
+                    SET calculation_status = 'pending',
+                        next_calculation_at = ?,
+                        calculation_last_error = COALESCE(NULLIF(calculation_last_error, ''), '收盘行情计算在恢复后重试')
+                    WHERE id = ?
+                    """,
+                    (now, row["id"]),
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE daily_top5_close_email_campaigns
+                    SET status = 'failed',
+                        finished_at = ?,
+                        calculation_status = 'failed',
+                        next_calculation_at = NULL,
+                        calculation_override_requested_at = NULL,
+                        calculation_last_error = ?
+                    WHERE id = ?
+                    """,
+                    (now, _daily_top5_close_calculation_failure_message(
+                        [{"code": "", "name": trade_date, "reason": "calculation_recovered_after_cutoff"}],
+                        fallback="收盘行情计算已超过自动重试截止时间，请管理员手动重试",
+                    ), row["id"]),
+                )
+            recovered += 1
+        return recovered
 
 
 def recover_ai_report_email_queue(db_path: Path) -> int:
@@ -3033,6 +3309,262 @@ def process_next_daily_top5_email(
                 (_now(), _now(), delivery["id"]),
             )
             _refresh_daily_top5_email_campaign_status(conn, int(delivery["campaign_id"]))
+    return True
+
+
+def process_next_daily_top5_close_email(
+    db_path: Path,
+    *,
+    cache_db: Path | None = None,
+    provider: Any | None = None,
+    sender: Callable[[dict[str, Any]], None] | None = None,
+    smtp_session: "UpdateEmailSMTPSession | None" = None,
+    now_dt: datetime | None = None,
+) -> bool:
+    current_dt = (now_dt or datetime.now(CN_TZ)).astimezone(CN_TZ)
+    now = current_dt.isoformat()
+    with _connect(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        calc_row = conn.execute(
+            """
+            SELECT *
+            FROM daily_top5_close_email_campaigns
+            WHERE calculation_status = 'pending'
+              AND COALESCE(next_calculation_at, '') != ''
+              AND next_calculation_at <= ?
+            ORDER BY next_calculation_at, id
+            LIMIT 1
+            """,
+            (now,),
+        ).fetchone()
+        if calc_row:
+            attempt = int(calc_row["calculation_attempt_count"] or 0) + 1
+            conn.execute(
+                """
+                UPDATE daily_top5_close_email_campaigns
+                SET calculation_status = 'calculating',
+                    calculation_attempt_count = ?,
+                    calculation_started_at = ?
+                WHERE id = ?
+                """,
+                (attempt, now, calc_row["id"]),
+            )
+            campaign = dict(calc_row)
+            campaign["calculation_attempt_count"] = attempt
+        else:
+            campaign = None
+    if campaign is not None:
+        manual_override = bool(str(campaign.get("calculation_override_requested_at") or "").strip())
+        cutoff_at = close_email_cutoff_at(str(campaign.get("trade_date") or ""))
+        scheduled_at_text = str(campaign.get("next_calculation_at") or "").strip()
+        try:
+            scheduled_at = datetime.fromisoformat(scheduled_at_text).astimezone(CN_TZ)
+        except (TypeError, ValueError):
+            scheduled_at = None
+        # A retry deliberately scheduled for 16:00 may be claimed a few
+        # seconds late by the polling worker. Allow that already-earned final
+        # attempt a short claim grace, but never let a never-attempted morning
+        # task or a restarted stale task run after the cutoff automatically.
+        final_attempt_grace = bool(
+            int(campaign.get("calculation_attempt_count") or 0) > 1
+            and scheduled_at == cutoff_at
+            and current_dt <= cutoff_at + timedelta(minutes=1)
+        )
+        if current_dt > cutoff_at and not manual_override and not final_attempt_grace:
+            with _connect(db_path) as conn:
+                conn.execute(
+                    """
+                    UPDATE daily_top5_close_email_campaigns
+                    SET status = 'failed', finished_at = ?,
+                        calculation_status = 'failed', next_calculation_at = NULL,
+                        calculation_override_requested_at = NULL,
+                        calculation_last_error = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        now,
+                        _daily_top5_close_calculation_failure_message(
+                            [{"code": "", "name": str(campaign.get("trade_date") or ""), "reason": "automatic_cutoff_elapsed"}],
+                            fallback="收盘行情计算已超过自动重试截止时间，请管理员手动重试",
+                        ),
+                        campaign["id"],
+                    ),
+                )
+            return True
+        report = json.loads(str(campaign.get("report_json") or "{}"))
+        snapshot, issues = collect_close_email_snapshot(
+            report,
+            cache_db=cache_db or db_path.parent / "market_data_cache.sqlite",
+            provider=provider,
+            quote_time=current_dt,
+        )
+        if snapshot is not None:
+            with _connect(db_path) as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                existing_delivery_count = int(
+                    conn.execute(
+                        "SELECT COUNT(*) AS count FROM daily_top5_close_email_deliveries WHERE campaign_id = ?",
+                        (campaign["id"],),
+                    ).fetchone()["count"]
+                )
+                if existing_delivery_count == 0:
+                    users = conn.execute(
+                        """
+                        SELECT id, email, email_verified, update_emails_enabled
+                        FROM users
+                        WHERE role = 'user'
+                        ORDER BY id
+                        """
+                    ).fetchall()
+                    for user in users:
+                        email = str(user["email"] or "").strip().lower()
+                        verified = int(user["email_verified"] or 0) == 1
+                        opted_in = int(user["update_emails_enabled"] or 0) == 1
+                        eligible = bool(email and verified and opted_in)
+                        reason = None
+                        if not email or not verified:
+                            reason = "邮箱未验证"
+                        elif not opted_in:
+                            reason = "用户已关闭邮件推送"
+                        conn.execute(
+                            """
+                            INSERT INTO daily_top5_close_email_deliveries (
+                                campaign_id, user_id, email, content_variant, membership_active,
+                                status, attempt_count, next_attempt_at, last_error, updated_at
+                            ) VALUES (?, ?, ?, 'full', 0, ?, 0, ?, ?, ?)
+                            """,
+                            (
+                                campaign["id"],
+                                int(user["id"]),
+                                email,
+                                "pending" if eligible else "skipped",
+                                now if eligible else None,
+                                reason,
+                                now,
+                            ),
+                        )
+                conn.execute(
+                    """
+                    UPDATE daily_top5_close_email_campaigns
+                    SET close_report_json = ?, calculation_status = 'ready',
+                        calculation_ready_at = ?, calculation_override_requested_at = NULL,
+                        calculation_last_error = NULL
+                    WHERE id = ?
+                    """,
+                    (json.dumps(snapshot, ensure_ascii=False, separators=(",", ":")), now, campaign["id"]),
+                )
+                _refresh_daily_top5_close_email_campaign_status(conn, int(campaign["id"]))
+            return True
+
+        error = "quote_missing: " + "；".join(
+            f"{item.get('name') or item.get('code') or '-'}:{item.get('reason') or 'quote_missing'}"
+            for item in issues
+        )[:500] or "收盘行情尚未齐备"
+        next_retry = min(current_dt + timedelta(minutes=DAILY_TOP5_CLOSE_EMAIL_RETRY_MINUTES), cutoff_at)
+        with _connect(db_path) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            if not manual_override and current_dt < cutoff_at and next_retry >= current_dt:
+                conn.execute(
+                    """
+                    UPDATE daily_top5_close_email_campaigns
+                    SET calculation_status = 'pending',
+                        next_calculation_at = ?,
+                        calculation_last_error = ?
+                    WHERE id = ?
+                    """,
+                    (next_retry.isoformat(), error, campaign["id"]),
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE daily_top5_close_email_campaigns
+                    SET calculation_status = 'failed',
+                        next_calculation_at = NULL,
+                        calculation_override_requested_at = NULL,
+                        calculation_last_error = ?
+                    WHERE id = ?
+                    """,
+                    (error, campaign["id"]),
+                )
+            _refresh_daily_top5_close_email_campaign_status(conn, int(campaign["id"]))
+        return True
+
+    with _connect(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            """
+            SELECT d.id, d.campaign_id, d.email, d.attempt_count, c.trade_date, c.close_report_json
+            FROM daily_top5_close_email_deliveries d
+            JOIN daily_top5_close_email_campaigns c ON c.id = d.campaign_id
+            WHERE d.status = 'pending'
+              AND (d.next_attempt_at IS NULL OR d.next_attempt_at <= ?)
+            ORDER BY d.id
+            LIMIT 1
+            """,
+            (now,),
+        ).fetchone()
+        if not row:
+            return False
+        attempt = int(row["attempt_count"]) + 1
+        conn.execute(
+            """
+            UPDATE daily_top5_close_email_deliveries
+            SET status = 'sending', attempt_count = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (attempt, now, row["id"]),
+        )
+        conn.execute(
+            """
+            UPDATE daily_top5_close_email_campaigns
+            SET status = 'sending', started_at = COALESCE(started_at, ?)
+            WHERE id = ?
+            """,
+            (now, row["campaign_id"]),
+        )
+        delivery = dict(row)
+        delivery["attempt_count"] = attempt
+    try:
+        if sender is not None:
+            sender(delivery)
+        elif smtp_session is not None:
+            _send_daily_top5_close_email(delivery, smtp_session=smtp_session)
+        else:
+            _send_daily_top5_close_email(delivery)
+    except Exception as exc:
+        with _connect(db_path) as conn:
+            if attempt >= UPDATE_EMAIL_MAX_ATTEMPTS:
+                conn.execute(
+                    """
+                    UPDATE daily_top5_close_email_deliveries
+                    SET status = 'failed', last_error = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (str(exc)[:500], _now(), delivery["id"]),
+                )
+            else:
+                delay = UPDATE_EMAIL_RETRY_MINUTES[min(attempt - 1, len(UPDATE_EMAIL_RETRY_MINUTES) - 1)]
+                next_attempt = (datetime.now(CN_TZ) + timedelta(minutes=delay)).isoformat()
+                conn.execute(
+                    """
+                    UPDATE daily_top5_close_email_deliveries
+                    SET status = 'pending', next_attempt_at = ?, last_error = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (next_attempt, str(exc)[:500], _now(), delivery["id"]),
+                )
+            _refresh_daily_top5_close_email_campaign_status(conn, int(delivery["campaign_id"]))
+    else:
+        with _connect(db_path) as conn:
+            conn.execute(
+                """
+                UPDATE daily_top5_close_email_deliveries
+                SET status = 'sent', sent_at = ?, last_error = NULL, updated_at = ?
+                WHERE id = ?
+                """,
+                (_now(), _now(), delivery["id"]),
+            )
+            _refresh_daily_top5_close_email_campaign_status(conn, int(delivery["campaign_id"]))
     return True
 
 
@@ -4524,6 +5056,79 @@ def _daily_top5_email_campaign_payload(conn: sqlite3.Connection, campaign_id: in
     }
 
 
+def _daily_top5_close_email_campaign_payload(conn: sqlite3.Connection, campaign_id: int) -> dict[str, Any]:
+    row = conn.execute(
+        "SELECT * FROM daily_top5_close_email_campaigns WHERE id = ?", (campaign_id,)
+    ).fetchone()
+    if not row:
+        raise AuthError("每日 TOP5 收盘邮件任务不存在", 404)
+    counts = {
+        str(item["status"]): int(item["count"])
+        for item in conn.execute(
+            """
+            SELECT status, COUNT(*) AS count
+            FROM daily_top5_close_email_deliveries
+            WHERE campaign_id = ?
+            GROUP BY status
+            """,
+            (campaign_id,),
+        ).fetchall()
+    }
+    close_snapshot = _load_daily_top5_close_report_json(row["close_report_json"])
+    return {
+        "id": int(row["id"]),
+        "trade_date": str(row["trade_date"]),
+        "report_id": str(row["report_id"]),
+        "status": str(row["status"]),
+        "calculation_status": str(row["calculation_status"] or "pending"),
+        "calculation_attempt_count": int(row["calculation_attempt_count"] or 0),
+        "calculation_due_at": str(row["calculation_due_at"] or ""),
+        "calculation_ready_at": str(row["calculation_ready_at"] or ""),
+        "calculation_last_error": str(row["calculation_last_error"] or ""),
+        "total": sum(counts.values()),
+        "pending": counts.get("pending", 0),
+        "sending": counts.get("sending", 0),
+        "sent": counts.get("sent", 0),
+        "failed": counts.get("failed", 0),
+        "skipped": counts.get("skipped", 0),
+        "full": sum(counts.values()) - counts.get("skipped", 0),
+        "teaser": 0,
+        "next_retry_at": _pending_delivery_next_retry_at(
+            conn,
+            delivery_table="daily_top5_close_email_deliveries",
+            campaign_id=campaign_id,
+        ) or str(row["next_calculation_at"] or ""),
+        "quote_time": str(close_snapshot.get("quote_time") or ""),
+        "created_at": str(row["created_at"]),
+        "started_at": str(row["started_at"] or ""),
+        "finished_at": str(row["finished_at"] or ""),
+    }
+
+
+def _load_daily_top5_close_report_json(value: object) -> dict[str, Any]:
+    text = str(value or "").strip()
+    if not text:
+        return {}
+    try:
+        payload = json.loads(text)
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _daily_top5_close_calculation_failure_message(
+    issues: list[dict[str, str]] | None = None,
+    *,
+    prefix: str = "quote_missing",
+    fallback: str = "收盘行情尚未齐备",
+) -> str:
+    detail = "；".join(
+        f"{item.get('name') or item.get('code') or '-'}:{item.get('reason') or prefix}"
+        for item in (issues or [])
+    )[:500]
+    return f"{prefix}: {detail}" if detail else fallback
+
+
 def _has_complete_daily_top5_stocks(value: object) -> bool:
     required_fields = ("name", "code", "theme", "today_open_change", "reason", "observe_after_930")
     if not isinstance(value, list) or len(value) != 5:
@@ -4575,6 +5180,48 @@ def _refresh_daily_top5_email_campaign_status(conn: sqlite3.Connection, campaign
         status, finished = "completed", _now()
     conn.execute(
         "UPDATE daily_top5_email_campaigns SET status = ?, finished_at = ? WHERE id = ?",
+        (status, finished, campaign_id),
+    )
+
+
+def _refresh_daily_top5_close_email_campaign_status(conn: sqlite3.Connection, campaign_id: int) -> None:
+    campaign = conn.execute(
+        """
+        SELECT calculation_status
+        FROM daily_top5_close_email_campaigns
+        WHERE id = ?
+        """,
+        (campaign_id,),
+    ).fetchone()
+    if not campaign:
+        raise AuthError("每日 TOP5 收盘邮件任务不存在", 404)
+    counts = {
+        str(row["status"]): int(row["count"])
+        for row in conn.execute(
+            """
+            SELECT status, COUNT(*) AS count
+            FROM daily_top5_close_email_deliveries
+            WHERE campaign_id = ?
+            GROUP BY status
+            """,
+            (campaign_id,),
+        ).fetchall()
+    }
+    if sum(counts.values()) == 0:
+        if str(campaign["calculation_status"] or "") == "failed":
+            status, finished = "failed", _now()
+        else:
+            status, finished = "pending", None
+    elif counts.get("sending"):
+        status, finished = "sending", None
+    elif counts.get("pending"):
+        status, finished = "pending", None
+    elif counts.get("failed"):
+        status, finished = ("partial_failed" if counts.get("sent") else "failed"), _now()
+    else:
+        status, finished = "completed", _now()
+    conn.execute(
+        "UPDATE daily_top5_close_email_campaigns SET status = ?, finished_at = ? WHERE id = ?",
         (status, finished, campaign_id),
     )
 
@@ -4928,6 +5575,81 @@ def _send_daily_top5_email(
     }
     if delivery.get("campaign_id") is not None and delivery.get("id") is not None:
         send_kwargs["message_id"] = f"daily-top5-c{delivery['campaign_id']}-d{delivery['id']}"
+    send(str(delivery["email"]), **send_kwargs)
+
+
+def _send_daily_top5_close_email(
+    delivery: dict[str, Any], *, smtp_session: UpdateEmailSMTPSession | None = None
+) -> None:
+    snapshot = _load_daily_top5_close_report_json(delivery.get("close_report_json"))
+    rows = snapshot.get("top5_close_performance") if isinstance(snapshot.get("top5_close_performance"), list) else []
+    trade_date = str(snapshot.get("trade_date") or delivery.get("trade_date") or "")
+    quote_time = str(snapshot.get("quote_time") or "")
+    site_url = os.getenv("PUBLIC_SITE_URL", "").strip().rstrip("/")
+    if not site_url:
+        raise AuthError("PUBLIC_SITE_URL 未配置", 500)
+    report_url = f"{site_url}/auction-strength?date={trade_date}"
+    disclaimer = (
+        "风险提示：本邮件内容基于公开行情整理，仅供学习、研究与信息参考，不构成投资建议。"
+    )
+    text_rows = "\n".join(
+        f"{int(item.get('rank') or 0)}. {item.get('name') or '-'} ({item.get('code') or '-'})  开盘 {float(item.get('open_price') or 0):.2f}  收盘 {float(item.get('close_price') or 0):.2f}  涨跌幅 {float(item.get('change_pct') or 0):+.2f}%  是否涨停 {'涨停' if bool(item.get('is_limit_up')) else '未涨停'}"
+        for item in rows
+        if isinstance(item, dict)
+    )
+    html_rows = "".join(
+        f"""
+        <tr>
+          <td style="padding:8px;border:1px solid #d0d7de;">{int(item.get('rank') or 0)}</td>
+          <td style="padding:8px;border:1px solid #d0d7de;">{_html_escape(str(item.get('name') or '-'))}</td>
+          <td style="padding:8px;border:1px solid #d0d7de;">{_html_escape(str(item.get('code') or '-'))}</td>
+          <td style="padding:8px;border:1px solid #d0d7de;">{float(item.get('open_price') or 0):.2f}</td>
+          <td style="padding:8px;border:1px solid #d0d7de;">{float(item.get('close_price') or 0):.2f}</td>
+          <td style="padding:8px;border:1px solid #d0d7de;">{float(item.get('change_pct') or 0):+.2f}%</td>
+          <td style="padding:8px;border:1px solid #d0d7de;">{'涨停' if bool(item.get('is_limit_up')) else '未涨停'}</td>
+        </tr>
+        """
+        for item in rows
+        if isinstance(item, dict)
+    )
+    text = (
+        f"盈航每日 TOP5 收盘表现｜{trade_date}\n"
+        f"行情时间：{quote_time or '-'}\n\n"
+        f"{text_rows}\n\n"
+        f"查看报告：{report_url}\n\n{disclaimer}\n"
+        "可登录盈航，在账户菜单中关闭邮件推送。"
+    )
+    html = _light_email_document(f"""
+      <p style="margin:0 0 8px;color:#57606a;font-size:13px;">盈航 · DAILY TOP 5 CLOSE</p>
+      <h1 style="margin:0 0 8px;color:#1f2328;font-size:24px;line-height:1.35;">每日 TOP5 收盘表现｜{_html_escape(trade_date)}</h1>
+      <p style="margin:0 0 20px;color:#57606a;font-size:13px;">行情时间：{_html_escape(quote_time or '-')}</p>
+      <table role="presentation" cellspacing="0" cellpadding="0" border="0" style="width:100%;border-collapse:collapse;margin:0 0 20px;">
+        <thead>
+          <tr>
+            <th style="padding:8px;border:1px solid #d0d7de;background:#f6f8fa;">排名</th>
+            <th style="padding:8px;border:1px solid #d0d7de;background:#f6f8fa;">名称</th>
+            <th style="padding:8px;border:1px solid #d0d7de;background:#f6f8fa;">代码</th>
+            <th style="padding:8px;border:1px solid #d0d7de;background:#f6f8fa;">开盘价</th>
+            <th style="padding:8px;border:1px solid #d0d7de;background:#f6f8fa;">收盘价</th>
+            <th style="padding:8px;border:1px solid #d0d7de;background:#f6f8fa;">涨跌幅</th>
+            <th style="padding:8px;border:1px solid #d0d7de;background:#f6f8fa;">是否涨停</th>
+          </tr>
+        </thead>
+        <tbody>{html_rows}</tbody>
+      </table>
+      <p style="margin:24px 0 8px;color:#1f2328;"><a href="{_html_escape(report_url)}" style="color:#0969da;text-decoration:underline;">打开盈航查看报告</a></p>
+      <p style="margin:0 0 20px;color:#57606a;font-size:13px;word-break:break-all;">{_html_escape(report_url)}</p>
+      <p style="margin:0 0 12px;color:#57606a;font-size:12px;line-height:1.6;">{_html_escape(disclaimer)}</p>
+      <p style="margin:0;color:#57606a;font-size:12px;line-height:1.6;">可登录盈航，在账户菜单中关闭邮件推送。</p>
+    """, max_width=720)
+    send = smtp_session.send if smtp_session is not None else _send_smtp_message
+    send_kwargs: dict[str, Any] = {
+        "subject": f"盈航每日 TOP5 收盘表现｜{trade_date}",
+        "text": text,
+        "html": html,
+    }
+    if delivery.get("campaign_id") is not None and delivery.get("id") is not None:
+        send_kwargs["message_id"] = f"daily-top5-close-c{delivery['campaign_id']}-d{delivery['id']}"
     send(str(delivery["email"]), **send_kwargs)
 
 

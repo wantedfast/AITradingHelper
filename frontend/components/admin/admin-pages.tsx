@@ -132,10 +132,20 @@ type NoticeDraft = {
   contentMarkdown: string;
 };
 
+type AdminEmailKind = "update_notice" | "daily_top5" | "daily_top5_close" | "market_day" | "ai_research";
+type AdminEmailRetryType = "update_notice" | "daily_top5" | "daily_top5_close" | "ai_report";
+
+const adminEmailRetryPathByType: Record<AdminEmailRetryType, (campaignId: number) => string> = {
+  update_notice: (campaignId) => `/api/admin/update-email-campaigns/${campaignId}/retry`,
+  daily_top5: (campaignId) => `/api/admin/daily-top5-email-campaigns/${campaignId}/retry`,
+  daily_top5_close: (campaignId) => `/api/admin/daily-top5-close-email-campaigns/${campaignId}/retry`,
+  ai_report: (campaignId) => `/api/admin/ai-report-email-campaigns/${campaignId}/retry`,
+};
+
 type AdminEmailItem = {
   id: number;
-  kind: "update_notice" | "daily_top5" | "market_day" | "ai_research";
-  retry_type: "update_notice" | "daily_top5" | "ai_report";
+  kind: AdminEmailKind;
+  retry_type: AdminEmailRetryType;
   title: string;
   summary: string;
   status: EmailCampaign["status"];
@@ -1009,11 +1019,7 @@ export function AdminEmailsPage() {
   }
 
   function retryCampaign(item: AdminEmailItem) {
-    const path = item.retry_type === "update_notice"
-      ? `/api/admin/update-email-campaigns/${item.id}/retry`
-      : item.retry_type === "daily_top5"
-        ? `/api/admin/daily-top5-email-campaigns/${item.id}/retry`
-        : `/api/admin/ai-report-email-campaigns/${item.id}/retry`;
+    const path = adminEmailRetryPathByType[item.retry_type](item.id);
     setConfirmIntent({
       actionLabel: "确认重试失败邮件？",
       confirmLabel: "重试失败邮件",
@@ -1047,6 +1053,7 @@ export function AdminEmailsPage() {
                 <option value="all">全部任务</option>
                 <option value="update_notice">公告邮件</option>
                 <option value="daily_top5">每日 TOP5</option>
+                <option value="daily_top5_close">每日 TOP5 收盘表现</option>
                 <option value="market_day">市场日报</option>
                 <option value="ai_research">AI 复盘</option>
               </select>

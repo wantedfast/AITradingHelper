@@ -226,6 +226,54 @@ class EmailMimeContractTest(unittest.TestCase):
         self._assert_standard_link(full_html, "https://trade.example.test/auction-strength?date=2026-07-16")
         self._assert_standard_link(teaser_html, "https://trade.example.test/auction-strength?date=2026-07-16")
 
+    def test_top5_close_email_renders_limit_up_annotation_in_text_and_html(self) -> None:
+        snapshot = {
+            "trade_date": "2026-08-10",
+            "quote_time": "2026-08-10 15:10:00",
+            "top5_close_performance": [
+                {
+                    "rank": 1,
+                    "code": "000001",
+                    "name": "Stock 1",
+                    "open_price": 10.8,
+                    "close_price": 11.0,
+                    "change_pct": 1.85,
+                    "is_limit_up": True,
+                },
+                {
+                    "rank": 2,
+                    "code": "000002",
+                    "name": "Stock 2",
+                    "open_price": 10.95,
+                    "close_price": 10.99,
+                    "change_pct": 0.37,
+                    "is_limit_up": False,
+                },
+            ],
+        }
+
+        with mock.patch("trade_review_agent.auth_system._send_smtp_message", side_effect=self._capture_mime):
+            auth_system._send_daily_top5_close_email(
+                {
+                    "email": "reader@example.test",
+                    "trade_date": "2026-08-10",
+                    "close_report_json": json.dumps(snapshot, ensure_ascii=False),
+                }
+            )
+
+        message = self.messages.pop()
+        self.assertTrue(message.is_multipart())
+        parts = {part.get_content_type(): part.get_content() for part in message.walk() if not part.is_multipart()}
+        self.assertEqual(set(parts), {"text/plain", "text/html"})
+        text, html = parts["text/plain"], parts["text/html"]
+        self.assertIn("是否涨停", text)
+        self.assertIn("是否涨停", html)
+        self.assertRegex(text, r"Stock 1[\s\S]*涨停")
+        self.assertRegex(text, r"Stock 2[\s\S]*未涨停")
+        self.assertIn(">涨停<", html)
+        self.assertIn(">未涨停<", html)
+        self._assert_standard_link(html, "https://trade.example.test/auction-strength?date=2026-08-10")
+
 
 if __name__ == "__main__":
     unittest.main()

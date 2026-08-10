@@ -43,6 +43,7 @@ from trade_review_agent.auth_system import (
     has_feature_access,
     create_membership_order,
     create_daily_top5_email_campaign,
+    create_daily_top5_close_email_campaign,
     create_ai_report_email_campaign,
     create_update_notice,
     credit_packages,
@@ -67,6 +68,7 @@ from trade_review_agent.auth_system import (
     membership_plans,
     process_next_update_email,
     process_next_daily_top5_email,
+    process_next_daily_top5_close_email,
     process_next_ai_report_email,
     public_credit_catalog,
     public_membership_catalog,
@@ -79,9 +81,11 @@ from trade_review_agent.auth_system import (
     review_feedback,
     retry_update_email_campaign,
     retry_daily_top5_email_campaign,
+    retry_daily_top5_close_email_campaign,
     retry_ai_report_email_campaign,
     recover_update_email_queue,
     recover_daily_top5_email_queue,
+    recover_daily_top5_close_email_queue,
     recover_ai_report_email_queue,
     send_email_code,
     send_email_binding_code,
@@ -215,7 +219,7 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             if path == "/api/admin/emails":
                 self._admin_emails()
                 return
-            if re.fullmatch(r"/api/admin/emails/(update_notice|daily_top5|market_day|ai_research)/\d+", path):
+            if re.fullmatch(r"/api/admin/emails/(update_notice|daily_top5|daily_top5_close|market_day|ai_research)/\d+", path):
                 self._admin_email_detail(path)
                 return
             if path == "/api/pay/packages":
@@ -366,6 +370,9 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                 return
             if path.startswith("/api/admin/daily-top5-email-campaigns/"):
                 self._admin_retry_daily_top5_email_campaign(path)
+                return
+            if path.startswith("/api/admin/daily-top5-close-email-campaigns/"):
+                self._admin_retry_daily_top5_close_email_campaign(path)
                 return
             if path.startswith("/api/admin/ai-report-email-campaigns/"):
                 self._admin_retry_ai_report_email_campaign(path)
@@ -912,12 +919,12 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
         _append_webhook_event(AUCTION_STRENGTH_PATH, report)
         public_report = _auction_strength_public_report(report)
         email_campaign = None
+        close_email_campaign = None
         if _is_today_trade_date(
             str(public_report.get("trade_date") or "")
         ) and _auction_strength_report_is_complete(public_report):
             try:
                 email_campaign = create_daily_top5_email_campaign(AUTH_DB, report=public_report)
-                UPDATE_EMAIL_QUEUE_WAKE.set()
             except Exception as exc:
                 _write_api_error(
                     request_id=getattr(self, "_request_id", uuid4().hex),
@@ -928,7 +935,29 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                     exc=exc,
                     recovered=True,
                 )
-        self._json({"ok": True, "report": public_report, "email_campaign": email_campaign}, status=202)
+            try:
+                close_email_campaign = create_daily_top5_close_email_campaign(AUTH_DB, report=public_report)
+            except Exception as exc:
+                _write_api_error(
+                    request_id=getattr(self, "_request_id", uuid4().hex),
+                    method=self.command,
+                    path=self._request_path(),
+                    run_id=str(report.get("id") or ""),
+                    stage="daily_top5_close_email_campaign",
+                    exc=exc,
+                    recovered=True,
+                )
+            if email_campaign is not None or close_email_campaign is not None:
+                UPDATE_EMAIL_QUEUE_WAKE.set()
+        self._json(
+            {
+                "ok": True,
+                "report": public_report,
+                "email_campaign": email_campaign,
+                "close_email_campaign": close_email_campaign,
+            },
+            status=202,
+        )
 
     def _auth_register(self) -> None:
         raise AuthError("手机号注册已关闭，请使用邮箱注册。", 410)
@@ -1445,6 +1474,16 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             self._json({"error": "not found"}, status=404)
             return
         campaign = retry_daily_top5_email_campaign(AUTH_DB, campaign_id=int(parts[4]))
+        UPDATE_EMAIL_QUEUE_WAKE.set()
+        self._json({"email_campaign": campaign})
+
+    def _admin_retry_daily_top5_close_email_campaign(self, path: str) -> None:
+        self._require_admin()
+        parts = path.split("/")
+        if len(parts) != 6 or parts[5] != "retry":
+            self._json({"error": "not found"}, status=404)
+            return
+        campaign = retry_daily_top5_close_email_campaign(AUTH_DB, campaign_id=int(parts[4]))
         UPDATE_EMAIL_QUEUE_WAKE.set()
         self._json({"email_campaign": campaign})
 
@@ -4390,13 +4429,16 @@ def _update_email_queue_worker(worker_index: int) -> None:
                     processed_top5 = process_next_daily_top5_email(
                         AUTH_DB, smtp_session=smtp_session
                     )
+                    processed_top5_close = process_next_daily_top5_close_email(
+                        AUTH_DB, cache_db=CACHE_DB, smtp_session=smtp_session
+                    )
                     processed_market_day = process_next_ai_report_email(
                         AUTH_DB, report_type="market_day", smtp_session=smtp_session
                     )
                     processed_ai_research = process_next_ai_report_email(
                         AUTH_DB, report_type="ai_research", smtp_session=smtp_session
                     )
-                    if not any((processed_update, processed_top5, processed_market_day, processed_ai_research)):
+                    if not any((processed_update, processed_top5, processed_top5_close, processed_market_day, processed_ai_research)):
                         break
             except Exception as exc:
                 _write_api_error(
@@ -4415,6 +4457,7 @@ def _update_email_queue_worker(worker_index: int) -> None:
 def _start_update_email_queue_worker() -> None:
     recover_update_email_queue(AUTH_DB)
     recover_daily_top5_email_queue(AUTH_DB)
+    recover_daily_top5_close_email_queue(AUTH_DB)
     recover_ai_report_email_queue(AUTH_DB)
     for worker_index in range(UPDATE_EMAIL_WORKER_COUNT):
         thread = threading.Thread(
