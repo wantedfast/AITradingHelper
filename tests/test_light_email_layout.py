@@ -168,7 +168,7 @@ class LightEmailLayoutTest(unittest.TestCase):
 
         messages: list[dict[str, str]] = []
 
-        def capture(_email: str, *, subject: str, text: str, html: str) -> None:
+        def capture(_email: str, *, subject: str, text: str, html: str, message_id: str = "") -> None:
             messages.append({"subject": subject, "text": text, "html": html})
 
         with mock.patch.dict(

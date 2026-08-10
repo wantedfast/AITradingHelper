@@ -7,6 +7,7 @@ from unittest import mock
 
 from trade_review_agent.auth_system import (
     AuthError,
+    _send_email_code,
     bind_user_email,
     get_current_user,
     init_auth_db,
@@ -94,6 +95,20 @@ class EmailBindingTest(unittest.TestCase):
             self.assertIs(admin["email_verified"], False)
             self.assertIs(admin["email_binding_required"], False)
 
+    def test_email_code_provider_stays_on_smtp_when_selected(self) -> None:
+        with mock.patch.dict(
+            "os.environ",
+            {
+                "EMAIL_PROVIDER": "smtp",
+                "OUTLOOK_GRAPH_REFRESH_TOKEN": "future-refresh-token",
+                "OUTLOOK_GRAPH_CLIENT_SECRET": "future-client-secret",
+            },
+            clear=False,
+        ), mock.patch("trade_review_agent.auth_system._send_smtp_email") as send_smtp:
+            result = _send_email_code("reader@example.test", "123456", None)
+
+        self.assertEqual(result, {"provider": "smtp"})
+        send_smtp.assert_called_once_with("reader@example.test", "123456")
 
 if __name__ == "__main__":
     unittest.main()

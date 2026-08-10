@@ -413,6 +413,25 @@ for (const viewport of viewports) {
 test.describe("homepage guest acquisition", () => {
   test.use({ viewport: { width: 390, height: 844 } });
 
+  test("financial disclaimer links users to the rewarded feedback form", async ({ page }) => {
+    await page.route("**/api/**", (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path === "/api/update-notices/latest") return json(route, { notice: null });
+      if (path === "/api/auction-strength/performance") return json(route, { rows: [] });
+      return json(route, {});
+    });
+
+    await page.goto("/", { waitUntil: "domcontentloaded" });
+    const disclaimer = page.locator(".financial-disclaimer").first();
+    await disclaimer.locator("summary").click();
+    await expect(disclaimer.getByText("有效反馈被采纳后，可获赠 10 次使用次数。")).toBeVisible();
+    const feedbackLink = disclaimer.getByRole("link", { name: "提交反馈" });
+    await expect(feedbackLink).toHaveAttribute("href", "/#feedback");
+    await feedbackLink.click();
+    await expect(page).toHaveURL(/\/#feedback$/);
+    await expect(page.locator("#feedback")).toBeVisible();
+  });
+
   test("guest start action opens the combined login and registration page", async ({ page }) => {
     await page.route("**/api/update-notices/latest", (route) => json(route, { notice: null }));
     await page.route("**/api/auction-strength/performance", (route) => json(route, { rows: [] }));
@@ -1308,11 +1327,20 @@ test.describe.skip("legacy query-section admin access", () => {
       usage_by_day: [], new_users_by_day: [], feedback: [], orders: [], managed_users: [], top_users: [], credit_grant_campaigns: [], update_notices: [],
       daily_top5_email_failed_count: 1,
       ai_report_email_failed_count: 1,
-      daily_top5_email_campaigns: [{
-        id: 17, trade_date: "2026-07-16", report_id: "report-17", status: "partial_failed",
-        total: 6, pending: 0, sending: 0, sent: 4, failed: 1, skipped: 1, full: 2, teaser: 4,
-        created_at: "2026-07-16T09:26:00+08:00", next_retry_at: null, started_at: null, finished_at: null,
-      }],
+      daily_top5_email_campaigns: [
+        {
+          id: 17, trade_date: "2026-07-16", report_id: "report-17", status: "partial_failed",
+          total: 6, pending: 0, sending: 0, sent: 4, failed: 1, permanent_failed: 0, retryable_failed: 1,
+          skipped: 1, full: 2, teaser: 4,
+          created_at: "2026-07-16T09:26:00+08:00", next_retry_at: null, started_at: null, finished_at: null,
+        },
+        {
+          id: 16, trade_date: "2026-07-15", report_id: "report-16", status: "partial_failed",
+          total: 6, pending: 0, sending: 0, sent: 4, failed: 1, permanent_failed: 1, retryable_failed: 0,
+          skipped: 1, full: 2, teaser: 4,
+          created_at: "2026-07-15T09:26:00+08:00", next_retry_at: null, started_at: null, finished_at: null,
+        },
+      ],
       ai_report_email_campaigns: [
         {
           id: 18, report_type: "market_day", run_id: "market-18", report_date: "2026-07-16", status: "pending",
@@ -1332,13 +1360,17 @@ test.describe.skip("legacy query-section admin access", () => {
     const top5Panel = page.locator("article").filter({ has: page.getByRole("heading", { name: "每日 TOP5 邮件任务" }) });
     const marketPanel = page.locator("article").filter({ has: page.getByRole("heading", { name: "市场日报邮件任务" }) });
     const researchPanel = page.locator("article").filter({ has: page.getByRole("heading", { name: "AI 复盘邮件任务" }) });
-    await expect(top5Panel.getByText("完整版 2 · 摘要版 4")).toBeVisible();
-    await expect(top5Panel.getByText("成功 4 · 待发送 0 · 发送中 0 · 失败 1 · 跳过 1")).toBeVisible();
+    const retryableFailure = top5Panel.locator(".admin-list-item").filter({ hasText: "2026-07-16" });
+    await expect(retryableFailure.getByText("完整版 2 · 摘要版 4")).toBeVisible();
+    await expect(retryableFailure.getByText("成功 4 · 待发送 0 · 发送中 0 · 失败 1 · 跳过 1")).toBeVisible();
+    const permanentFailure = top5Panel.locator(".admin-list-item").filter({ hasText: "2026-07-15" });
+    await expect(permanentFailure.getByText("成功 4 · 待发送 0 · 发送中 0 · 永久失败 1 · 跳过 1")).toBeVisible();
+    await expect(permanentFailure.getByRole("button", { name: "重试失败邮件" })).toHaveCount(0);
     await expect(marketPanel.getByText("等待自动重试：2026-07-16 16:30")).toBeVisible();
     await expect(marketPanel.getByRole("button", { name: "重试失败邮件" })).toHaveCount(0);
     await expect(researchPanel.getByRole("button", { name: "重试失败邮件" })).toBeVisible();
 
-    await top5Panel.getByRole("button", { name: "重试失败邮件" }).click();
+    await retryableFailure.getByRole("button", { name: "重试失败邮件" }).click();
     await expect.poll(() => retriedTop5CampaignId).toBe("17");
     await researchPanel.getByRole("button", { name: "重试失败邮件" }).click();
     await expect.poll(() => retriedAiCampaignId).toBe("19");

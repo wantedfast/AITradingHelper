@@ -1,6 +1,7 @@
 "use client";
 
-import { ChevronDown, ShieldAlert } from "lucide-react";
+import Link from "next/link";
+import { ChevronDown, MessageSquare, ShieldAlert } from "lucide-react";
 import { useEffect, useState } from "react";
 
 type FinancialDisclaimerProps = {
@@ -38,6 +39,13 @@ export function FinancialDisclaimer({ compact = false }: FinancialDisclaimerProp
           本平台内容由 AI 基于公开信息生成，仅供学习、研究与信息参考，不构成任何投资建议、证券推荐或收益承诺。
           信息可能存在延迟、遗漏或错误，请独立核验并自主决策。投资有风险，入市需谨慎。
         </p>
+        <div className="financial-disclaimer__feedback">
+          <span>
+            <MessageSquare aria-hidden="true" />
+            发现问题或有改进建议？有效反馈被采纳后，可获赠 10 次使用次数。
+          </span>
+          <Link href="/#feedback">提交反馈</Link>
+        </div>
       </div>
     </details>
   );

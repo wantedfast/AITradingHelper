@@ -284,6 +284,133 @@ class DailyTop5EmailTest(unittest.TestCase):
         self.assertEqual(status, "failed")
         self.assertFalse(process_next_daily_top5_email(self.db_path, sender=lambda _delivery: None))
 
+    def test_recipient_blacklist_is_a_permanent_failure_and_is_not_retried(self) -> None:
+        campaign = create_daily_top5_email_campaign(self.db_path, report=complete_report())
+        campaign_id = int(campaign["id"])
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            with conn:
+                conn.execute(
+                    "DELETE FROM daily_top5_email_deliveries WHERE campaign_id = ? AND email != 'ordinary@example.test'",
+                    (campaign_id,),
+                )
+
+        def rejected(_delivery: dict) -> None:
+            raise RuntimeError("(550, b'The sender is blacklisted by the recipient, please contact the recipient.')")
+
+        self.assertTrue(process_next_daily_top5_email(self.db_path, sender=rejected))
+        self.assertFalse(process_next_daily_top5_email(self.db_path, sender=lambda _delivery: None))
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            row = conn.execute(
+                """
+                SELECT status, attempt_count, next_attempt_at, last_error
+                FROM daily_top5_email_deliveries WHERE campaign_id = ?
+                """,
+                (campaign_id,),
+            ).fetchone()
+        self.assertEqual(row[0], "failed")
+        self.assertEqual(row[1], 1)
+        self.assertIsNone(row[2])
+        self.assertTrue(str(row[3]).startswith("[permanent] "))
+
+        refreshed = create_daily_top5_email_campaign(self.db_path, report=complete_report())
+        self.assertEqual(refreshed["permanent_failed"], 1)
+        self.assertEqual(refreshed["retryable_failed"], 0)
+        retried = retry_daily_top5_email_campaign(self.db_path, campaign_id=campaign_id)
+        self.assertEqual(retried["failed"], 1)
+        self.assertEqual(retried["pending"], 0)
+
+    def test_qq_rate_limit_remains_pending_for_automatic_retry(self) -> None:
+        campaign = create_daily_top5_email_campaign(
+            self.db_path,
+            report=complete_report(trade_date="2026-07-17", report_id="top5-run-rate-limit"),
+        )
+        campaign_id = int(campaign["id"])
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            with conn:
+                conn.execute(
+                    "DELETE FROM daily_top5_email_deliveries WHERE campaign_id = ? AND email != 'ordinary@example.test'",
+                    (campaign_id,),
+                )
+
+        def rate_limited(_delivery: dict) -> None:
+            raise RuntimeError("(550, b'Too many attempts. Unable to send. Try again later')")
+
+        self.assertTrue(process_next_daily_top5_email(self.db_path, sender=rate_limited))
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            row = conn.execute(
+                """
+                SELECT status, attempt_count, next_attempt_at, last_error
+                FROM daily_top5_email_deliveries WHERE campaign_id = ?
+                """,
+                (campaign_id,),
+            ).fetchone()
+        self.assertEqual(row[0], "pending")
+        self.assertEqual(row[1], 1)
+        self.assertIsNotNone(row[2])
+        self.assertFalse(str(row[3]).startswith("[permanent] "))
+
+    def test_temporary_mailbox_unavailable_remains_pending_for_retry(self) -> None:
+        campaign = create_daily_top5_email_campaign(
+            self.db_path,
+            report=complete_report(trade_date="2026-07-18", report_id="top5-run-mailbox-temporary"),
+        )
+        campaign_id = int(campaign["id"])
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            with conn:
+                conn.execute(
+                    "DELETE FROM daily_top5_email_deliveries WHERE campaign_id = ? AND email != 'ordinary@example.test'",
+                    (campaign_id,),
+                )
+
+        def temporarily_unavailable(_delivery: dict) -> None:
+            raise RuntimeError("(450, b'Requested mail action not taken: mailbox unavailable')")
+
+        self.assertTrue(process_next_daily_top5_email(self.db_path, sender=temporarily_unavailable))
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            row = conn.execute(
+                """
+                SELECT status, next_attempt_at, last_error
+                FROM daily_top5_email_deliveries WHERE campaign_id = ?
+                """,
+                (campaign_id,),
+            ).fetchone()
+        self.assertEqual(row[0], "pending")
+        self.assertIsNotNone(row[1])
+        self.assertFalse(str(row[2]).startswith("[permanent] "))
+
+    def test_queue_recovery_normalizes_existing_blacklist_retry(self) -> None:
+        campaign = create_daily_top5_email_campaign(self.db_path, report=complete_report())
+        campaign_id = int(campaign["id"])
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            with conn:
+                conn.execute(
+                    "DELETE FROM daily_top5_email_deliveries WHERE campaign_id = ? AND email != 'ordinary@example.test'",
+                    (campaign_id,),
+                )
+                conn.execute(
+                    """
+                    UPDATE daily_top5_email_deliveries
+                    SET status = 'pending', attempt_count = 6, next_attempt_at = '2099-01-01',
+                        last_error = '(550, blacklisted by the recipient)'
+                    WHERE campaign_id = ?
+                    """,
+                    (campaign_id,),
+                )
+
+        self.assertEqual(recover_daily_top5_email_queue(self.db_path), 1)
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            delivery = conn.execute(
+                "SELECT status, next_attempt_at, last_error FROM daily_top5_email_deliveries WHERE campaign_id = ?",
+                (campaign_id,),
+            ).fetchone()
+            status = conn.execute(
+                "SELECT status FROM daily_top5_email_campaigns WHERE id = ?", (campaign_id,)
+            ).fetchone()[0]
+        self.assertEqual(delivery[0], "failed")
+        self.assertIsNone(delivery[1])
+        self.assertTrue(str(delivery[2]).startswith("[permanent] "))
+        self.assertEqual(status, "failed")
+
     def test_delivery_failed_under_old_limit_is_automatically_requeued(self) -> None:
         campaign = create_daily_top5_email_campaign(self.db_path, report=complete_report())
         campaign_id = int(campaign["id"])

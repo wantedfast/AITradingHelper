@@ -1192,12 +1192,17 @@
   background: transparent;
 }
 
-.account-invite-hint {
+.account-invite-hint,
+.account-email-delivery-hint {
   margin-top: -2px;
   color: rgba(245, 215, 122, 0.82);
   font-size: 13px;
   font-weight: 800;
   line-height: 1.55;
+}
+
+.account-email-delivery-hint {
+  margin-top: -8px;
 }
 
 .account-code-row {
@@ -15066,6 +15071,51 @@ button.radar-core,
   overflow-wrap: anywhere;
 }
 
+.financial-disclaimer__feedback {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 12px;
+  padding-top: 11px;
+  border-top: 1px solid rgba(245, 199, 107, 0.16);
+}
+
+.financial-disclaimer__feedback span {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: rgba(250, 248, 240, 0.72);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.financial-disclaimer__feedback span svg {
+  width: 17px;
+  height: 17px;
+  flex: 0 0 auto;
+}
+
+.financial-disclaimer__feedback a {
+  flex: 0 0 auto;
+  border: 1px solid rgba(245, 199, 107, 0.4);
+  border-radius: 999px;
+  padding: 6px 12px;
+  color: #f8dc9c;
+  background: rgba(245, 199, 107, 0.08);
+  font-size: 12px;
+  font-weight: 700;
+  text-decoration: none;
+  transition: border-color 0.18s ease, background 0.18s ease, transform 0.18s ease;
+}
+
+.financial-disclaimer__feedback a:hover {
+  border-color: rgba(245, 199, 107, 0.68);
+  background: rgba(245, 199, 107, 0.14);
+  transform: translateY(-1px);
+}
+
 .financial-disclaimer--compact {
   margin-block: 12px 18px;
   padding-block: 11px;
@@ -15096,6 +15146,17 @@ button.radar-core,
   .financial-disclaimer p {
     font-size: 12px;
     line-height: 1.6;
+  }
+
+  .financial-disclaimer__feedback {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .financial-disclaimer__feedback span {
+    align-items: flex-start;
+    font-size: 12px;
   }
 
   .review-page > .financial-disclaimer {

@@ -67,6 +67,8 @@ type EmailCampaign = {
   sending: number;
   sent: number;
   failed: number;
+  permanent_failed?: number;
+  retryable_failed?: number;
   skipped: number;
 };
 
@@ -814,7 +816,12 @@ function emailCampaignLabel(value: EmailCampaign["status"]) {
 }
 
 function campaignDeliverySummary(campaign: EmailCampaign) {
-  return `成功 ${campaign.sent} · 待发送 ${campaign.pending} · 发送中 ${campaign.sending} · 失败 ${campaign.failed} · 跳过 ${campaign.skipped}`;
+  const permanentFailed = campaign.permanent_failed || 0;
+  const retryableFailed = campaign.retryable_failed ?? Math.max(0, campaign.failed - permanentFailed);
+  const failureSummary = permanentFailed
+    ? `永久失败 ${permanentFailed}${retryableFailed ? ` · 其他失败 ${retryableFailed}` : ""}`
+    : `失败 ${campaign.failed}`;
+  return `成功 ${campaign.sent} · 待发送 ${campaign.pending} · 发送中 ${campaign.sending} · ${failureSummary} · 跳过 ${campaign.skipped}`;
 }
 
 function isWaitingForAutoRetry(campaign: EmailCampaign & { next_retry_at?: string | null }) {
@@ -822,7 +829,8 @@ function isWaitingForAutoRetry(campaign: EmailCampaign & { next_retry_at?: strin
 }
 
 function canRetryFailedCampaign(campaign: EmailCampaign & { next_retry_at?: string | null }) {
-  return campaign.failed > 0 && !isWaitingForAutoRetry(campaign) && campaign.pending === 0 && campaign.sending === 0;
+  const retryableFailed = campaign.retryable_failed ?? campaign.failed;
+  return retryableFailed > 0 && !isWaitingForAutoRetry(campaign) && campaign.pending === 0 && campaign.sending === 0;
 }
 
 function orderStatusLabel(value: string) {

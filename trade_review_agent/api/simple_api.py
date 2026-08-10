@@ -89,6 +89,7 @@ from trade_review_agent.auth_system import (
     recover_ai_report_email_queue,
     send_email_code,
     send_email_binding_code,
+    send_email_provider_test,
     set_user_status,
     submit_credit_payment,
     submit_membership_payment,
@@ -99,6 +100,15 @@ from trade_review_agent.auth_system import (
     set_update_email_preference,
 )
 from trade_review_agent.legal_agreements import registration_agreement_payload
+from trade_review_agent.outlook_graph import (
+    OutlookGraphError,
+    begin_outlook_connection,
+    complete_outlook_connection,
+    disconnect_outlook,
+    poll_outlook_device_connection,
+    provider_status,
+    set_active_provider,
+)
 from trade_review_agent.watch.alerts import AlertPlan, evaluate_plans, event_dedupe_key, load_plans, save_plans
 from trade_review_agent.auction_strength.top1_performance import (
     auction_top1_next_refresh_at,
@@ -148,9 +158,8 @@ DATED_REPORT_RETENTION_DAYS = 5
 _dated_report_retention_lock = threading.RLock()
 
 def normalize_research_model_tier(value: object = None) -> str:
-    text = str(value or "").strip().lower()
-    if text in {"1", "true", "yes", "on", "better", "premium", "gpt55", "gpt-5.5"}:
-        return "better"
+    # The detailed report tier is disabled. Always normalize requests from
+    # current and legacy clients to the supported standard report pipeline.
     return "standard"
 
 
@@ -219,6 +228,12 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/admin/emails":
                 self._admin_emails()
+                return
+            if path == "/api/admin/email-provider":
+                self._admin_email_provider_status()
+                return
+            if path == "/api/admin/email-provider/outlook/callback":
+                self._admin_outlook_callback()
                 return
             if re.fullmatch(r"/api/admin/emails/(update_notice|daily_top5|daily_top5_close|market_day|ai_research)/\d+", path):
                 self._admin_email_detail(path)
@@ -377,6 +392,21 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                 return
             if path.startswith("/api/admin/ai-report-email-campaigns/"):
                 self._admin_retry_ai_report_email_campaign(path)
+                return
+            if path == "/api/admin/email-provider/outlook/connect":
+                self._admin_outlook_connect()
+                return
+            if path == "/api/admin/email-provider/outlook/disconnect":
+                self._admin_outlook_disconnect()
+                return
+            if path == "/api/admin/email-provider/outlook/poll":
+                self._admin_outlook_poll()
+                return
+            if path == "/api/admin/email-provider/select":
+                self._admin_email_provider_select()
+                return
+            if path == "/api/admin/email-provider/test":
+                self._admin_email_provider_test()
                 return
             if path == "/api/reports":
                 self._create_reports()
@@ -1374,6 +1404,72 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             )
         )
 
+    def _admin_email_provider_status(self) -> None:
+        self._require_admin()
+        self._json(provider_status(AUTH_DB, worker_count=_configured_update_email_worker_count()), cache_control="no-store")
+
+    def _admin_outlook_connect(self) -> None:
+        admin = self._require_admin()
+        try:
+            payload = begin_outlook_connection(AUTH_DB, admin_user_id=int(admin["id"]))
+        except OutlookGraphError as exc:
+            raise AuthError(str(exc), 400) from exc
+        self._json(payload, status=201)
+
+    def _admin_outlook_callback(self) -> None:
+        public_site = os.getenv("PUBLIC_SITE_URL", "").strip().rstrip("/")
+        destination = f"{public_site}/admin/emails" if public_site else "/admin/emails"
+        provider_error = self._query_value("error")
+        if provider_error:
+            self._redirect(f"{destination}?outlook=cancelled")
+            return
+        try:
+            redirect_path = complete_outlook_connection(
+                AUTH_DB,
+                state=self._query_value("state"),
+                code=self._query_value("code"),
+            )
+            set_active_provider(AUTH_DB, "outlook_graph")
+        except OutlookGraphError:
+            self._redirect(f"{destination}?outlook=error")
+            return
+        safe_path = redirect_path if redirect_path == "/admin/emails" else "/admin/emails"
+        destination = f"{public_site}{safe_path}" if public_site else safe_path
+        self._redirect(f"{destination}?outlook=connected")
+
+    def _admin_outlook_disconnect(self) -> None:
+        self._require_admin()
+        try:
+            payload = disconnect_outlook(AUTH_DB)
+        except OutlookGraphError as exc:
+            raise AuthError(str(exc), 400) from exc
+        self._json(payload)
+
+    def _admin_outlook_poll(self) -> None:
+        admin = self._require_admin()
+        try:
+            payload = poll_outlook_device_connection(AUTH_DB, admin_user_id=int(admin["id"]))
+            if payload.get("connected"):
+                set_active_provider(AUTH_DB, "outlook_graph")
+                payload["provider"] = "outlook_graph"
+        except OutlookGraphError as exc:
+            raise AuthError(str(exc), 400) from exc
+        self._json(payload)
+
+    def _admin_email_provider_select(self) -> None:
+        self._require_admin()
+        payload = self._read_json_body()
+        try:
+            status_payload = set_active_provider(AUTH_DB, str(payload.get("provider") or ""))
+        except OutlookGraphError as exc:
+            raise AuthError(str(exc), 400) from exc
+        self._json(status_payload)
+
+    def _admin_email_provider_test(self) -> None:
+        self._require_admin()
+        payload = self._read_json_body()
+        self._json(send_email_provider_test(str(payload.get("email") or "")))
+
     def _admin_email_detail(self, path: str) -> None:
         self._require_admin()
         parts = path.split("/")
@@ -2136,6 +2232,13 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             self.wfile.write(data)
         except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
             return
+
+    def _redirect(self, location: str, status: int = 302) -> None:
+        self.send_response(status)
+        self.send_header("Location", location)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def _cors_headers(self) -> None:
         self.send_header("Access-Control-Allow-Origin", "*")
