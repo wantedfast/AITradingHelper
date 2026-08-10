@@ -65,8 +65,24 @@ class EmailMimeContractTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.environment.stop()
 
-    def _capture_mime(self, email: str, *, subject: str, text: str, html: str | None = None) -> None:
-        self.messages.append(auth_system._smtp_message(email, subject=subject, text=text, html=html))
+    def _capture_mime(
+        self,
+        email: str,
+        *,
+        subject: str,
+        text: str,
+        html: str | None = None,
+        message_id: str = "",
+    ) -> None:
+        self.messages.append(
+            auth_system._smtp_message(
+                email,
+                subject=subject,
+                text=text,
+                html=html,
+                message_id=message_id,
+            )
+        )
 
     def _assert_mime_and_light_html(self, message: EmailMessage) -> tuple[str, str]:
         self.assertTrue(message.is_multipart())
