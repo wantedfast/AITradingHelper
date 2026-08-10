@@ -92,18 +92,45 @@ class DailyTop5EmailApiTest(unittest.TestCase):
         status, payload = self.request("/api/auction-strength", method="POST", payload=incomplete, webhook=True)
         self.assertEqual(status, 202)
         self.assertIsNone(payload["email_campaign"])
+        self.assertIsNone(payload["close_email_campaign"])
         with closing(sqlite3.connect(self.db_path)) as conn:
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM daily_top5_email_campaigns").fetchone()[0], 0)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM daily_top5_close_email_campaigns").fetchone()[0], 0)
 
         complete = complete_report(trade_date=self.trade_date, report_id="complete-run")
         first_status, first = self.request("/api/auction-strength", method="POST", payload=complete, webhook=True)
         second_status, second = self.request("/api/auction-strength", method="POST", payload=complete, webhook=True)
         self.assertEqual((first_status, second_status), (202, 202))
         self.assertEqual(first["email_campaign"]["id"], second["email_campaign"]["id"])
+        self.assertEqual(first["close_email_campaign"]["id"], second["close_email_campaign"]["id"])
         self.assertEqual(first["email_campaign"]["pending"], 1)
+        self.assertEqual(first["close_email_campaign"]["trade_date"], self.trade_date)
         with closing(sqlite3.connect(self.db_path)) as conn:
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM daily_top5_email_campaigns").fetchone()[0], 1)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM daily_top5_close_email_campaigns").fetchone()[0], 1)
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM daily_top5_email_deliveries").fetchone()[0], 1)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM daily_top5_close_email_deliveries").fetchone()[0], 0)
+
+    def test_close_campaign_is_created_when_morning_campaign_creation_fails(self) -> None:
+        complete = complete_report(trade_date=self.trade_date, report_id="close-independent-run")
+        with patch.object(
+            simple_api,
+            "create_daily_top5_email_campaign",
+            side_effect=RuntimeError("morning queue unavailable"),
+        ), patch.object(simple_api, "_write_api_error"):
+            status, payload = self.request(
+                "/api/auction-strength",
+                method="POST",
+                payload=complete,
+                webhook=True,
+            )
+
+        self.assertEqual(status, 202)
+        self.assertIsNone(payload["email_campaign"])
+        self.assertIsNotNone(payload["close_email_campaign"])
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM daily_top5_email_campaigns").fetchone()[0], 0)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM daily_top5_close_email_campaigns").fetchone()[0], 1)
 
     def test_dashboard_exposes_campaign_and_retry_requires_admin(self) -> None:
         status, posted = self.request(
