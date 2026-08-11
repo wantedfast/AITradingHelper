@@ -17,8 +17,9 @@ type OverviewProps = {
   pendingFeedback: number;
   failedAnnouncementEmails: number;
   failedDailyTop5Emails: number;
+  failedDailyTop5CloseEmails: number;
   failedAiReportEmails: number;
-  onNavigate: (section: AdminSection) => void;
+  onNavigate: (section: AdminSection, emailKind?: "daily_top5" | "daily_top5_close") => void;
   featureLabel: (value: string) => string;
   recentUsageEvents: RecentUsageEvent[];
 };
@@ -52,7 +53,8 @@ export function AdminOverviewSection(props: OverviewProps) {
         <PriorityCard label="待确认会员订单" count={props.pendingOrders} onClick={() => props.onNavigate("orders")} />
         <PriorityCard label="待处理反馈" count={props.pendingFeedback} onClick={() => props.onNavigate("feedback")} />
         <PriorityCard label="失败公告邮件" count={props.failedAnnouncementEmails} onClick={() => props.onNavigate("updates")} />
-        <PriorityCard label="失败 TOP5 邮件" count={props.failedDailyTop5Emails} onClick={() => props.onNavigate("emails")} />
+        <PriorityCard label="失败 TOP5 邮件" count={props.failedDailyTop5Emails} onClick={() => props.onNavigate("emails", "daily_top5")} />
+        <PriorityCard label="失败 TOP5 收盘邮件" count={props.failedDailyTop5CloseEmails} onClick={() => props.onNavigate("emails", "daily_top5_close")} />
         <PriorityCard label="失败 AI 报告邮件" count={props.failedAiReportEmails} onClick={() => props.onNavigate("emails")} />
       </section>
       <section className="admin-metrics">

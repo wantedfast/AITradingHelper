@@ -193,6 +193,7 @@ const defaultDashboard = {
   orders: [{ status: "submitted" }],
   update_notices: [defaultNotices[1]],
   daily_top5_email_failed_count: 1,
+  daily_top5_close_email_failed_count: 2,
   ai_report_email_failed_count: 1,
   analytics: {
     feature_usage: {
@@ -704,6 +705,20 @@ test.describe("admin routing", () => {
     await page.getByRole("dialog").getByRole("button", { name: "重试失败邮件" }).click();
 
     expect(capture.emailRetryPaths).toEqual(["/api/admin/daily-top5-close-email-campaigns/44/retry"]);
+  });
+
+  test("overview exposes failed daily Top5 close emails and opens the matching failed filter", async ({ page }) => {
+    await installAdminFixtures(page);
+
+    await page.goto("/admin/overview", { waitUntil: "domcontentloaded" });
+
+    const closeCard = page.getByRole("button", { name: /失败 TOP5 收盘邮件/ });
+    await expect(closeCard).toContainText("2");
+    await closeCard.click();
+
+    await expect(page).toHaveURL(/\/admin\/emails\?status=failed&kind=daily_top5_close$/);
+    await expect(page.getByRole("combobox").nth(0)).toHaveValue("daily_top5_close");
+    await expect(page.getByRole("combobox").nth(1)).toHaveValue("failed");
   });
 
   test("updates publish with email from the simple form and keep mobile notice actions evenly laid out", async ({ page }) => {
