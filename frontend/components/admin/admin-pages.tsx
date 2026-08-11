@@ -122,6 +122,7 @@ type DashboardPayload = {
   orders: Array<{ status: string }>;
   update_notices: UpdateNotice[];
   daily_top5_email_failed_count?: number;
+  daily_top5_close_email_failed_count?: number;
   ai_report_email_failed_count?: number;
 };
 
@@ -223,14 +224,18 @@ export function AdminOverviewPage() {
   const pendingFeedback = (dashboard.data?.feedback || []).filter((item) => item.status === "pending").length;
   const failedAnnouncementEmails = (dashboard.data?.update_notices || []).filter((item) => (item.email_campaign?.failed || 0) > 0).length;
   const failedDailyTop5Emails = dashboard.data?.daily_top5_email_failed_count || 0;
+  const failedDailyTop5CloseEmails = dashboard.data?.daily_top5_close_email_failed_count || 0;
   const failedAiReportEmails = dashboard.data?.ai_report_email_failed_count || 0;
 
-  function handleNavigate(section: AdminSection) {
+  function handleNavigate(section: AdminSection, emailKind?: "daily_top5" | "daily_top5_close") {
     const target = new URL(adminSectionPath(section), window.location.origin);
     if (section === "orders") target.searchParams.set("status", "submitted");
     if (section === "feedback") target.searchParams.set("status", "pending");
     if (section === "updates") target.searchParams.set("status", "published");
-    if (section === "emails") target.searchParams.set("status", "failed");
+    if (section === "emails") {
+      target.searchParams.set("status", "failed");
+      if (emailKind) target.searchParams.set("kind", emailKind);
+    }
     router.push(`${target.pathname}${target.search}`);
   }
 
@@ -278,6 +283,7 @@ export function AdminOverviewPage() {
             pendingFeedback={pendingFeedback}
             failedAnnouncementEmails={failedAnnouncementEmails}
             failedDailyTop5Emails={failedDailyTop5Emails}
+            failedDailyTop5CloseEmails={failedDailyTop5CloseEmails}
             failedAiReportEmails={failedAiReportEmails}
             onNavigate={handleNavigate}
             featureLabel={featureLabel}
