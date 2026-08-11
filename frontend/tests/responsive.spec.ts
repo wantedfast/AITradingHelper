@@ -1326,6 +1326,7 @@ test.describe.skip("legacy query-section admin access", () => {
       totals: { users: 2, credits: 20, feedback_pending: 0, orders_paid: 0 },
       usage_by_day: [], new_users_by_day: [], feedback: [], orders: [], managed_users: [], top_users: [], credit_grant_campaigns: [], update_notices: [],
       daily_top5_email_failed_count: 1,
+      daily_top5_close_email_failed_count: 2,
       ai_report_email_failed_count: 1,
       daily_top5_email_campaigns: [
         {
