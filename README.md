@@ -97,3 +97,25 @@ DEEPSEEK_API_KEY=...
 ```
 
 `OPENAI_MODEL` is optional for OCR; if absent, the parser defaults to `gpt-4.1-mini`.
+
+## Email Provider
+
+The persistent email worker uses the provider selected by `EMAIL_PROVIDER`.
+For Gmail SMTP, enable Google 2-Step Verification and create a dedicated app
+password, then configure the production `.env` without committing credentials:
+
+```text
+EMAIL_PROVIDER=smtp
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=465
+SMTP_USER=your-sender@gmail.com
+SMTP_PASSWORD=your-16-character-app-password
+SMTP_FROM=your-sender@gmail.com
+SMTP_FROM_NAME=盈航
+SMTP_USE_SSL=1
+```
+
+Keep the worker count conservative for personal Gmail accounts. The existing
+worker reuses its SMTP connection, so one worker can deliver a daily campaign
+without opening a new connection for every recipient. Provider configuration
+and failed campaign retries remain available in the admin email console.
