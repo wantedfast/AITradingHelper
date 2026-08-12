@@ -201,6 +201,8 @@ class AdminSectionApiTest(unittest.TestCase):
         self.assertEqual(payload["total"], 2)
         self.assertEqual({item["kind"] for item in payload["items"]}, {"update_notice", "daily_top5"})
         self.assertTrue(all(item["failed"] > 0 for item in payload["items"]))
+        self.assertEqual(payload["delivery_totals"]["failed"], 2)
+        self.assertEqual(payload["delivery_totals"]["sent"], 1)
 
     def test_email_detail_returns_failed_recipient_and_error(self) -> None:
         status, payload = self.request("/api/admin/emails/daily_top5/1")

@@ -511,11 +511,20 @@ async function installAdminFixtures(page: Page, options: FixtureOptions = {}) {
       const requestedPage = Number(url.searchParams.get("page") || "1");
       const filtered = state.emails.filter((item) => {
         const kindMatch = kind === "all" || item.kind === kind;
-        const statusMatch = status === "all" || item.status === status;
+        const statusMatch = status === "all" || item.status === status || (status === "failed" && item.status === "partial_failed");
         const dateMatch = inDateRange(item.created_at, dateFrom, dateTo);
         return kindMatch && statusMatch && dateMatch;
       });
-      return json(route, paginate(filtered, requestedPage, 20));
+      return json(route, {
+        ...paginate(filtered, requestedPage, 20),
+        delivery_totals: {
+          sent: filtered.reduce((sum, item) => sum + item.sent, 0),
+          pending: filtered.reduce((sum, item) => sum + item.pending, 0),
+          sending: filtered.reduce((sum, item) => sum + item.sending, 0),
+          failed: filtered.reduce((sum, item) => sum + item.failed, 0),
+          skipped: filtered.reduce((sum, item) => sum + item.skipped, 0),
+        },
+      });
     }
 
     return json(route, { error: `unhandled fixture ${method} ${path}` }, 404);
@@ -716,9 +725,29 @@ test.describe("admin routing", () => {
     await expect(closeCard).toContainText("2");
     await closeCard.click();
 
-    await expect(page).toHaveURL(/\/admin\/emails\?status=failed&kind=daily_top5_close$/);
+    await expect(page).toHaveURL(/\/admin\/emails\?status=failed&kind=daily_top5_close#email-tasks$/);
     await expect(page.getByRole("combobox").nth(0)).toHaveValue("daily_top5_close");
     await expect(page.getByRole("combobox").nth(1)).toHaveValue("failed");
+    await expect(page.getByRole("heading", { name: "每日 TOP5 收盘失败邮件" })).toBeVisible();
+    await expect(page.getByText("失败涉及 1 个任务")).toBeVisible();
+    await expect(page.getByText("成功 5 · 失败 1 · 跳过 0")).toBeVisible();
+    await expect(page.getByText("Daily Top5 Close 2026-07-16")).toBeVisible();
+  });
+
+  test("overview opens ordinary Top5 failures with dated campaign totals and recipient detail", async ({ page }) => {
+    await installAdminFixtures(page);
+
+    await page.goto("/admin/overview", { waitUntil: "domcontentloaded" });
+    await page.getByRole("button", { name: /失败 TOP5 邮件/ }).click();
+
+    await expect(page).toHaveURL(/\/admin\/emails\?status=failed&kind=daily_top5#email-tasks$/);
+    await expect(page.getByRole("heading", { name: "每日 TOP5 失败邮件" })).toBeVisible();
+    await expect(page.getByText("失败涉及 1 个任务")).toBeVisible();
+    await expect(page.getByText("成功 4 · 失败 1 · 跳过 1")).toBeVisible();
+    const campaign = page.locator(".admin-list-item").filter({ has: page.getByText("Daily Top5 2026-07-16") });
+    await expect(campaign.getByText("成功 4 · 待发送 0 · 发送中 0 · 失败 1 · 跳过 1")).toBeVisible();
+    await campaign.getByRole("button", { name: "查看失败详情" }).click();
+    await expect(page.getByRole("dialog", { name: "失败邮件详情" }).getByText("failed-recipient@example.com")).toBeVisible();
   });
 
   test("updates publish with email from the simple form and keep mobile notice actions evenly laid out", async ({ page }) => {

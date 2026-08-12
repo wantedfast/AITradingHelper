@@ -162,6 +162,10 @@ type AdminEmailItem = {
   teaser?: number;
 };
 
+type AdminEmailCampaignsResponse = PagedResult<AdminEmailItem> & {
+  delivery_totals: Pick<AdminEmailItem, "sent" | "pending" | "sending" | "failed" | "skipped">;
+};
+
 type AdminEmailFailureDetail = {
   kind: AdminEmailItem["kind"];
   campaign: EmailCampaign & { created_at?: string; finished_at?: string | null };
@@ -235,8 +239,9 @@ export function AdminOverviewPage() {
     if (section === "emails") {
       target.searchParams.set("status", "failed");
       if (emailKind) target.searchParams.set("kind", emailKind);
+      target.hash = "email-tasks";
     }
-    router.push(`${target.pathname}${target.search}`);
+    router.push(`${target.pathname}${target.search}${target.hash}`);
   }
 
   return (
@@ -1030,7 +1035,7 @@ export function AdminEmailsPage() {
   const dateTo = params.get("date_to") || "";
   const outlookResult = params.get("outlook") || "";
   const page = parsePage(params.get("page"));
-  const emails = useAdminData<PagedResult<AdminEmailItem>>(`/api/admin/emails?${buildQuery({ kind, status, date_from: dateFrom, date_to: dateTo, page, page_size: 20 })}`);
+  const emails = useAdminData<AdminEmailCampaignsResponse>(`/api/admin/emails?${buildQuery({ kind, status, date_from: dateFrom, date_to: dateTo, page, page_size: 20 })}`);
   const emailProvider = useAdminData<AdminEmailProviderStatus>("/api/admin/email-provider");
   const [message, setMessage] = useState("");
   const [providerAction, setProviderAction] = useState("");
@@ -1053,6 +1058,14 @@ export function AdminEmailsPage() {
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [outlookResult]);
+
+  useEffect(() => {
+    if (!emails.data || window.location.hash !== "#email-tasks") return;
+    const frame = window.requestAnimationFrame(() => {
+      document.getElementById("email-tasks")?.scrollIntoView({ block: "start" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [emails.data]);
 
   async function connectOutlook() {
     setProviderAction("connect");
@@ -1274,10 +1287,14 @@ export function AdminEmailsPage() {
       </PageState>
       <PageState loading={emails.loading} error={emails.error} hasData={Boolean(emails.data)} onRetry={emails.reload}>
         {emails.data ? (
-          <section className="admin-panel">
+          <section className="admin-panel" id="email-tasks">
             <div className="admin-panel-head">
               <Mail aria-hidden="true" />
-              <h2>邮件任务</h2>
+              <h2>{kind === "daily_top5" && status === "failed" ? "每日 TOP5 失败邮件" : kind === "daily_top5_close" && status === "failed" ? "每日 TOP5 收盘失败邮件" : "邮件任务"}</h2>
+            </div>
+            <div className="admin-email-campaign" aria-label="邮件任务汇总">
+              <strong>{status === "failed" ? `失败涉及 ${emails.data.total} 个任务` : `共 ${emails.data.total} 个任务`}</strong>
+              <span>成功 {emails.data.delivery_totals.sent} · 失败 {emails.data.delivery_totals.failed} · 跳过 {emails.data.delivery_totals.skipped}</span>
             </div>
             <div className="admin-list">
               {emails.data.items.map((item) => {
