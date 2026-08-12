@@ -2288,9 +2288,14 @@ def list_admin_email_campaigns(
     filtered.sort(key=lambda item: (str(item.get("created_at") or ""), int(item.get("id") or 0)), reverse=True)
     total = len(filtered)
     offset = (page - 1) * page_size
+    delivery_totals = {
+        key: sum(int(item.get(key) or 0) for item in filtered)
+        for key in ("sent", "pending", "sending", "failed", "skipped")
+    }
     return {
         **_admin_page_payload(page=page, page_size=page_size, total=total),
         "items": filtered[offset: offset + page_size],
+        "delivery_totals": delivery_totals,
         "filters": {
             "kind": normalized_kind,
             "status": normalized_status,
