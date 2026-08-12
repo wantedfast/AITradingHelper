@@ -203,6 +203,12 @@ class AdminSectionApiTest(unittest.TestCase):
         self.assertTrue(all(item["failed"] > 0 for item in payload["items"]))
         self.assertEqual(payload["delivery_totals"]["failed"], 2)
         self.assertEqual(payload["delivery_totals"]["sent"], 1)
+        self.assertEqual(payload["summary"]["campaigns"], 2)
+        self.assertEqual(payload["summary"]["campaigns_with_failures"], 2)
+        self.assertEqual(payload["summary"]["recipients"], 3)
+        self.assertEqual(payload["summary"]["smtp_acceptance_rate"], 33.3)
+        self.assertEqual({item["key"] for item in payload["by_kind"]}, {"update_notice", "daily_top5"})
+        self.assertEqual(payload["failure_reasons"], [{"reason": "other", "count": 2}])
 
     def test_email_detail_returns_failed_recipient_and_error(self) -> None:
         status, payload = self.request("/api/admin/emails/daily_top5/1")
@@ -217,6 +223,20 @@ class AdminSectionApiTest(unittest.TestCase):
             "next_attempt_at": None,
             "updated_at": "2026-07-20T10:00:00+08:00",
         }])
+
+    def test_email_deliveries_endpoint_lists_all_states_and_filters_recipient(self) -> None:
+        status, payload = self.request("/api/admin/emails/update_notice/1/deliveries?page=1&page_size=20")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["total"], 2)
+        self.assertEqual(payload["status_counts"]["sent"], 1)
+        self.assertEqual(payload["status_counts"]["failed"], 1)
+        self.assertEqual({item["status"] for item in payload["items"]}, {"sent", "failed"})
+
+        status, filtered = self.request("/api/admin/emails/update_notice/1/deliveries?status=failed&q=user")
+        self.assertEqual(status, 200)
+        self.assertEqual(filtered["total"], 1)
+        self.assertEqual(filtered["items"][0]["status"], "failed")
 
     def test_email_pagination_does_not_truncate_older_campaigns_before_counting(self) -> None:
         with closing(sqlite3.connect(self.db_path)) as conn:

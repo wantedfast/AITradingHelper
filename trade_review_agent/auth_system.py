@@ -2292,10 +2292,52 @@ def list_admin_email_campaigns(
         key: sum(int(item.get(key) or 0) for item in filtered)
         for key in ("sent", "pending", "sending", "failed", "skipped")
     }
+    total_recipients = sum(delivery_totals.values())
+    accepted_and_failed = delivery_totals["sent"] + delivery_totals["failed"]
+    summary = {
+        "campaigns": total,
+        "campaigns_with_failures": sum(1 for item in filtered if int(item.get("failed") or 0) > 0),
+        "recipients": total_recipients,
+        **delivery_totals,
+        "smtp_acceptance_rate": round(
+            (delivery_totals["sent"] / accepted_and_failed * 100) if accepted_and_failed else 0.0,
+            1,
+        ),
+    }
+    by_kind: dict[str, dict[str, Any]] = {}
+    by_day: dict[str, dict[str, Any]] = {}
+    for item in filtered:
+        kind_key = str(item.get("kind") or "")
+        day_key = str(item.get("created_at") or "")[:10]
+        for bucket, key in ((by_kind, kind_key), (by_day, day_key)):
+            current = bucket.setdefault(
+                key,
+                {"key": key, "campaigns": 0, "sent": 0, "failed": 0, "skipped": 0, "pending": 0, "sending": 0},
+            )
+            current["campaigns"] += 1
+            for count_key in ("sent", "failed", "skipped", "pending", "sending"):
+                current[count_key] += int(item.get(count_key) or 0)
+    failure_reasons: dict[str, int] = {}
+    with _connect(db_path) as conn:
+        for item in filtered:
+            _campaign_table, delivery_table, _payload_builder = _admin_email_campaign_source(str(item.get("kind") or ""))
+            for row in conn.execute(
+                f"SELECT last_error FROM {delivery_table} WHERE campaign_id = ? AND status = 'failed'",
+                (int(item.get("id") or 0),),
+            ).fetchall():
+                reason = _admin_email_failure_category(str(row["last_error"] or ""))
+                failure_reasons[reason] = failure_reasons.get(reason, 0) + 1
     return {
         **_admin_page_payload(page=page, page_size=page_size, total=total),
         "items": filtered[offset: offset + page_size],
         "delivery_totals": delivery_totals,
+        "summary": summary,
+        "by_kind": sorted(by_kind.values(), key=lambda item: str(item["key"])),
+        "by_day": sorted(by_day.values(), key=lambda item: str(item["key"])),
+        "failure_reasons": [
+            {"reason": reason, "count": count}
+            for reason, count in sorted(failure_reasons.items(), key=lambda entry: (-entry[1], entry[0]))
+        ],
         "filters": {
             "kind": normalized_kind,
             "status": normalized_status,
@@ -2312,22 +2354,7 @@ def get_admin_email_campaign_detail(db_path: Path, *, kind: str, campaign_id: in
     )
     if campaign_id <= 0:
         raise AuthError("邮件任务不存在", 404)
-    if normalized_kind == "update_notice":
-        campaign_table = "update_email_campaigns"
-        delivery_table = "update_email_deliveries"
-        payload_builder = _email_campaign_payload
-    elif normalized_kind == "daily_top5":
-        campaign_table = "daily_top5_email_campaigns"
-        delivery_table = "daily_top5_email_deliveries"
-        payload_builder = _daily_top5_email_campaign_payload
-    elif normalized_kind == "daily_top5_close":
-        campaign_table = "daily_top5_close_email_campaigns"
-        delivery_table = "daily_top5_close_email_deliveries"
-        payload_builder = _daily_top5_close_email_campaign_payload
-    else:
-        campaign_table = "ai_report_email_campaigns"
-        delivery_table = "ai_report_email_deliveries"
-        payload_builder = _ai_report_email_campaign_payload
+    campaign_table, delivery_table, payload_builder = _admin_email_campaign_source(normalized_kind)
 
     with _connect(db_path) as conn:
         campaign_row = conn.execute(
@@ -2363,7 +2390,142 @@ def get_admin_email_campaign_detail(db_path: Path, *, kind: str, campaign_id: in
             **campaign,
             "campaign": campaign,
             "failed_deliveries": deliveries,
+            "failure_reasons": _admin_email_reason_counts(conn, delivery_table=delivery_table, campaign_id=campaign_id),
         }
+
+
+def list_admin_email_deliveries(
+    db_path: Path,
+    *,
+    kind: str,
+    campaign_id: int,
+    status: str = "all",
+    query: str = "",
+    page: int = 1,
+    page_size: int = 20,
+) -> dict[str, Any]:
+    normalized_kind = _normalize_admin_choice(
+        kind,
+        allowed={"update_notice", "daily_top5", "daily_top5_close", "market_day", "ai_research"},
+    )
+    normalized_status = _normalize_admin_choice(
+        status,
+        allowed={"all", "pending", "sending", "sent", "failed", "skipped"},
+    )
+    normalized_query = _normalize_admin_query(query)
+    page = _normalize_admin_page(page)
+    page_size = _normalize_admin_page_size(page_size, default=20, maximum=100)
+    campaign_table, delivery_table, payload_builder = _admin_email_campaign_source(normalized_kind)
+    with _connect(db_path) as conn:
+        campaign_row = conn.execute(f"SELECT id FROM {campaign_table} WHERE id = ?", (campaign_id,)).fetchone()
+        if not campaign_row:
+            raise AuthError("邮件任务不存在", 404)
+        campaign = payload_builder(conn, campaign_id)
+        if normalized_kind in {"market_day", "ai_research"} and str(campaign.get("report_type") or "") != normalized_kind:
+            raise AuthError("邮件任务不存在", 404)
+        where = ["d.campaign_id = ?"]
+        params: list[Any] = [campaign_id]
+        if normalized_status != "all":
+            where.append("d.status = ?")
+            params.append(normalized_status)
+        if normalized_query:
+            like = _admin_like(normalized_query)
+            where.append("(LOWER(COALESCE(d.email, '')) LIKE ? OR LOWER(COALESCE(u.username, '')) LIKE ? OR LOWER(COALESCE(d.last_error, '')) LIKE ?)")
+            params.extend([like, like, like])
+        where_sql = " AND ".join(where)
+        total = int(conn.execute(
+            f"SELECT COUNT(*) AS count FROM {delivery_table} d LEFT JOIN users u ON u.id = d.user_id WHERE {where_sql}",
+            tuple(params),
+        ).fetchone()["count"])
+        offset = (page - 1) * page_size
+        rows = conn.execute(
+            f"""
+            SELECT d.id, d.user_id, d.email, d.status, d.attempt_count, d.next_attempt_at,
+                   d.last_error, d.sent_at, d.updated_at, COALESCE(u.username, '') AS username
+            FROM {delivery_table} d
+            LEFT JOIN users u ON u.id = d.user_id
+            WHERE {where_sql}
+            ORDER BY d.updated_at DESC, d.id DESC
+            LIMIT ? OFFSET ?
+            """,
+            (*params, page_size, offset),
+        ).fetchall()
+        counts = {
+            str(row["status"]): int(row["count"])
+            for row in conn.execute(
+                f"SELECT status, COUNT(*) AS count FROM {delivery_table} WHERE campaign_id = ? GROUP BY status",
+                (campaign_id,),
+            ).fetchall()
+        }
+        return {
+            **_admin_page_payload(page=page, page_size=page_size, total=total),
+            "kind": normalized_kind,
+            "campaign": campaign,
+            "status_counts": {key: counts.get(key, 0) for key in ("pending", "sending", "sent", "failed", "skipped")},
+            "failure_reasons": _admin_email_reason_counts(conn, delivery_table=delivery_table, campaign_id=campaign_id),
+            "items": [
+                {
+                    "id": int(row["id"]),
+                    "user_id": int(row["user_id"]),
+                    "username": str(row["username"] or ""),
+                    "email": str(row["email"] or ""),
+                    "status": str(row["status"] or ""),
+                    "attempt_count": int(row["attempt_count"] or 0),
+                    "next_attempt_at": row["next_attempt_at"],
+                    "last_error": str(row["last_error"] or ""),
+                    "reason_category": _admin_email_failure_category(str(row["last_error"] or "")) if str(row["status"] or "") in {"failed", "skipped"} else "",
+                    "sent_at": row["sent_at"],
+                    "updated_at": row["updated_at"],
+                }
+                for row in rows
+            ],
+            "filters": {"status": normalized_status, "query": normalized_query},
+        }
+
+
+def _admin_email_campaign_source(kind: str) -> tuple[str, str, Callable[[sqlite3.Connection, int], dict[str, Any]]]:
+    if kind == "update_notice":
+        return "update_email_campaigns", "update_email_deliveries", _email_campaign_payload
+    if kind == "daily_top5":
+        return "daily_top5_email_campaigns", "daily_top5_email_deliveries", _daily_top5_email_campaign_payload
+    if kind == "daily_top5_close":
+        return "daily_top5_close_email_campaigns", "daily_top5_close_email_deliveries", _daily_top5_close_email_campaign_payload
+    if kind in {"market_day", "ai_research"}:
+        return "ai_report_email_campaigns", "ai_report_email_deliveries", _ai_report_email_campaign_payload
+    raise AuthError("邮件任务类型不受支持", 400)
+
+
+def _admin_email_failure_category(error: str) -> str:
+    value = str(error or "").lower()
+    if "blacklisted by the recipient" in value or "blocked" in value or "拒收" in value or "黑名单" in value:
+        return "recipient_blocked"
+    if any(marker in value for marker in ("user unknown", "no such user", "recipient not found", "mailbox not found", "invalid recipient", "does not exist")):
+        return "invalid_recipient"
+    if any(marker in value for marker in ("rate limit", "too many", "quota", "frequency", "限流")):
+        return "provider_rate_limited"
+    if any(marker in value for marker in ("authentication", "auth", "credential", "password")):
+        return "provider_auth"
+    if any(marker in value for marker in ("timeout", "temporar", "disconnect", "connection", "network")):
+        return "temporary_provider"
+    if "邮箱未验证" in error or "email" in value and "verified" in value:
+        return "email_unverified"
+    if "关闭" in error or "disabled" in value or "unsubscribe" in value:
+        return "subscription_disabled"
+    return "other"
+
+
+def _admin_email_reason_counts(conn: sqlite3.Connection, *, delivery_table: str, campaign_id: int) -> list[dict[str, Any]]:
+    counts: dict[str, int] = {}
+    for row in conn.execute(
+        f"SELECT status, last_error FROM {delivery_table} WHERE campaign_id = ? AND status IN ('failed', 'skipped')",
+        (campaign_id,),
+    ).fetchall():
+        reason = _admin_email_failure_category(str(row["last_error"] or ""))
+        counts[reason] = counts.get(reason, 0) + 1
+    return [
+        {"reason": reason, "count": count}
+        for reason, count in sorted(counts.items(), key=lambda entry: (-entry[1], entry[0]))
+    ]
 
 
 def _admin_page_payload(*, page: int, page_size: int, total: int) -> dict[str, int]:

@@ -164,11 +164,38 @@ type AdminEmailItem = {
 
 type AdminEmailCampaignsResponse = PagedResult<AdminEmailItem> & {
   delivery_totals: Pick<AdminEmailItem, "sent" | "pending" | "sending" | "failed" | "skipped">;
+  summary: {
+    campaigns: number;
+    campaigns_with_failures: number;
+    recipients: number;
+    sent: number;
+    pending: number;
+    sending: number;
+    failed: number;
+    skipped: number;
+    smtp_acceptance_rate: number;
+  };
+  by_kind: AdminEmailAggregate[];
+  by_day: AdminEmailAggregate[];
+  failure_reasons: AdminEmailReasonCount[];
 };
 
-type AdminEmailFailureDetail = {
+type AdminEmailAggregate = {
+  key: string;
+  campaigns: number;
+  sent: number;
+  failed: number;
+  skipped: number;
+  pending: number;
+  sending: number;
+};
+
+type AdminEmailReasonCount = { reason: string; count: number };
+
+type AdminEmailDetail = {
   kind: AdminEmailItem["kind"];
   campaign: EmailCampaign & { created_at?: string; finished_at?: string | null };
+  failure_reasons: AdminEmailReasonCount[];
   failed_deliveries: Array<{
     email: string;
     status: string;
@@ -177,6 +204,27 @@ type AdminEmailFailureDetail = {
     next_attempt_at?: string | null;
     updated_at?: string | null;
   }>;
+};
+
+type AdminEmailDelivery = {
+  id: number;
+  user_id: number;
+  username: string;
+  email: string;
+  status: "pending" | "sending" | "sent" | "failed" | "skipped";
+  attempt_count: number;
+  next_attempt_at?: string | null;
+  last_error: string;
+  reason_category: string;
+  sent_at?: string | null;
+  updated_at?: string | null;
+};
+
+type AdminEmailDeliveriesResponse = PagedResult<AdminEmailDelivery> & {
+  kind: AdminEmailKind;
+  campaign: EmailCampaign;
+  status_counts: Record<AdminEmailDelivery["status"], number>;
+  failure_reasons: AdminEmailReasonCount[];
 };
 
 type AdminEmailProviderStatus = {
@@ -1043,9 +1091,18 @@ export function AdminEmailsPage() {
   const [outlookDevice, setOutlookDevice] = useState<OutlookDeviceConnection | null>(null);
   const [confirmIntent, setConfirmIntent] = useState<AdminConfirmIntent | null>(null);
   const [confirmSubmitting, setConfirmSubmitting] = useState(false);
-  const [detail, setDetail] = useState<AdminEmailFailureDetail | null>(null);
+  const [selectedCampaign, setSelectedCampaign] = useState<AdminEmailItem | null>(null);
+  const [detail, setDetail] = useState<AdminEmailDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState("");
+  const [deliveryStatus, setDeliveryStatus] = useState("all");
+  const [deliveryQueryDraft, setDeliveryQueryDraft] = useState("");
+  const [deliveryQuery, setDeliveryQuery] = useState("");
+  const [deliveryPage, setDeliveryPage] = useState(1);
+  const [deliveries, setDeliveries] = useState<AdminEmailDeliveriesResponse | null>(null);
+  const [deliveriesLoading, setDeliveriesLoading] = useState(false);
+  const [deliveriesError, setDeliveriesError] = useState("");
+  const [exportingDeliveries, setExportingDeliveries] = useState(false);
 
   useEffect(() => {
     if (outlookResult === "connected") {
@@ -1066,6 +1123,24 @@ export function AdminEmailsPage() {
     });
     return () => window.cancelAnimationFrame(frame);
   }, [emails.data]);
+
+  useEffect(() => {
+    if (!selectedCampaign) return;
+    let cancelled = false;
+    setDeliveries(null);
+    setDeliveriesLoading(true);
+    setDeliveriesError("");
+    void apiFetch<AdminEmailDeliveriesResponse>(
+      `/api/admin/emails/${selectedCampaign.kind}/${selectedCampaign.id}/deliveries?${buildQuery({ status: deliveryStatus, q: deliveryQuery, page: deliveryPage, page_size: 20 })}`,
+    ).then((result) => {
+      if (!cancelled) setDeliveries(result);
+    }).catch((error) => {
+      if (!cancelled) setDeliveriesError(errorMessage(error, "读取收件人投递记录失败"));
+    }).finally(() => {
+      if (!cancelled) setDeliveriesLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [selectedCampaign, deliveryStatus, deliveryQuery, deliveryPage]);
 
   async function connectOutlook() {
     setProviderAction("connect");
@@ -1162,16 +1237,66 @@ export function AdminEmailsPage() {
     });
   }
 
-  async function openFailureDetail(item: AdminEmailItem) {
+  async function openCampaignDetail(item: AdminEmailItem, initialStatus = "all") {
+    setSelectedCampaign(item);
     setDetail(null);
+    setDeliveries(null);
     setDetailError("");
+    setDeliveriesError("");
+    setDeliveryStatus(initialStatus);
+    setDeliveryQueryDraft("");
+    setDeliveryQuery("");
+    setDeliveryPage(1);
     setDetailLoading(true);
     try {
-      setDetail(await apiFetch<AdminEmailFailureDetail>(`/api/admin/emails/${item.kind}/${item.id}`));
+      setDetail(await apiFetch<AdminEmailDetail>(`/api/admin/emails/${item.kind}/${item.id}`));
     } catch (error) {
-      setDetailError(errorMessage(error, "读取失败详情失败"));
+      setDetailError(errorMessage(error, "读取邮件任务详情失败"));
     } finally {
       setDetailLoading(false);
+    }
+  }
+
+  function closeCampaignDetail() {
+    setSelectedCampaign(null);
+    setDetail(null);
+    setDeliveries(null);
+    setDetailError("");
+    setDeliveriesError("");
+  }
+
+  async function exportCampaignDeliveries() {
+    if (!selectedCampaign) return;
+    setExportingDeliveries(true);
+    setMessage("");
+    try {
+      const all: AdminEmailDelivery[] = [];
+      let exportPage = 1;
+      let totalPages = 1;
+      do {
+        const result = await apiFetch<AdminEmailDeliveriesResponse>(
+          `/api/admin/emails/${selectedCampaign.kind}/${selectedCampaign.id}/deliveries?${buildQuery({ status: deliveryStatus, q: deliveryQuery, page: exportPage, page_size: 100 })}`,
+        );
+        all.push(...result.items);
+        totalPages = result.total_pages;
+        exportPage += 1;
+      } while (exportPage <= totalPages);
+      const rows = [
+        ["邮箱", "用户名", "状态", "尝试次数", "发送时间", "更新时间", "原因分类", "错误原因"],
+        ...all.map((item) => [item.email, item.username, emailDeliveryStatusLabel(item.status), String(item.attempt_count), item.sent_at || "", item.updated_at || "", emailFailureReasonLabel(item.reason_category), item.last_error]),
+      ];
+      const csv = `\ufeff${rows.map((row) => row.map(csvCell).join(",")).join("\r\n")}`;
+      const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `email-campaign-${selectedCampaign.kind}-${selectedCampaign.id}.csv`;
+      link.click();
+      URL.revokeObjectURL(url);
+      setMessage(`已导出 ${all.length} 条收件人投递记录。`);
+    } catch (error) {
+      setMessage(errorMessage(error, "导出投递记录失败"));
+    } finally {
+      setExportingDeliveries(false);
     }
   }
 
@@ -1242,6 +1367,49 @@ export function AdminEmailsPage() {
         )}
       />
       {message ? <div className="admin-alert">{message}</div> : null}
+      <PageState loading={emails.loading} error={emails.error} hasData={Boolean(emails.data)} onRetry={emails.reload}>
+        {emails.data ? (
+          <>
+            <section className="admin-email-kpis" aria-label="邮件运营概览">
+              <EmailKpi label="邮件任务" value={emails.data.summary.campaigns} note={`${emails.data.summary.campaigns_with_failures} 个任务存在失败`} tone={emails.data.summary.campaigns_with_failures ? "warning" : "normal"} />
+              <EmailKpi label="目标收件人" value={emails.data.summary.recipients} note="包含跳过和等待记录" />
+              <EmailKpi label="SMTP 已接受" value={emails.data.summary.sent} note="不等同于最终送达" tone="success" />
+              <EmailKpi label="发送失败" value={emails.data.summary.failed} note="可下钻查看原因" tone={emails.data.summary.failed ? "danger" : "normal"} />
+              <EmailKpi label="已跳过" value={emails.data.summary.skipped} note="未验证或关闭订阅" />
+              <EmailKpi label="SMTP 接受率" value={`${emails.data.summary.smtp_acceptance_rate}%`} note="已接受 ÷（已接受 + 失败）" tone="success" />
+            </section>
+            <section className="admin-email-insights">
+              <article className="admin-panel">
+                <div className="admin-panel-head"><Mail aria-hidden="true" /><h2>每日发送表现</h2></div>
+                <div className="admin-email-trend" aria-label="每日邮件发送表现">
+                  {emails.data.by_day.slice(-14).map((day) => {
+                    const total = day.sent + day.failed;
+                    const rate = total ? Math.round(day.sent / total * 100) : 0;
+                    return (
+                      <div className="admin-email-trend-row" key={day.key}>
+                        <span>{day.key.slice(5)}</span>
+                        <div><i style={{ width: `${rate}%` }} /></div>
+                        <b>{day.sent}</b>
+                        <em className={day.failed ? "is-failed" : ""}>{day.failed ? `失败 ${day.failed}` : "正常"}</em>
+                      </div>
+                    );
+                  })}
+                  {!emails.data.by_day.length ? <EmptyState message="当前筛选条件下暂无趋势数据。" /> : null}
+                </div>
+              </article>
+              <article className="admin-panel">
+                <div className="admin-panel-head"><Mail aria-hidden="true" /><h2>失败原因</h2></div>
+                <div className="admin-email-reasons">
+                  {emails.data.failure_reasons.map((item) => (
+                    <div key={item.reason}><span>{emailFailureReasonLabel(item.reason)}</span><b>{item.count}</b></div>
+                  ))}
+                  {!emails.data.failure_reasons.length ? <EmptyState message="当前筛选条件下没有发送失败。" /> : null}
+                </div>
+              </article>
+            </section>
+          </>
+        ) : null}
+      </PageState>
       <PageState loading={emailProvider.loading} error={emailProvider.error} hasData={Boolean(emailProvider.data)} onRetry={emailProvider.reload}>
         {emailProvider.data ? (
           <section className="admin-panel">
@@ -1292,28 +1460,31 @@ export function AdminEmailsPage() {
               <Mail aria-hidden="true" />
               <h2>{kind === "daily_top5" && status === "failed" ? "每日 TOP5 失败邮件" : kind === "daily_top5_close" && status === "failed" ? "每日 TOP5 收盘失败邮件" : "邮件任务"}</h2>
             </div>
-            <div className="admin-email-campaign" aria-label="邮件任务汇总">
+            <div className="admin-email-task-summary" aria-label="邮件任务汇总">
               <strong>{status === "failed" ? `失败涉及 ${emails.data.total} 个任务` : `共 ${emails.data.total} 个任务`}</strong>
-              <span>成功 {emails.data.delivery_totals.sent} · 失败 {emails.data.delivery_totals.failed} · 跳过 {emails.data.delivery_totals.skipped}</span>
+              <span>SMTP 已接受 {emails.data.delivery_totals.sent} · 失败 {emails.data.delivery_totals.failed} · 跳过 {emails.data.delivery_totals.skipped} · 等待 {emails.data.delivery_totals.pending + emails.data.delivery_totals.sending}</span>
             </div>
-            <div className="admin-list">
+            <div className="admin-email-table" role="table" aria-label="邮件任务列表">
+              <div className="admin-email-table-head" role="row">
+                <span>任务</span><span>状态</span><span>收件人</span><span>SMTP 已接受</span><span>失败</span><span>跳过</span><span>接受率</span><span>操作</span>
+              </div>
               {emails.data.items.map((item) => {
                 const waitingForRetry = Boolean(item.next_retry_at && (item.pending > 0 || item.sending > 0));
                 const retryable = item.failed > 0 && !waitingForRetry && item.pending === 0 && item.sending === 0;
                 return (
-                  <article className="admin-list-item" key={`${item.kind}-${item.id}`}>
-                    <header>
-                      <b>{item.title}</b>
-                      <span>{emailCampaignLabel(item.status)}</span>
-                    </header>
-                    <p>{formatDate(item.created_at)}</p>
-                    <div className="admin-email-campaign">
-                      <span>{item.summary}</span>
-                      <span>{campaignDeliverySummary(item)}</span>
-                      {waitingForRetry && item.next_retry_at ? <span>等待自动重试：{formatDate(item.next_retry_at)}</span> : null}
-                      {item.failed > 0 ? <button type="button" onClick={() => openFailureDetail(item)}>查看失败详情</button> : null}
-                      {retryable ? <button type="button" onClick={() => retryCampaign(item)}>重试失败邮件</button> : null}
+                  <article className="admin-list-item admin-email-table-row" role="row" key={`${item.kind}-${item.id}`}>
+                    <div className="admin-email-task-name"><b>{item.title}</b><small>{formatDate(item.created_at)} · {emailKindLabel(item.kind)}</small></div>
+                    <span className={`admin-email-status admin-email-status--${item.status}`}>{emailCampaignLabel(item.status)}</span>
+                    <b>{item.total}</b>
+                    <span>{item.sent}</span>
+                    <button className={item.failed ? "admin-email-count-link is-failed" : "admin-email-count-link"} type="button" disabled={!item.failed} onClick={() => openCampaignDetail(item, "failed")}>{item.failed}</button>
+                    <span>{item.skipped}</span>
+                    <span>{smtpAcceptanceRate(item)}%</span>
+                    <div className="admin-email-row-actions">
+                      <button type="button" onClick={() => openCampaignDetail(item)}>查看任务</button>
+                      {retryable ? <button type="button" onClick={() => retryCampaign(item)}>重试失败</button> : null}
                     </div>
+                    {waitingForRetry && item.next_retry_at ? <small className="admin-email-retry-note">等待自动重试：{formatDate(item.next_retry_at)}</small> : null}
                   </article>
                 );
               })}
@@ -1323,28 +1494,79 @@ export function AdminEmailsPage() {
           </section>
         ) : null}
       </PageState>
-      {(detailLoading || detailError || detail) ? (
+      {selectedCampaign ? (
         <div className="admin-publish-backdrop" role="presentation">
           <section className="admin-publish-dialog admin-email-detail" role="dialog" aria-modal="true" aria-labelledby="admin-email-detail-title">
             <header>
-              <h2 id="admin-email-detail-title">失败邮件详情</h2>
-              <button type="button" aria-label="关闭失败邮件详情" onClick={() => { setDetail(null); setDetailError(""); setDetailLoading(false); }}><X aria-hidden="true" /></button>
+              <div><small>{emailKindLabel(selectedCampaign.kind)} · Campaign #{selectedCampaign.id}</small><h2 id="admin-email-detail-title">{selectedCampaign.title}</h2></div>
+              <button type="button" aria-label="关闭邮件任务详情" onClick={closeCampaignDetail}><X aria-hidden="true" /></button>
             </header>
-            {detailLoading ? <p role="status">正在读取失败收件人...</p> : null}
+            {detailLoading ? <p role="status">正在读取邮件任务...</p> : null}
             {detailError ? <div className="admin-alert" role="alert">{detailError}</div> : null}
             {detail ? (
-              <div className="admin-list">
-                <p>失败 {detail.failed_deliveries.length} 人 · 任务状态 {emailCampaignLabel(detail.campaign.status)}</p>
-                {detail.failed_deliveries.map((delivery) => (
-                  <article className="admin-list-item" key={`${delivery.email}-${delivery.updated_at || delivery.attempt_count}`}>
-                    <header><b>{delivery.email}</b><span>{delivery.status}</span></header>
-                    <p>{delivery.last_error || "未记录失败原因"}</p>
-                    <small>尝试 {delivery.attempt_count} 次 · {formatDate(delivery.updated_at)}</small>
-                  </article>
-                ))}
-                {!detail.failed_deliveries.length ? <EmptyState message="当前任务没有终态失败收件人。" /> : null}
+              <div className="admin-email-detail-body">
+                <section className="admin-email-detail-summary">
+                  <EmailKpi label="总收件人" value={selectedCampaign.total} note={`任务状态：${emailCampaignLabel(selectedCampaign.status)}`} />
+                  <EmailKpi label="SMTP 已接受" value={selectedCampaign.sent} note="服务器已接受发送" tone="success" />
+                  <EmailKpi label="失败" value={selectedCampaign.failed} note="可安全重试" tone={selectedCampaign.failed ? "danger" : "normal"} />
+                  <EmailKpi label="跳过" value={selectedCampaign.skipped} note="未进入发送队列" />
+                  <EmailKpi label="等待" value={selectedCampaign.pending + selectedCampaign.sending} note="含发送中" />
+                </section>
+                <div className="admin-email-detail-meta">
+                  <span>创建：{formatDate(selectedCampaign.created_at)}</span>
+                  <span>完成：{formatDate(detail.campaign.finished_at)}</span>
+                  <span>SMTP 接受率：{smtpAcceptanceRate(selectedCampaign)}%</span>
+                </div>
+                {detail.failure_reasons.length ? (
+                  <section className="admin-email-detail-reasons" aria-label="任务异常原因">
+                    {detail.failure_reasons.map((item) => <span key={item.reason}>{emailFailureReasonLabel(item.reason)} <b>{item.count}</b></span>)}
+                  </section>
+                ) : null}
               </div>
             ) : null}
+            <section className="admin-email-deliveries">
+              <div className="admin-email-delivery-toolbar">
+                <div className="admin-email-delivery-tabs" aria-label="投递状态筛选">
+                  {["all", "sent", "failed", "skipped", "pending", "sending"].map((value) => (
+                    <button
+                      type="button"
+                      className={deliveryStatus === value ? "active" : ""}
+                      key={value}
+                      onClick={() => { setDeliveryStatus(value); setDeliveryPage(1); }}
+                    >
+                      {emailDeliveryStatusLabel(value)}{value !== "all" && deliveries ? ` ${deliveries.status_counts[value as AdminEmailDelivery["status"]] || 0}` : ""}
+                    </button>
+                  ))}
+                </div>
+                <form onSubmit={(event) => { event.preventDefault(); setDeliveryQuery(deliveryQueryDraft.trim()); setDeliveryPage(1); }}>
+                  <input aria-label="搜索收件邮箱、用户名或错误" value={deliveryQueryDraft} onChange={(event) => setDeliveryQueryDraft(event.target.value)} placeholder="搜索邮箱、用户或错误" />
+                  <button type="submit">搜索</button>
+                  <button type="button" onClick={exportCampaignDeliveries} disabled={exportingDeliveries}>{exportingDeliveries ? "导出中..." : "导出 CSV"}</button>
+                </form>
+              </div>
+              {deliveriesLoading ? <p role="status">正在读取收件人投递记录...</p> : null}
+              {deliveriesError ? <div className="admin-alert" role="alert">{deliveriesError}</div> : null}
+              {deliveries ? (
+                <>
+                  <div className="admin-email-delivery-list">
+                    {deliveries.items.map((delivery) => (
+                      <article className="admin-email-delivery-row" key={delivery.id}>
+                        <div><b>{delivery.email || "未绑定邮箱"}</b><small>{delivery.username || `用户 #${delivery.user_id}`}</small></div>
+                        <span className={`admin-email-status admin-email-status--${delivery.status}`}>{emailDeliveryStatusLabel(delivery.status)}</span>
+                        <span>尝试 {delivery.attempt_count} 次</span>
+                        <span>{delivery.sent_at ? `发送 ${formatDate(delivery.sent_at)}` : `更新 ${formatDate(delivery.updated_at)}`}</span>
+                        <div className="admin-email-delivery-error">
+                          {delivery.reason_category ? <b>{emailFailureReasonLabel(delivery.reason_category)}</b> : null}
+                          <small>{delivery.last_error || "无错误记录"}</small>
+                        </div>
+                      </article>
+                    ))}
+                    {!deliveries.items.length ? <EmptyState message="当前筛选条件下没有收件人记录。" /> : null}
+                  </div>
+                  <AdminPagination page={deliveries.page} totalPages={deliveries.total_pages} onChange={setDeliveryPage} />
+                </>
+              ) : null}
+            </section>
           </section>
         </div>
       ) : null}
@@ -1359,6 +1581,26 @@ function PageToolbar({ title, actions }: { title: string; actions: ReactNode }) 
       <h2>{title}</h2>
       <div className="admin-page-toolbar-actions">{actions}</div>
     </div>
+  );
+}
+
+function EmailKpi({
+  label,
+  value,
+  note,
+  tone = "normal",
+}: {
+  label: string;
+  value: number | string;
+  note: string;
+  tone?: "normal" | "success" | "warning" | "danger";
+}) {
+  return (
+    <article className={`admin-email-kpi admin-email-kpi--${tone}`}>
+      <span>{label}</span>
+      <b>{typeof value === "number" ? value.toLocaleString() : value}</b>
+      <small>{note}</small>
+    </article>
   );
 }
 
@@ -1664,6 +1906,45 @@ function emailCampaignLabel(value: EmailCampaign["status"]) {
   if (value === "completed") return "已完成";
   if (value === "partial_failed") return "部分失败";
   return "发送失败";
+}
+
+function emailKindLabel(value: AdminEmailKind) {
+  if (value === "update_notice") return "公告邮件";
+  if (value === "daily_top5") return "每日 TOP5";
+  if (value === "daily_top5_close") return "TOP5 收盘表现";
+  if (value === "market_day") return "市场日报";
+  return "AI 复盘";
+}
+
+function emailDeliveryStatusLabel(value: string) {
+  if (value === "all") return "全部";
+  if (value === "pending") return "等待发送";
+  if (value === "sending") return "发送中";
+  if (value === "sent") return "SMTP 已接受";
+  if (value === "failed") return "发送失败";
+  if (value === "skipped") return "已跳过";
+  return value;
+}
+
+function emailFailureReasonLabel(value: string) {
+  if (value === "recipient_blocked") return "用户屏蔽或拒收";
+  if (value === "invalid_recipient") return "邮箱不存在";
+  if (value === "provider_rate_limited") return "发件服务限流";
+  if (value === "provider_auth") return "发件认证异常";
+  if (value === "temporary_provider") return "临时网络或服务异常";
+  if (value === "email_unverified") return "邮箱未验证";
+  if (value === "subscription_disabled") return "用户关闭邮件推送";
+  if (!value) return "";
+  return "其他原因";
+}
+
+function smtpAcceptanceRate(campaign: Pick<EmailCampaign, "sent" | "failed">) {
+  const attempted = campaign.sent + campaign.failed;
+  return attempted ? (campaign.sent / attempted * 100).toFixed(1) : "0.0";
+}
+
+function csvCell(value: string) {
+  return `"${String(value || "").replace(/"/g, '""')}"`;
 }
 
 function campaignDeliverySummary(campaign: Pick<EmailCampaign, "sent" | "pending" | "sending" | "failed" | "skipped">) {

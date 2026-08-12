@@ -488,10 +488,41 @@ async function installAdminFixtures(page: Page, options: FixtureOptions = {}) {
       return json(route, state.emailProvider);
     }
 
+    if (/^\/api\/admin\/emails\/(update_notice|daily_top5|daily_top5_close|market_day|ai_research)\/\d+\/deliveries$/.test(path)) {
+      const parts = path.split("/");
+      const campaign = state.emails.find((item) => item.kind === parts[4] && item.id === Number(parts[5])) || state.emails[0];
+      const rows = (["sent", "failed", "skipped", "pending", "sending"] as const).flatMap((deliveryStatus) =>
+        Array.from({ length: campaign[deliveryStatus] }, (_, index) => ({
+          id: Number(`${campaign.id}${deliveryStatus.length}${index}`),
+          user_id: 100 + index,
+          username: deliveryStatus === "failed" ? "failure-user" : `${deliveryStatus}-user-${index + 1}`,
+          email: deliveryStatus === "failed" ? "failed-recipient@example.com" : `${deliveryStatus}-${index + 1}@example.com`,
+          status: deliveryStatus,
+          attempt_count: deliveryStatus === "failed" ? 3 : deliveryStatus === "sent" ? 1 : 0,
+          next_attempt_at: null,
+          last_error: deliveryStatus === "failed" ? "SMTP mailbox unavailable" : deliveryStatus === "skipped" ? "邮箱未验证" : "",
+          reason_category: deliveryStatus === "failed" ? "other" : deliveryStatus === "skipped" ? "email_unverified" : "",
+          sent_at: deliveryStatus === "sent" ? "2026-07-16T09:30:00+08:00" : null,
+          updated_at: "2026-07-16T09:30:00+08:00",
+        })),
+      );
+      const deliveryStatus = url.searchParams.get("status") || "all";
+      const query = (url.searchParams.get("q") || "").toLowerCase();
+      const filteredRows = rows.filter((item) => (deliveryStatus === "all" || item.status === deliveryStatus) && (!query || `${item.email} ${item.username} ${item.last_error}`.toLowerCase().includes(query)));
+      return json(route, {
+        ...paginate(filteredRows, Number(url.searchParams.get("page") || "1"), Number(url.searchParams.get("page_size") || "20")),
+        kind: campaign.kind,
+        campaign,
+        status_counts: { sent: campaign.sent, failed: campaign.failed, skipped: campaign.skipped, pending: campaign.pending, sending: campaign.sending },
+        failure_reasons: campaign.failed ? [{ reason: "other", count: campaign.failed }] : [],
+      });
+    }
+
     if (/^\/api\/admin\/emails\/(update_notice|daily_top5|daily_top5_close|market_day|ai_research)\/\d+$/.test(path)) {
       return json(route, {
         kind: path.split("/")[4],
         campaign: { status: "partial_failed", total: 6, pending: 0, sending: 0, sent: 4, failed: 1, skipped: 1 },
+        failure_reasons: [{ reason: "other", count: 1 }, { reason: "email_unverified", count: 1 }],
         failed_deliveries: [{
           email: "failed-recipient@example.com",
           status: "failed",
@@ -515,15 +546,27 @@ async function installAdminFixtures(page: Page, options: FixtureOptions = {}) {
         const dateMatch = inDateRange(item.created_at, dateFrom, dateTo);
         return kindMatch && statusMatch && dateMatch;
       });
+      const totals = {
+        sent: filtered.reduce((sum, item) => sum + item.sent, 0),
+        pending: filtered.reduce((sum, item) => sum + item.pending, 0),
+        sending: filtered.reduce((sum, item) => sum + item.sending, 0),
+        failed: filtered.reduce((sum, item) => sum + item.failed, 0),
+        skipped: filtered.reduce((sum, item) => sum + item.skipped, 0),
+      };
+      const attempted = totals.sent + totals.failed;
       return json(route, {
         ...paginate(filtered, requestedPage, 20),
-        delivery_totals: {
-          sent: filtered.reduce((sum, item) => sum + item.sent, 0),
-          pending: filtered.reduce((sum, item) => sum + item.pending, 0),
-          sending: filtered.reduce((sum, item) => sum + item.sending, 0),
-          failed: filtered.reduce((sum, item) => sum + item.failed, 0),
-          skipped: filtered.reduce((sum, item) => sum + item.skipped, 0),
+        delivery_totals: totals,
+        summary: {
+          campaigns: filtered.length,
+          campaigns_with_failures: filtered.filter((item) => item.failed > 0).length,
+          recipients: Object.values(totals).reduce((sum, value) => sum + value, 0),
+          ...totals,
+          smtp_acceptance_rate: attempted ? Math.round(totals.sent / attempted * 1000) / 10 : 0,
         },
+        by_kind: filtered.map((item) => ({ key: item.kind, campaigns: 1, sent: item.sent, failed: item.failed, skipped: item.skipped, pending: item.pending, sending: item.sending })),
+        by_day: [{ key: "2026-07-16", campaigns: filtered.length, ...totals }],
+        failure_reasons: totals.failed ? [{ reason: "other", count: totals.failed }] : [],
       });
     }
 
@@ -658,16 +701,16 @@ test.describe("admin routing", () => {
 
     const waitingItem = page.locator(".admin-list-item").filter({ has: page.getByText("Market Day 2026-07-16") });
     await expect(waitingItem.getByText(/16:30/)).toBeVisible();
-    await expect(waitingItem.getByRole("button", { name: "重试失败邮件" })).toHaveCount(0);
+    await expect(waitingItem.getByRole("button", { name: "重试失败" })).toHaveCount(0);
 
     const retryableItem = page.locator(".admin-list-item").filter({ has: page.getByText("Daily Top5 2026-07-16") });
-    await retryableItem.getByRole("button", { name: "查看失败详情" }).click();
-    const detailDialog = page.getByRole("dialog", { name: "失败邮件详情" });
+    await retryableItem.getByRole("button", { name: "查看任务" }).click();
+    const detailDialog = page.getByRole("dialog", { name: "Daily Top5 2026-07-16" });
     await expect(detailDialog.getByText("failed-recipient@example.com")).toBeVisible();
     await expect(detailDialog.getByText("SMTP mailbox unavailable")).toBeVisible();
-    await detailDialog.getByRole("button", { name: "关闭失败邮件详情" }).click();
-    await expect(retryableItem.getByRole("button", { name: "重试失败邮件" })).toBeVisible();
-    await retryableItem.getByRole("button", { name: "重试失败邮件" }).click();
+    await detailDialog.getByRole("button", { name: "关闭邮件任务详情" }).click();
+    await expect(retryableItem.getByRole("button", { name: "重试失败" })).toBeVisible();
+    await retryableItem.getByRole("button", { name: "重试失败" }).click();
     const dialog = page.getByRole("dialog");
     await expect(dialog).toBeVisible();
     await dialog.getByRole("button", { name: "重试失败邮件" }).click();
@@ -705,12 +748,12 @@ test.describe("admin routing", () => {
     await expect(page.getByText("Daily Top5 2026-07-16")).toHaveCount(0);
 
     const closeItem = page.locator(".admin-list-item").filter({ has: page.getByText("Daily Top5 Close 2026-07-16") });
-    await closeItem.getByRole("button", { name: "查看失败详情" }).click();
-    const detailDialog = page.getByRole("dialog", { name: "失败邮件详情" });
+    await closeItem.getByRole("button", { name: "查看任务" }).click();
+    const detailDialog = page.getByRole("dialog", { name: "Daily Top5 Close 2026-07-16" });
     await expect(detailDialog.getByText("failed-recipient@example.com")).toBeVisible();
-    await detailDialog.getByRole("button", { name: "关闭失败邮件详情" }).click();
+    await detailDialog.getByRole("button", { name: "关闭邮件任务详情" }).click();
 
-    await closeItem.getByRole("button", { name: "重试失败邮件" }).click();
+    await closeItem.getByRole("button", { name: "重试失败" }).click();
     await page.getByRole("dialog").getByRole("button", { name: "重试失败邮件" }).click();
 
     expect(capture.emailRetryPaths).toEqual(["/api/admin/daily-top5-close-email-campaigns/44/retry"]);
@@ -730,7 +773,7 @@ test.describe("admin routing", () => {
     await expect(page.getByRole("combobox").nth(1)).toHaveValue("failed");
     await expect(page.getByRole("heading", { name: "每日 TOP5 收盘失败邮件" })).toBeVisible();
     await expect(page.getByText("失败涉及 1 个任务")).toBeVisible();
-    await expect(page.getByText("成功 5 · 失败 1 · 跳过 0")).toBeVisible();
+    await expect(page.getByText("SMTP 已接受 5 · 失败 1 · 跳过 0 · 等待 0")).toBeVisible();
     await expect(page.getByText("Daily Top5 Close 2026-07-16")).toBeVisible();
   });
 
@@ -743,11 +786,32 @@ test.describe("admin routing", () => {
     await expect(page).toHaveURL(/\/admin\/emails\?status=failed&kind=daily_top5#email-tasks$/);
     await expect(page.getByRole("heading", { name: "每日 TOP5 失败邮件" })).toBeVisible();
     await expect(page.getByText("失败涉及 1 个任务")).toBeVisible();
-    await expect(page.getByText("成功 4 · 失败 1 · 跳过 1")).toBeVisible();
+    await expect(page.getByText("SMTP 已接受 4 · 失败 1 · 跳过 1 · 等待 0")).toBeVisible();
     const campaign = page.locator(".admin-list-item").filter({ has: page.getByText("Daily Top5 2026-07-16") });
-    await expect(campaign.getByText("成功 4 · 待发送 0 · 发送中 0 · 失败 1 · 跳过 1")).toBeVisible();
-    await campaign.getByRole("button", { name: "查看失败详情" }).click();
-    await expect(page.getByRole("dialog", { name: "失败邮件详情" }).getByText("failed-recipient@example.com")).toBeVisible();
+    await expect(campaign.getByText("4", { exact: true })).toBeVisible();
+    await expect(campaign.getByRole("button", { name: "1", exact: true })).toBeVisible();
+    await campaign.getByRole("button", { name: "查看任务" }).click();
+    await expect(page.getByRole("dialog", { name: "Daily Top5 2026-07-16" }).getByText("failed-recipient@example.com")).toBeVisible();
+  });
+
+  test("email operations console summarizes delivery health and drills into every recipient status", async ({ page }) => {
+    await installAdminFixtures(page);
+
+    await page.goto("/admin/emails", { waitUntil: "domcontentloaded" });
+
+    const overview = page.getByLabel("邮件运营概览");
+    await expect(overview.getByText("SMTP 已接受")).toBeVisible();
+    await expect(overview.getByText("发送失败")).toBeVisible();
+    await expect(page.getByRole("table", { name: "邮件任务列表" })).toBeVisible();
+    const marketCampaign = page.locator(".admin-list-item").filter({ has: page.getByText("Market Day 2026-07-16") });
+    await marketCampaign.getByRole("button", { name: "查看任务" }).click();
+
+    const detailDialog = page.getByRole("dialog", { name: "Market Day 2026-07-16" });
+    await expect(detailDialog.getByRole("button", { name: /SMTP 已接受 2/ })).toBeVisible();
+    await expect(detailDialog.getByText("sent-1@example.com")).toBeVisible();
+    await detailDialog.getByRole("button", { name: /已跳过 1/ }).click();
+    await expect(detailDialog.getByText("skipped-1@example.com")).toBeVisible();
+    await expect(detailDialog.locator(".admin-email-delivery-error b", { hasText: "邮箱未验证" })).toBeVisible();
   });
 
   test("updates publish with email from the simple form and keep mobile notice actions evenly laid out", async ({ page }) => {

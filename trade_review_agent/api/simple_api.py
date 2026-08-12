@@ -30,6 +30,7 @@ from trade_review_agent.auth_system import (
     admin_dashboard,
     get_admin_email_campaign_detail,
     list_admin_email_campaigns,
+    list_admin_email_deliveries,
     list_admin_feedback,
     list_admin_orders,
     list_admin_update_notices,
@@ -234,6 +235,9 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/admin/email-provider/outlook/callback":
                 self._admin_outlook_callback()
+                return
+            if re.fullmatch(r"/api/admin/emails/(update_notice|daily_top5|daily_top5_close|market_day|ai_research)/\d+/deliveries", path):
+                self._admin_email_deliveries(path)
                 return
             if re.fullmatch(r"/api/admin/emails/(update_notice|daily_top5|daily_top5_close|market_day|ai_research)/\d+", path):
                 self._admin_email_detail(path)
@@ -1478,6 +1482,21 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                 AUTH_DB,
                 kind=parts[4],
                 campaign_id=int(parts[5]),
+            )
+        )
+
+    def _admin_email_deliveries(self, path: str) -> None:
+        self._require_admin()
+        parts = path.split("/")
+        self._json(
+            list_admin_email_deliveries(
+                AUTH_DB,
+                kind=parts[4],
+                campaign_id=int(parts[5]),
+                status=self._query_value("status") or "all",
+                query=self._query_value("q"),
+                page=self._query_int("page", default=1),
+                page_size=self._query_int("page_size", default=20),
             )
         )
 
