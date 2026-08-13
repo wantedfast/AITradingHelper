@@ -3,6 +3,7 @@
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { CalendarDays, FileText, Loader2, LockKeyhole, RefreshCcw } from "lucide-react";
+import { ArrowClockwise, CalendarBlank } from "@phosphor-icons/react";
 import { MainSidebar } from "@/components/main-sidebar";
 import { FinancialDisclaimer } from "@/components/financial-disclaimer";
 import { MobileActionDock } from "@/components/mobile-action-dock";
@@ -191,21 +192,26 @@ function AiResearchPageContent() {
   }, [isToday, loadReports]);
 
   return (
-    <main className="review-workbench-page auction-page dated-report-page ai-research-page">
-      <MainSidebar activeKey="ai-research" note="每天 08:30（早上 8:30）汇总国内外重要消息，解释 CPI、黄金、原油和海外观点可能怎样影响 A 股。" />
+    <main className={`review-workbench-page auction-page dated-report-page ai-research-page ${beginnerReport ? "ai-beginner-report-page" : ""}`}>
+      <MainSidebar
+        activeKey="ai-research"
+        note={beginnerReport ? "每天 08:30 汇总重要消息，帮助你先看懂市场，再决定是否参与。" : "每天 08:30（早上 8:30）汇总国内外重要消息，解释 CPI、黄金、原油和海外观点可能怎样影响 A 股。"}
+        prototypeIcons={beginnerReport}
+      />
       <section className="review-workbench-main auction-main">
-        <header className="auction-topbar">
-          <div><span>DAILY INSTITUTIONAL RESEARCH</span><b>AI 研报</b></div>
+        <header className={`auction-topbar ${beginnerReport ? "ai-beginner-page-header" : ""}`}>
+          <div>{beginnerReport ? <><p className="ai-prototype-eyebrow">DAILY RESEARCH · BEGINNER VIEW</p><h1>AI 研报 <span>· 30秒判断</span></h1></> : <><span>DAILY INSTITUTIONAL RESEARCH</span><b>AI 研报</b></>}</div>
           <div className="auction-topbar-actions">
             <label className="auction-date-picker">
-              <CalendarDays />
+              {beginnerReport ? <CalendarBlank /> : <CalendarDays />}
+              {beginnerReport ? <span>{selectedDate}</span> : null}
               <input type="date" value={selectedDate} max={todayIsoDate()} onChange={(event) => handleDateChange(event.target.value)} />
             </label>
-            <button type="button" onClick={() => void loadReports()} disabled={loading}>{loading ? <Loader2 className="spin-icon" /> : <RefreshCcw />}<span>刷新研报</span></button>
+            <button type="button" onClick={() => void loadReports()} disabled={loading}>{loading ? <Loader2 className="spin-icon" /> : beginnerReport ? <ArrowClockwise /> : <RefreshCcw />}<span>刷新研报</span></button>
           </div>
         </header>
 
-        <FinancialDisclaimer compact={canReadDatedReport(billingStatus)} />
+        {!beginnerReport ? <FinancialDisclaimer compact={canReadDatedReport(billingStatus)} /> : null}
 
         {!beginnerReport ? <MobileTaskHeader
           eyebrow={<><FileText />{selectedDate}</>}
@@ -238,8 +244,8 @@ function AiResearchPageContent() {
         ) : (
           <>
             {loading && !report ? <section className="auction-panel dated-report-empty" role="status"><Loader2 className="spin-icon" /><b>正在读取所选日期的最新研报</b></section> : null}
-            {message ? <p className="auction-message" role="status">{message}</p> : null}
-            {billingMessage ? <p className="auction-message" role="status">{billingMessage}</p> : null}
+            {message && !beginnerReport ? <p className="auction-message" role="status">{message}</p> : null}
+            {billingMessage && !beginnerReport ? <p className="auction-message" role="status">{billingMessage}</p> : null}
             {!loading && billingStatus === "no_data" ? <section className="auction-panel auction-empty"><b>暂无数据</b><span>所选日期暂无 AI 研报，请稍后刷新或选择其他日期。</span></section> : null}
             {report ? <InlineReport report={report} /> : null}
           </>
