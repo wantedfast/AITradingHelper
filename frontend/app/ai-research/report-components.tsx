@@ -1,5 +1,6 @@
-import { Building2, CalendarDays, CheckCircle2, Clock3, FileText, ListChecks, Target, TrendingUp } from "lucide-react";
-import { ReportPipeContent } from "@/components/report-pipe-table";
+import { AlertTriangle, Ban, Building2, CalendarDays, CheckCircle2, Clock3, Eye, FileText, ListChecks, ShieldCheck, Target, TrendingUp, XCircle } from "lucide-react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { MobileReportDisclosure } from "@/components/mobile-report-disclosure";
 import { parseMarkdownPipeTables } from "@/lib/markdown-pipe-table";
 
@@ -13,6 +14,8 @@ export type AiResearchSummary = {
 };
 
 export type AiResearchReport = {
+  schema_version?: number;
+  beginner_decision?: BeginnerDecision | null;
   run_id?: string;
   received_at?: string;
   source?: string;
@@ -32,12 +35,75 @@ export type AiResearchReport = {
   institutional_research?: Array<Record<string, unknown>>;
 };
 
+export type BeginnerFocus = {
+  name: string;
+  reason?: string;
+  condition?: string;
+};
+
+export type BeginnerCondition = {
+  time?: string;
+  observation: string;
+  action: string;
+};
+
+export type BeginnerTimelineItem = {
+  time: "09:25" | "09:35" | "10:30";
+  observation: string;
+  action: string;
+  if_unmet: string;
+};
+
+export type BeginnerDecision = {
+  stance: "observe" | "cautious" | "stand_aside";
+  headline: string;
+  primary_focus: BeginnerFocus | null;
+  continue_conditions: BeginnerCondition[];
+  stop_conditions: BeginnerCondition[];
+  timeline: BeginnerTimelineItem[];
+  backup_focus: BeginnerFocus | null;
+  avoid_actions: string[];
+  term_explanations: Array<{ term: string; plain: string }>;
+};
+
 type MarkdownBlock = {
   title: string;
   lines: string[];
 };
 
+export function isBeginnerResearchReport(report: AiResearchReport): report is AiResearchReport & { schema_version: 2; beginner_decision: BeginnerDecision } {
+  return report.schema_version === 2 && Boolean(report.beginner_decision);
+}
+
 export function ReportBody({ report, compact = false }: { report: AiResearchReport; compact?: boolean }) {
+  if (!isBeginnerResearchReport(report)) return <ProfessionalReportBody report={report} compact={compact} />;
+
+  return (
+    <section className="ai-report-body ai-report-body-beginner">
+      <BeginnerDecisionDashboard decision={report.beginner_decision} />
+      <MobileReportDisclosure title="研究依据与术语解释" summary="完整专业研报、公开来源与白话词典">
+        <section className="ai-beginner-research-details">
+          {report.beginner_decision.term_explanations.length ? (
+            <section className="ai-beginner-terms">
+              <div className="ai-report-section-head">
+                <span><FileText /></span>
+                <div><p>白话词典</p><h2>看见专业词时，不必靠猜</h2></div>
+              </div>
+              <dl>
+                {report.beginner_decision.term_explanations.map((item) => (
+                  <div key={item.term}><dt>{item.term}</dt><dd>{item.plain}</dd></div>
+                ))}
+              </dl>
+            </section>
+          ) : null}
+          <ProfessionalReportBody report={report} compact={compact} />
+        </section>
+      </MobileReportDisclosure>
+    </section>
+  );
+}
+
+function ProfessionalReportBody({ report, compact = false }: { report: AiResearchReport; compact?: boolean }) {
   const blocks = splitMarkdown(report.markdown || "");
   const fallbackDecisionLines = findBlockLines(blocks, ["30秒", "盘前结论", "核心结论"]);
   const fallbackEvidenceLines = findBlockLines(blocks, ["证据", "隔夜变化", "外围风险"]);
@@ -180,21 +246,17 @@ export function ReportBody({ report, compact = false }: { report: AiResearchRepo
                   <h2>完整的研究框架与判断依据</h2>
                 </div>
               </div>
-              <div className="ai-markdown-blocks">
-                {blocks.map((block, index) => (
-                  <article key={`${block.title}-${index}`}>
-                    <h3>{block.title}</h3>
-                    <ReportPipeContent
-                      value={block.lines.join("\n")}
-                      renderText={(lines, segmentIndex) => (
-                        <ul key={`text-${segmentIndex}`}>
-                          {lines.filter(Boolean).map((line, lineIndex) => <li key={`${line}-${lineIndex}`}>{cleanMarkdownLine(line)}</li>)}
-                        </ul>
-                      )}
-                    />
-                  </article>
-                ))}
-              </div>
+              <article className="ai-markdown-rendered">
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm]}
+                  components={{
+                    a: ({ children, ...props }) => <a {...props} target="_blank" rel="noreferrer">{children}</a>,
+                    table: ({ children, ...props }) => <div className="ai-markdown-table-scroll"><table {...props}>{children}</table></div>,
+                  }}
+                >
+                  {report.markdown || ""}
+                </ReactMarkdown>
+              </article>
             </section>
             </MobileReportDisclosure>
           ) : null}
@@ -217,6 +279,78 @@ export function ReportBody({ report, compact = false }: { report: AiResearchRepo
       ) : null}
     </section>
   );
+}
+
+function BeginnerDecisionDashboard({ decision }: { decision: BeginnerDecision }) {
+  const stance = {
+    observe: { label: "可以观察", note: "先看条件，不急着行动", icon: Eye },
+    cautious: { label: "谨慎观察", note: "条件全部满足才继续看", icon: ShieldCheck },
+    stand_aside: { label: "暂不参与", note: "没有足够证据时，空着也是决定", icon: Ban },
+  }[decision.stance];
+  const StanceIcon = stance.icon;
+
+  return (
+    <section className={`ai-beginner-dashboard stance-${decision.stance}`} aria-labelledby="beginner-decision-title">
+      <header className="ai-beginner-hero">
+        <div className="ai-beginner-stance"><StanceIcon /><span>{stance.label}</span></div>
+        <div>
+          <p>今天的 30 秒结论</p>
+          <h1 id="beginner-decision-title">{decision.headline}</h1>
+          <span>{stance.note}</span>
+        </div>
+        <aside>
+          <small>今天只看</small>
+          <strong>{decision.primary_focus?.name || "没有明确方向"}</strong>
+          <p>{decision.primary_focus?.reason || "证据不足，今天先不参与。"}</p>
+        </aside>
+      </header>
+
+      <div className="ai-beginner-decision-grid">
+        <article className="ai-beginner-condition-card is-continue">
+          <div className="ai-beginner-card-title"><CheckCircle2 /><div><small>满足全部条件</small><h2>继续观察</h2></div></div>
+          {decision.continue_conditions.length ? (
+            <ol>{decision.continue_conditions.map((item, index) => <ConditionItem item={item} index={index} key={`${item.time || "continue"}-${index}`} />)}</ol>
+          ) : <p className="ai-beginner-empty">今天没有继续观察条件。</p>}
+        </article>
+        <article className="ai-beginner-condition-card is-stop">
+          <div className="ai-beginner-card-title"><XCircle /><div><small>出现任意一种</small><h2>立即放弃</h2></div></div>
+          <ol>{decision.stop_conditions.map((item, index) => <ConditionItem item={item} index={index} key={`${item.time || "stop"}-${index}`} />)}</ol>
+          <strong className="ai-beginner-stop-result">今天不操作</strong>
+        </article>
+      </div>
+
+      <section className="ai-beginner-timeline" aria-labelledby="beginner-timeline-title">
+        <div className="ai-beginner-section-title"><Clock3 /><div><small>开盘后照着看</small><h2 id="beginner-timeline-title">我该怎么做</h2></div></div>
+        <ol>
+          {decision.timeline.map((item) => (
+            <li key={item.time}>
+              <time>{item.time}</time>
+              <div><b>看什么</b><p>{item.observation}</p></div>
+              <div><b>怎么做</b><p>{item.action}</p></div>
+              <div className="is-unmet"><b>不满足</b><p>{item.if_unmet}</p></div>
+            </li>
+          ))}
+        </ol>
+      </section>
+
+      <div className="ai-beginner-lower-grid">
+        <section className="ai-beginner-backup">
+          <div className="ai-beginner-section-title"><Target /><div><small>只能单独重新判断</small><h2>备选方向</h2></div></div>
+          {decision.backup_focus ? <><strong>{decision.backup_focus.name}</strong><p>{decision.backup_focus.reason}</p><span>{decision.backup_focus.condition || "主方向不成立时，也不能自动切换到这里。"}</span></> : <p>今天不设备选方向，也不要临时找题材凑数。</p>}
+        </section>
+        <section className="ai-beginner-avoid">
+          <div className="ai-beginner-section-title"><AlertTriangle /><div><small>当天纪律</small><h2>最需要避免</h2></div></div>
+          <ul>{decision.avoid_actions.map((item) => <li key={item}>{item}</li>)}</ul>
+        </section>
+      </div>
+
+      <p className="ai-beginner-disclaimer"><ShieldCheck />不是买点提示，不推荐具体股票。条件不满足时，今天不操作就是正确决定。</p>
+    </section>
+  );
+}
+
+function ConditionItem({ item, index }: { item: BeginnerCondition; index: number }) {
+  return <li><span>{item.time || String(index + 1).padStart(2, "0")}</span><div><p>{item.observation}</p><small>{item.action}</small></div></li>;
 }
 
 export function ReportMeta({ report }: { report: AiResearchReport }) {

@@ -24,7 +24,7 @@ const features = [
     title: "AI 复盘",
     label: "TRADE REVIEW",
     icon: FileSearch,
-    description: "上传交割单，查看每笔交易哪里做对、哪里需要改，以及下次遇到类似情况怎么处理。",
+    description: "手动输入一笔交易，查看哪里做对、哪里需要改，以及下次遇到类似情况怎么处理。",
     points: ["看清做对的地方", "找到需要改的问题", "整理改进方法", "下次照着执行"],
   },
   {
@@ -435,7 +435,7 @@ export default function Page() {
             <p className="headline-sub">Stop Guessing. Start Trading With Your Best Strategy.</p>
             <p className="cn-slogan">摆脱盲从，依托优策。</p>
             <p className="description">
-              从交割单开始，AI 自动还原你的交易现场：市场情绪、板块方向、个股强度、产业链位置和下一步执行方案一目了然。
+              从手动录入一笔交易开始，AI 自动还原你的交易现场：市场情绪、板块方向、个股强度、产业链位置和下一步执行方案一目了然。
             </p>
             <div className="actions">
               <Link className="primary home-start-primary" href={user ? "/auction-strength" : "/auth"}>
@@ -649,8 +649,8 @@ export default function Page() {
             </div>
             <div className="product-guide-table">
               <div>
-                <b>1. 上传或录入</b>
-                <span>复盘上传交割单，盯盘录入持仓和观察条件。</span>
+                <b>1. 录入交易</b>
+                <span>复盘录入一笔交易，盯盘录入持仓和观察条件。</span>
               </div>
               <div>
                 <b>2. 生成结论</b>

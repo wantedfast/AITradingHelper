@@ -147,7 +147,6 @@ UPDATE_EMAIL_QUEUE_WAKE = threading.Event()
 UPDATE_EMAIL_WORKER_COUNT = 4
 AUTH_DB = BASE_DIR / "work" / "auth.sqlite"
 CN_TZ = ZoneInfo("Asia/Shanghai")
-ALLOWED_SUFFIXES = {".xls", ".xlsx", ".csv", ".txt", ".png", ".jpg", ".jpeg", ".webp"}
 MAX_SEEN_EVENTS = 2048
 REPORT_MANIFEST_NAME = "report_manifest.json"
 REPORT_STATUS_NAME = "report_status.json"
@@ -157,6 +156,17 @@ MARKET_DAY_REPORT_NAME = "market_day_report.json"
 AI_RESEARCH_REPORT_NAME = "ai_research_report.json"
 DATED_REPORT_RETENTION_DAYS = 5
 _dated_report_retention_lock = threading.RLock()
+
+AI_RESEARCH_SCHEMA_VERSION = 2
+AI_RESEARCH_BEGINNER_STANCES = {"observe", "cautious", "stand_aside"}
+AI_RESEARCH_BEGINNER_TIMES = ("09:25", "09:35", "10:30")
+AI_RESEARCH_BEGINNER_FORBIDDEN_TERMS = (
+    "扩散", "回流", "承接", "弱转强", "宽度", "拥挤度",
+)
+AI_RESEARCH_BEGINNER_FORBIDDEN_ADVICE = (
+    "买入", "卖出", "建仓", "加仓", "减仓", "满仓", "仓位",
+    "目标价", "收益率", "保证上涨", "稳赚", "必涨",
+)
 
 def normalize_research_model_tier(value: object = None) -> str:
     # The detailed report tier is disabled. Always normalize requests from
@@ -177,6 +187,10 @@ class SingleInstanceThreadingHTTPServer(ThreadingHTTPServer):
         if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
         super().server_bind()
+
+
+class AIResearchPayloadError(ValueError):
+    """A v2 AI research payload that is structurally unsafe to publish."""
 
 
 class TradeReviewHandler(BaseHTTPRequestHandler):
@@ -463,6 +477,8 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             self._json({"error": "not found"}, status=404)
         except AuthError as exc:
             self._json({"error": exc.message}, status=exc.status)
+        except AIResearchPayloadError as exc:
+            self._send_error(exc, status=422)
         except ValueError as exc:
             self._send_error(exc, status=400)
         except Exception as exc:
@@ -1731,24 +1747,25 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
 
             filename, data, fields = self._read_multipart_form(content_type)
             manual_trade = _manual_trade_from_fields(fields)
-            if not manual_trade and (not filename or data is None):
-                self._json({"error": "missing file"}, status=400)
+            if filename or data is not None:
+                self._json(
+                    {
+                        "error": "AI 复盘文件上传暂不可用，请改用手动输入。",
+                        "code": "AI_REVIEW_FILE_UPLOAD_DISABLED",
+                    },
+                    status=410,
+                )
+                return
+            if not manual_trade:
+                self._json({"error": "请填写手动交易信息"}, status=400)
                 return
             research_model_tier = normalize_research_model_tier(fields.get("research_model_tier") or fields.get("better_report"))
 
             upload_path: Path | None = None
-            suffix = ""
-            if not manual_trade:
-                filename = Path(filename or "upload.csv").name
-                suffix = Path(filename).suffix.lower()
-            if not manual_trade and suffix not in ALLOWED_SUFFIXES:
-                self._json({"error": "仅支持 xls/xlsx/csv/txt 成交记录文件或 png/jpg/jpeg/webp 成交截图"}, status=400)
-                return
 
             self._set_stage("create_run")
             run_id = uuid4().hex
             run_dir = REPORT_DIR / run_id
-            UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
             run_dir.mkdir(parents=True, exist_ok=True)
             if manual_trade:
                 self._set_stage("write_manual_trade", run_id=run_id)
@@ -1756,10 +1773,6 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                     json.dumps(manual_trade, ensure_ascii=False, indent=2),
                     encoding="utf-8",
                 )
-            else:
-                self._set_stage("write_upload", run_id=run_id)
-                upload_path = UPLOAD_DIR / f"{run_id}{suffix}"
-                upload_path.write_bytes(data or b"")
 
             self._set_stage("queued", run_id=run_id)
             status_payload = _report_status_payload(run_id, status="queued", stage="queued", request_id=self._request_id)
@@ -2702,6 +2715,16 @@ def _recover_report_manifest(run_id: str, run_dir: Path | None) -> dict | None:
 
 
 def _api_error_payload(exc: Exception, *, request_id: str, run_id: str = "", stage: str = "") -> dict:
+    if isinstance(exc, AIResearchPayloadError):
+        return {
+            "error": str(exc),
+            "detail": str(exc),
+            "code": "AI_RESEARCH_PAYLOAD_INVALID",
+            "retryable": False,
+            "request_id": request_id,
+            "run_id": run_id,
+            "stage": stage,
+        }
     if isinstance(exc, TradeParsingError):
         payload = {
             "error": exc.user_message,
@@ -3784,6 +3807,10 @@ def _ai_research_report_from_payload(*, payload: dict, headers: dict[str, str], 
     risk_calendar = payload.get("risk_calendar") if isinstance(payload.get("risk_calendar"), list) else []
     data_gaps = payload.get("data_gaps") if isinstance(payload.get("data_gaps"), list) else []
     institutional_research = payload.get("institutional_research") if isinstance(payload.get("institutional_research"), list) else []
+    schema_version = _ai_research_schema_version(payload.get("schema_version"))
+    beginner_decision = None
+    if schema_version == AI_RESEARCH_SCHEMA_VERSION:
+        beginner_decision = _normalize_ai_research_beginner_decision(payload.get("beginner_decision"))
     summary = _first_text(payload.get("summary"), payload.get("abstract"), _markdown_summary(markdown), title)
     return {
         "run_id": run_id,
@@ -3806,6 +3833,8 @@ def _ai_research_report_from_payload(*, payload: dict, headers: dict[str, str], 
         "risk_calendar": risk_calendar[:30],
         "data_gaps": [str(item)[:300] for item in data_gaps[:30]],
         "institutional_research": institutional_research[:20],
+        "schema_version": schema_version,
+        "beginner_decision": beginner_decision,
         "payload": payload,
         "headers": _safe_webhook_headers(headers),
     }
@@ -3843,7 +3872,151 @@ def _ai_research_public_report(report: dict) -> dict:
         "risk_calendar": report.get("risk_calendar") if isinstance(report.get("risk_calendar"), list) else [],
         "data_gaps": report.get("data_gaps") if isinstance(report.get("data_gaps"), list) else [],
         "institutional_research": report.get("institutional_research") if isinstance(report.get("institutional_research"), list) else [],
+        "schema_version": _ai_research_schema_version(report.get("schema_version")),
+        "beginner_decision": report.get("beginner_decision") if isinstance(report.get("beginner_decision"), dict) else None,
     }
+
+
+def _ai_research_schema_version(value: object) -> int:
+    if isinstance(value, bool):
+        raise AIResearchPayloadError("AI research schema_version must be 1 or 2")
+    if value in (None, "", 1, "1"):
+        return 1
+    if value in (AI_RESEARCH_SCHEMA_VERSION, str(AI_RESEARCH_SCHEMA_VERSION)):
+        return AI_RESEARCH_SCHEMA_VERSION
+    raise AIResearchPayloadError("AI research schema_version must be 1 or 2")
+
+
+def _normalize_ai_research_beginner_decision(value: object) -> dict:
+    if not isinstance(value, dict):
+        raise AIResearchPayloadError("schema_version 2 requires beginner_decision")
+
+    stance = str(value.get("stance") or "").strip()
+    if stance not in AI_RESEARCH_BEGINNER_STANCES:
+        raise AIResearchPayloadError("beginner_decision.stance is invalid")
+    headline = _required_beginner_text(value.get("headline"), "beginner_decision.headline", limit=160)
+    primary_focus = _normalize_beginner_focus(value.get("primary_focus"), "primary_focus", allow_none=True)
+    backup_focus = _normalize_beginner_focus(value.get("backup_focus"), "backup_focus", allow_none=True, condition_key="condition")
+    if stance != "stand_aside" and primary_focus is None:
+        raise AIResearchPayloadError("beginner_decision.primary_focus is required unless stance is stand_aside")
+
+    continue_conditions = _normalize_beginner_conditions(
+        value.get("continue_conditions"),
+        "continue_conditions",
+        allow_empty=stance == "stand_aside",
+    )
+    stop_conditions = _normalize_beginner_conditions(value.get("stop_conditions"), "stop_conditions")
+    timeline = _normalize_beginner_timeline(value.get("timeline"))
+    avoid_actions = _normalize_beginner_text_list(value.get("avoid_actions"), "avoid_actions", minimum=1, maximum=5)
+    term_explanations = _normalize_beginner_term_explanations(value.get("term_explanations"))
+
+    normalized = {
+        "stance": stance,
+        "headline": headline,
+        "primary_focus": primary_focus,
+        "continue_conditions": continue_conditions,
+        "stop_conditions": stop_conditions,
+        "timeline": timeline,
+        "backup_focus": backup_focus,
+        "avoid_actions": avoid_actions,
+        "term_explanations": term_explanations,
+    }
+    _validate_beginner_visible_language(normalized)
+    return normalized
+
+
+def _normalize_beginner_focus(
+    value: object,
+    field: str,
+    *,
+    allow_none: bool,
+    condition_key: str = "reason",
+) -> dict | None:
+    if value is None and allow_none:
+        return None
+    if not isinstance(value, dict):
+        raise AIResearchPayloadError(f"beginner_decision.{field} must be an object or null")
+    return {
+        "name": _required_beginner_text(value.get("name"), f"beginner_decision.{field}.name", limit=80),
+        condition_key: _required_beginner_text(
+            value.get(condition_key), f"beginner_decision.{field}.{condition_key}", limit=240
+        ),
+    }
+
+
+def _normalize_beginner_conditions(value: object, field: str, *, allow_empty: bool = False) -> list[dict]:
+    minimum = 0 if allow_empty else 1
+    if not isinstance(value, list) or not minimum <= len(value) <= 4:
+        raise AIResearchPayloadError(f"beginner_decision.{field} must contain {minimum}-4 items")
+    result = []
+    for index, item in enumerate(value):
+        if not isinstance(item, dict):
+            raise AIResearchPayloadError(f"beginner_decision.{field}[{index}] must be an object")
+        result.append({
+            "time": _required_beginner_text(item.get("time"), f"beginner_decision.{field}[{index}].time", limit=20),
+            "observation": _required_beginner_text(item.get("observation"), f"beginner_decision.{field}[{index}].observation", limit=240),
+            "action": _required_beginner_text(item.get("action"), f"beginner_decision.{field}[{index}].action", limit=160),
+        })
+    return result
+
+
+def _normalize_beginner_timeline(value: object) -> list[dict]:
+    if not isinstance(value, list) or len(value) != len(AI_RESEARCH_BEGINNER_TIMES):
+        raise AIResearchPayloadError("beginner_decision.timeline must contain 09:25, 09:35 and 10:30")
+    result = []
+    for index, (item, expected_time) in enumerate(zip(value, AI_RESEARCH_BEGINNER_TIMES)):
+        if not isinstance(item, dict) or str(item.get("time") or "").strip() != expected_time:
+            raise AIResearchPayloadError("beginner_decision.timeline must be ordered as 09:25, 09:35 and 10:30")
+        result.append({
+            "time": expected_time,
+            "observation": _required_beginner_text(item.get("observation"), f"beginner_decision.timeline[{index}].observation", limit=240),
+            "action": _required_beginner_text(item.get("action"), f"beginner_decision.timeline[{index}].action", limit=160),
+            "if_unmet": _required_beginner_text(item.get("if_unmet"), f"beginner_decision.timeline[{index}].if_unmet", limit=160),
+        })
+    return result
+
+
+def _normalize_beginner_text_list(value: object, field: str, *, minimum: int, maximum: int) -> list[str]:
+    if not isinstance(value, list) or not minimum <= len(value) <= maximum:
+        raise AIResearchPayloadError(f"beginner_decision.{field} must contain {minimum}-{maximum} items")
+    return [_required_beginner_text(item, f"beginner_decision.{field}[{index}]", limit=160) for index, item in enumerate(value)]
+
+
+def _normalize_beginner_term_explanations(value: object) -> list[dict]:
+    if value is None:
+        return []
+    if not isinstance(value, list) or len(value) > 12:
+        raise AIResearchPayloadError("beginner_decision.term_explanations must contain at most 12 items")
+    result = []
+    for index, item in enumerate(value):
+        if not isinstance(item, dict):
+            raise AIResearchPayloadError(f"beginner_decision.term_explanations[{index}] must be an object")
+        result.append({
+            "term": _required_beginner_text(item.get("term"), f"beginner_decision.term_explanations[{index}].term", limit=40),
+            "plain": _required_beginner_text(item.get("plain"), f"beginner_decision.term_explanations[{index}].plain", limit=240),
+        })
+    return result
+
+
+def _required_beginner_text(value: object, field: str, *, limit: int) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise AIResearchPayloadError(f"{field} is required")
+    if len(text) > limit:
+        raise AIResearchPayloadError(f"{field} must not exceed {limit} characters")
+    return text
+
+
+def _validate_beginner_visible_language(decision: dict) -> None:
+    visible = dict(decision)
+    visible.pop("term_explanations", None)
+    serialized = json.dumps(visible, ensure_ascii=False)
+    for term in AI_RESEARCH_BEGINNER_FORBIDDEN_TERMS:
+        if term in serialized:
+            raise AIResearchPayloadError(f"beginner_decision primary content contains professional term: {term}")
+    for phrase in AI_RESEARCH_BEGINNER_FORBIDDEN_ADVICE:
+        if phrase in serialized:
+            raise AIResearchPayloadError(f"beginner_decision contains prohibited investment instruction: {phrase}")
 
 
 def _safe_run_id(value: str) -> str:

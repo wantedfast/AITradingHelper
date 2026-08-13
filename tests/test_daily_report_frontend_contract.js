@@ -38,6 +38,7 @@ for (const status of ["no_data", "charged", "free_history"]) {
 
 const sidebar = read("components/main-sidebar.tsx");
 const home = read("app/page.tsx");
+const review = read("app/review/page.tsx");
 const dailyTop5 = read("app/auction-strength/page.tsx");
 const ticker = read("components/auction-strength-performance-ticker.tsx");
 
@@ -64,7 +65,11 @@ for (const [filename, source] of [
 }
 
 for (const phrase of ["每天 9:25", "5 只", "回避"]) assert.match(home, new RegExp(phrase), `Daily TOP5 copy needs ${phrase}`);
-for (const phrase of ["上传交割单", "做对", "需要改", "类似情况"]) assert.match(home, new RegExp(phrase), `review copy needs ${phrase}`);
+for (const phrase of ["手动输入", "做对", "需要改", "类似情况"]) assert.match(home, new RegExp(phrase), `review copy needs ${phrase}`);
+assert.doesNotMatch(home, /上传交割单/, "homepage must not advertise the removed AI review upload flow");
+assert.doesNotMatch(home, /从交割单开始/, "homepage hero must not imply the removed AI review upload flow");
+assert.doesNotMatch(review, /type="file"|文件上传|上传交割单|交割单文件说明/, "AI review must not expose file upload controls or copy");
+assert.match(review, /手动输入一笔交易/, "AI review must explain the remaining manual-entry flow");
 for (const phrase of ["持仓和计划", "明天观察", "买卖", "停手"]) assert.match(home, new RegExp(phrase), `watch copy needs ${phrase}`);
 for (const phrase of ["19:00", "市场在炒什么", "板块强弱"]) assert.match(home, new RegExp(phrase), `market copy needs ${phrase}`);
 assert.match(home, /第二天(?:关注)?重点/, "market copy needs the next day's focus");

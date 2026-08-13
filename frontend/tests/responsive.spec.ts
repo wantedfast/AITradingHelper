@@ -103,6 +103,31 @@ const aiResearchReport = {
   markdown: `# 移动端 AI 研报\n## 深度分析\n${wideMarkdownTable}`,
 };
 
+const aiResearchV2Report = {
+  ...aiResearchReport,
+  schema_version: 2,
+  run_id: "responsive-ai-research-v2",
+  beginner_decision: {
+    stance: "cautious",
+    headline: "今天先观察 AI 硬件，但不要因为开盘热闹就急着行动。",
+    primary_focus: { name: "AI 硬件", reason: "多个相关方向需要一起保持强势。" },
+    continue_conditions: [
+      { time: "09:35", observation: "至少两个相关方向仍在上涨。", action: "只保留观察。" },
+    ],
+    stop_conditions: [
+      { time: "10:30", observation: "相关方向冲高后持续下跌。", action: "停止关注。" },
+    ],
+    timeline: [
+      { time: "09:25", observation: "看是否普遍大幅高开。", action: "先记录。", if_unmet: "继续等待。" },
+      { time: "09:35", observation: "看多个方向是否保持强势。", action: "满足才继续观察。", if_unmet: "停止关注。" },
+      { time: "10:30", observation: "看下跌后是否重新上涨。", action: "维持原判断。", if_unmet: "今天不操作。" },
+    ],
+    backup_focus: null,
+    avoid_actions: ["开盘直接追着热度行动。"],
+    term_explanations: [{ term: "宽度", plain: "上涨覆盖的股票数量。" }],
+  },
+};
+
 function json(route: Route, body: unknown, status = 200) {
   return route.fulfill({
     status,
@@ -113,9 +138,10 @@ function json(route: Route, body: unknown, status = 200) {
 
 async function installStableApiFixtures(
   page: Page,
-  options: { datedBillingStatus?: "charged" | "pending_view" } = {},
+  options: { datedBillingStatus?: "charged" | "pending_view"; beginnerV2?: boolean } = {},
 ) {
   const datedBillingStatus = options.datedBillingStatus || "charged";
+  const researchReport = options.beginnerV2 ? aiResearchV2Report : aiResearchReport;
   await page.addInitScript((user) => {
     window.localStorage.setItem("ai_trade_token", "responsive-test-token");
     window.localStorage.setItem("ai_trade_user", JSON.stringify(user));
@@ -182,14 +208,14 @@ async function installStableApiFixtures(
       return json(route, {
         selected_date: url.searchParams.get("date"),
         available_dates: ["2026-07-15"],
-        reports: [{ run_id: aiResearchReport.run_id, research_date: "2026-07-15", title: aiResearchReport.title, summary: aiResearchReport.summary }],
+        reports: [{ run_id: researchReport.run_id, research_date: "2026-07-15", title: researchReport.title, summary: researchReport.summary }],
         billing_status: datedBillingStatus,
         billing_cost: datedBillingStatus === "pending_view" ? 2 : 0,
         user: fixtureUser,
       });
     }
-    if (path === `/api/ai-research/reports/${aiResearchReport.run_id}/status`) {
-      return json(route, { status: "done", stage: "done", billing_status: "charged", report: aiResearchReport, user: fixtureUser });
+    if (path === `/api/ai-research/reports/${researchReport.run_id}/status`) {
+      return json(route, { status: "done", stage: "done", billing_status: "charged", report: researchReport, user: fixtureUser });
     }
     if (path === "/api/admin/dashboard") {
       return json(route, {
@@ -409,6 +435,28 @@ for (const viewport of viewports) {
     }
   });
 }
+
+test.describe("AI research beginner decision layer", () => {
+  test.use({ viewport: { width: 390, height: 844 } });
+
+  test("shows the decision first and keeps professional research collapsed", async ({ page }) => {
+    await installStableApiFixtures(page, { beginnerV2: true });
+    await page.goto("/ai-research", { waitUntil: "domcontentloaded" });
+
+    const dashboard = page.locator(".ai-beginner-dashboard");
+    await expect(dashboard).toBeVisible();
+    await expect(dashboard.getByText("谨慎观察")).toBeVisible();
+    await expect(dashboard.getByText("AI 硬件", { exact: true })).toBeVisible();
+    await expect(dashboard.getByRole("heading", { name: "继续观察" })).toBeVisible();
+    await expect(dashboard.getByRole("heading", { name: "立即放弃" })).toBeVisible();
+    await expect(dashboard.getByRole("heading", { name: "我该怎么做" })).toBeVisible();
+    await expect(dashboard.getByText("开盘直接追着热度行动。")).toBeVisible();
+
+    const research = page.locator("details.mobile-report-disclosure").filter({ hasText: "研究依据与术语解释" }).first();
+    await expect(research).not.toHaveAttribute("open", "");
+    await expectNoGlobalHorizontalOverflow(page, "AI research beginner decision layer");
+  });
+});
 
 test.describe("homepage guest acquisition", () => {
   test.use({ viewport: { width: 390, height: 844 } });
