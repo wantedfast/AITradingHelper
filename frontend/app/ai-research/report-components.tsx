@@ -1,4 +1,17 @@
-import { AlertTriangle, Ban, Building2, CalendarDays, CheckCircle2, Clock3, Eye, FileText, ListChecks, ShieldCheck, Target, TrendingUp, XCircle } from "lucide-react";
+"use client";
+
+import { useState } from "react";
+import { Building2, CalendarDays, CheckCircle2, Clock3, FileText, ListChecks, Target, TrendingUp } from "lucide-react";
+import {
+  Article as PhArticle,
+  CaretDown,
+  CheckCircle as PhCheckCircle,
+  Clock as PhClock,
+  Pill,
+  ShieldCheck as PhShieldCheck,
+  Target as PhTarget,
+  XCircle as PhXCircle,
+} from "@phosphor-icons/react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { MobileReportDisclosure } from "@/components/mobile-report-disclosure";
@@ -77,30 +90,7 @@ export function isBeginnerResearchReport(report: AiResearchReport): report is Ai
 
 export function ReportBody({ report, compact = false }: { report: AiResearchReport; compact?: boolean }) {
   if (!isBeginnerResearchReport(report)) return <ProfessionalReportBody report={report} compact={compact} />;
-
-  return (
-    <section className="ai-report-body ai-report-body-beginner">
-      <BeginnerDecisionDashboard decision={report.beginner_decision} />
-      <MobileReportDisclosure title="研究依据与术语解释" summary="完整专业研报、公开来源与白话词典">
-        <section className="ai-beginner-research-details">
-          {report.beginner_decision.term_explanations.length ? (
-            <section className="ai-beginner-terms">
-              <div className="ai-report-section-head">
-                <span><FileText /></span>
-                <div><p>白话词典</p><h2>看见专业词时，不必靠猜</h2></div>
-              </div>
-              <dl>
-                {report.beginner_decision.term_explanations.map((item) => (
-                  <div key={item.term}><dt>{item.term}</dt><dd>{item.plain}</dd></div>
-                ))}
-              </dl>
-            </section>
-          ) : null}
-          <ProfessionalReportBody report={report} compact={compact} />
-        </section>
-      </MobileReportDisclosure>
-    </section>
-  );
+  return <BeginnerPrototypeReport report={report} />;
 }
 
 function ProfessionalReportBody({ report, compact = false }: { report: AiResearchReport; compact?: boolean }) {
@@ -281,76 +271,87 @@ function ProfessionalReportBody({ report, compact = false }: { report: AiResearc
   );
 }
 
-function BeginnerDecisionDashboard({ decision }: { decision: BeginnerDecision }) {
-  const stance = {
-    observe: { label: "可以观察", note: "先看条件，不急着行动", icon: Eye },
-    cautious: { label: "谨慎观察", note: "条件全部满足才继续看", icon: ShieldCheck },
-    stand_aside: { label: "暂不参与", note: "没有足够证据时，空着也是决定", icon: Ban },
-  }[decision.stance];
-  const StanceIcon = stance.icon;
+function BeginnerPrototypeReport({ report }: { report: AiResearchReport & { schema_version: 2; beginner_decision: BeginnerDecision } }) {
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const decision = report.beginner_decision;
+  const stanceLabels = { observe: "可以观察", cautious: "谨慎观察", stand_aside: "暂不参与" } as const;
+  const guidance = decision.timeline[1] || decision.timeline[0];
 
   return (
-    <section className={`ai-beginner-dashboard stance-${decision.stance}`} aria-labelledby="beginner-decision-title">
-      <header className="ai-beginner-hero">
-        <div className="ai-beginner-stance"><StanceIcon /><span>{stance.label}</span></div>
-        <div>
-          <p>今天的 30 秒结论</p>
-          <h1 id="beginner-decision-title">{decision.headline}</h1>
-          <span>{stance.note}</span>
+    <section className="ai-beginner-prototype" aria-labelledby="today-title">
+      <section className="hero">
+        <div className="hero-icon"><PhTarget size={38} weight="duotone" /></div>
+        <div className="hero-copy">
+          <p className="status">今日态度 · {stanceLabels[decision.stance]}</p>
+          <h2 id="today-title">{decision.headline}</h2>
+          <p className="focus">今天只看：<strong>{decision.primary_focus?.name || "没有明确方向"}</strong></p>
+          <p className="focus-reason">{decision.primary_focus?.reason || "证据不足，今天先不参与。"}</p>
         </div>
-        <aside>
-          <small>今天只看</small>
-          <strong>{decision.primary_focus?.name || "没有明确方向"}</strong>
-          <p>{decision.primary_focus?.reason || "证据不足，今天先不参与。"}</p>
-        </aside>
-      </header>
-
-      <div className="ai-beginner-decision-grid">
-        <article className="ai-beginner-condition-card is-continue">
-          <div className="ai-beginner-card-title"><CheckCircle2 /><div><small>满足全部条件</small><h2>继续观察</h2></div></div>
-          {decision.continue_conditions.length ? (
-            <ol>{decision.continue_conditions.map((item, index) => <ConditionItem item={item} index={index} key={`${item.time || "continue"}-${index}`} />)}</ol>
-          ) : <p className="ai-beginner-empty">今天没有继续观察条件。</p>}
-        </article>
-        <article className="ai-beginner-condition-card is-stop">
-          <div className="ai-beginner-card-title"><XCircle /><div><small>出现任意一种</small><h2>立即放弃</h2></div></div>
-          <ol>{decision.stop_conditions.map((item, index) => <ConditionItem item={item} index={index} key={`${item.time || "stop"}-${index}`} />)}</ol>
-          <strong className="ai-beginner-stop-result">今天不操作</strong>
-        </article>
-      </div>
-
-      <section className="ai-beginner-timeline" aria-labelledby="beginner-timeline-title">
-        <div className="ai-beginner-section-title"><Clock3 /><div><small>开盘后照着看</small><h2 id="beginner-timeline-title">我该怎么做</h2></div></div>
-        <ol>
-          {decision.timeline.map((item) => (
-            <li key={item.time}>
-              <time>{item.time}</time>
-              <div><b>看什么</b><p>{item.observation}</p></div>
-              <div><b>怎么做</b><p>{item.action}</p></div>
-              <div className="is-unmet"><b>不满足</b><p>{item.if_unmet}</p></div>
-            </li>
-          ))}
-        </ol>
+        {guidance ? <p className="hero-guidance"><PhClock size={20} weight="duotone" />{guidance.action} {guidance.if_unmet}</p> : null}
       </section>
 
-      <div className="ai-beginner-lower-grid">
-        <section className="ai-beginner-backup">
-          <div className="ai-beginner-section-title"><Target /><div><small>只能单独重新判断</small><h2>备选方向</h2></div></div>
-          {decision.backup_focus ? <><strong>{decision.backup_focus.name}</strong><p>{decision.backup_focus.reason}</p><span>{decision.backup_focus.condition || "主方向不成立时，也不能自动切换到这里。"}</span></> : <p>今天不设备选方向，也不要临时找题材凑数。</p>}
-        </section>
-        <section className="ai-beginner-avoid">
-          <div className="ai-beginner-section-title"><AlertTriangle /><div><small>当天纪律</small><h2>最需要避免</h2></div></div>
-          <ul>{decision.avoid_actions.map((item) => <li key={item}>{item}</li>)}</ul>
-        </section>
-      </div>
+      <section className="decision-grid" aria-label="今日判断条件">
+        <article className="decision-panel positive">
+          <div className="panel-title"><PhCheckCircle size={34} weight="duotone" /><div><span>满足全部条件</span><h3>继续观察</h3></div></div>
+          <div className="condition-list">
+            {decision.continue_conditions.map((item) => <div className="condition" key={`${item.time}-${item.observation}`}><span>{item.time}</span><div><p>{item.observation}</p><small>{item.action}</small></div></div>)}
+          </div>
+          <p className="panel-outcome"><PhCheckCircle size={19} weight="fill" />可以继续看，但仍不是买入提示</p>
+        </article>
 
-      <p className="ai-beginner-disclaimer"><ShieldCheck />不是买点提示，不推荐具体股票。条件不满足时，今天不操作就是正确决定。</p>
+        <article className="decision-panel negative">
+          <div className="panel-title"><PhXCircle size={34} weight="duotone" /><div><span>出现任意一种</span><h3>立即放弃</h3></div></div>
+          <div className="condition-list">
+            {decision.stop_conditions.map((item) => <div className="condition" key={`${item.time}-${item.observation}`}><span>{item.time}</span><div><p>{item.observation}</p><small>{item.action}</small></div></div>)}
+          </div>
+          <p className="panel-outcome"><PhXCircle size={19} weight="fill" />今天不操作</p>
+        </article>
+      </section>
+
+      <section className="action-flow">
+        <div className="section-heading"><PhClock size={23} weight="duotone" /><h3>我该怎么做</h3></div>
+        <ol>{decision.timeline.map((item) => <li key={item.time}><span>{item.time}</span><strong>{item.action}</strong><small>看：{item.observation}</small><em>不满足：{item.if_unmet}</em></li>)}</ol>
+      </section>
+
+      <section className="backup">
+        <div><Pill size={25} weight="duotone" /><span>备选方向</span><strong>{decision.backup_focus?.name || "今天不设备选方向"}</strong></div>
+        <p>{decision.backup_focus?.condition || "不临时找题材凑数。"}</p>
+      </section>
+
+      <section className="avoid-actions">
+        <div className="section-heading"><PhShieldCheck size={23} weight="duotone" /><h3>今天最需要避免</h3></div>
+        <ul>{decision.avoid_actions.map((item) => <li key={item}>{item}</li>)}</ul>
+      </section>
+
+      <section className={`research-details ${detailsOpen ? "open" : ""}`}>
+        <button type="button" aria-expanded={detailsOpen} onClick={() => setDetailsOpen((value) => !value)}>
+          <span><PhArticle size={22} weight="duotone" />研究依据与术语解释</span>
+          <span className="details-hint">给想深入了解的人<CaretDown size={20} /></span>
+        </button>
+        {detailsOpen ? <div className="details-body">
+          <div className="research-stats"><span><b>{report.sources?.length || 0}</b> 个公开来源</span><span><b>{report.evidence_table?.length || 0}</b> 条证据</span><span><b>{report.institutional_research?.length || 0}</b> 条机构研究</span></div>
+          <div className="evidence"><h4>当天专业摘要</h4><p>{report.summary}</p></div>
+          <div className="glossary">{decision.term_explanations.map((item) => <div key={item.term}><h4>{item.term}</h4><p>{item.plain}</p></div>)}</div>
+          <details className="professional-report">
+            <summary>展开完整专业研报</summary>
+            <article className="markdown-report">
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm]}
+                components={{
+                  a: ({ children, ...props }) => <a {...props} target="_blank" rel="noreferrer">{children}</a>,
+                  table: ({ children, ...props }) => <div className="markdown-table-scroll"><table {...props}>{children}</table></div>,
+                }}
+              >
+                {report.markdown || ""}
+              </ReactMarkdown>
+            </article>
+          </details>
+        </div> : null}
+      </section>
+
+      <footer><PhShieldCheck size={20} weight="duotone" /><strong>不是买点提示，不推荐具体股票。</strong><span>条件不满足时，今天不操作就是正确决定。</span></footer>
     </section>
   );
-}
-
-function ConditionItem({ item, index }: { item: BeginnerCondition; index: number }) {
-  return <li><span>{item.time || String(index + 1).padStart(2, "0")}</span><div><p>{item.observation}</p><small>{item.action}</small></div></li>;
 }
 
 export function ReportMeta({ report }: { report: AiResearchReport }) {

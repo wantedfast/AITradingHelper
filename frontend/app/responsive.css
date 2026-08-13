@@ -10,6 +10,119 @@
   display: none;
 }
 
+/* AI 研报 v2：手机端沿用已确认的静态“行动仪表盘”结构。 */
+@media (max-width: 620px) {
+  .ai-beginner-report-page.review-workbench-page {
+    min-height: 100vh;
+    display: grid;
+    grid-template-columns: 1fr;
+    padding-bottom: 0;
+  }
+
+  .ai-beginner-report-page .review-workbench-rail {
+    position: static;
+    z-index: auto;
+    width: 100%;
+    height: 67.333px;
+    min-height: 0;
+    padding: 10px;
+    border-top: 0;
+    border-right: 0;
+    border-bottom: 1px solid rgba(222, 186, 92, .18);
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 0;
+    overflow-x: auto;
+    background: rgba(3, 13, 13, .82);
+    box-shadow: none;
+    backdrop-filter: none;
+  }
+
+  .ai-beginner-report-page .review-workbench-brand {
+    min-width: max-content;
+    display: flex;
+    padding: 0 4px 0 0;
+  }
+
+  .ai-beginner-report-page .review-workbench-brand .brand-mark {
+    width: auto;
+    height: auto;
+    border: 0;
+    background: transparent;
+    font-size: 28px;
+  }
+
+  .ai-beginner-report-page .review-workbench-brand b { display: block; font-size: 18px; }
+  .ai-beginner-report-page .review-workbench-brand small,
+  .ai-beginner-report-page .review-workbench-nav-label,
+  .ai-beginner-report-page .review-rail-note { display: none; }
+
+  .ai-beginner-report-page .review-workbench-nav {
+    width: auto;
+    height: auto;
+    display: flex;
+    grid-template-columns: none;
+    gap: 2px;
+  }
+
+  .ai-beginner-report-page .review-workbench-nav a {
+    width: auto;
+    min-width: 48px;
+    min-height: 48px;
+    padding: 12px;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    display: flex;
+    flex-direction: row;
+    justify-content: center;
+    gap: 0;
+  }
+
+  .ai-beginner-report-page .review-workbench-nav a.active {
+    border-color: rgba(229, 183, 79, .28);
+    background: rgba(23, 38, 34, .85);
+    box-shadow: inset 3px 0 #e5b74f;
+  }
+
+  .ai-beginner-report-page.dated-report-page .review-workbench-main {
+    width: min(calc(100% - 28px), 760px);
+    margin: 0 auto;
+    padding: 16px 0 34px;
+    display: block;
+    gap: 0;
+  }
+
+  .ai-beginner-report-page.dated-report-page .auction-topbar {
+    height: 44px;
+    min-height: 44px;
+    align-items: flex-end;
+    flex-direction: row;
+    justify-content: space-between;
+    margin-bottom: 17px;
+    padding: 0;
+    border-bottom: 0;
+  }
+  .ai-beginner-report-page .ai-prototype-eyebrow { display: none; }
+  .ai-beginner-report-page .auction-topbar h1 {
+    font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans SC", sans-serif;
+    font-size: 22px;
+  }
+  .ai-beginner-report-page .auction-topbar h1 span {
+    color: #c6c4bb;
+    font-size: 22px !important;
+    line-height: normal;
+    font-weight: 500;
+  }
+  .ai-beginner-report-page .auction-date-picker { display: none; }
+  .ai-beginner-report-page .auction-topbar-actions { width: auto; flex: 0 0 auto; flex-wrap: nowrap; }
+  .ai-beginner-report-page .auction-topbar-actions button { width: auto; min-width: 108px; padding: 0 11px; white-space: nowrap; }
+  .ai-beginner-report-page .auction-topbar-actions button span { display: inline; }
+
+  .ai-beginner-prototype .hero-copy,
+  .ai-beginner-prototype .hero-guidance { order: 0; }
+}
+
 .review-workbench-nav-label small {
   display: none;
 }
