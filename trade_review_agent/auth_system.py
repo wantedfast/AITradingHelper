@@ -3522,7 +3522,11 @@ def process_bounce_imap_inbox(
         status, data = client.uid("search", None, "UNSEEN")
         if str(status or "").upper() != "OK":
             raise RuntimeError("Bounce IMAP 无法搜索未读邮件")
-        mailbox_uids = [item for item in str((data or [b""])[0], "utf-8", errors="ignore").split() if item][: max(1, max_messages)]
+        all_mailbox_uids = [item for item in str((data or [b""])[0], "utf-8", errors="ignore").split() if item]
+        # Gmail returns UIDs from oldest to newest. Prioritize the newest
+        # notifications so a large historical unread backlog cannot delay a
+        # fresh recipient-block signal for hours.
+        mailbox_uids = all_mailbox_uids[-max(1, max_messages) :]
         for mailbox_uid in mailbox_uids:
             header_status, header_data = client.uid("fetch", mailbox_uid, "(BODY.PEEK[HEADER])")
             if str(header_status or "").upper() != "OK":

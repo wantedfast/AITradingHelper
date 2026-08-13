@@ -197,6 +197,32 @@ class BounceImapWorkerTest(unittest.TestCase):
         self.assertEqual(suppression_count, 1)
         self.assertEqual(event_count, 1)
 
+    def test_newest_unseen_messages_are_processed_first(self) -> None:
+        client = _FakeImapClient(
+            mailbox={
+                "104": _ordinary_message(),
+                "105": _dsn_message(
+                    subject="Delivery Status Notification (Failure)",
+                    diagnostic="550 5.7.1 recipient has blocked this sender",
+                    recipient="new-block@example.test",
+                    message_id="<dsn-newest@example.test>",
+                ),
+            },
+            unseen=["104", "105"],
+        )
+
+        result = process_bounce_imap_inbox(
+            self.db_path,
+            max_messages=1,
+            client_factory=lambda _host, _port: client,
+        )
+
+        self.assertEqual(result, {"checked": 1, "suppressed": 1, "archived": 1})
+        self.assertEqual([call[1] for call in client.store_calls], ["105", "105"])
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            suppression = conn.execute("SELECT email FROM email_suppressions").fetchone()
+        self.assertEqual(suppression, ("new-block@example.test",))
+
 
 if __name__ == "__main__":
     unittest.main()
