@@ -11,7 +11,6 @@ import {
   CircleHelp,
   ClipboardCheck,
   CalendarClock,
-  FileUp,
   Globe2,
   LineChart,
   Loader2,
@@ -21,8 +20,6 @@ import {
   ScanLine,
   ShieldCheck,
   Target,
-  Upload,
-  X,
 } from "lucide-react";
 import { getAuthToken, storeUser } from "@/lib/auth-client";
 import { MainSidebar } from "@/components/main-sidebar";
@@ -70,8 +67,6 @@ type ManualTradeForm = {
   buyPrice: string;
   side: "buy" | "sell";
 };
-
-type InputMode = "manual" | "csv";
 
 type RecentReport = {
   run_id: string;
@@ -142,15 +137,14 @@ const copy = {
   reviewSub: "\u4ea4\u6613\u8bb0\u5f55\u5230\u590d\u76d8\u62a5\u544a",
   watch: "AI \u76ef\u76d8",
   watchSub: "\u9884\u6848\u3001\u89e6\u53d1\u548c\u63d0\u9192",
-  railNote: "上传交割单，查看每笔交易哪里做对、哪里需要改，以及下次遇到类似情况怎么处理。",
+  railNote: "手动输入一笔交易，查看哪里做对、哪里需要改，以及下次遇到类似情况怎么处理。",
   pageTitle: "AI \u590d\u76d8\u5206\u6790",
   helpSoon: "\u5e2e\u52a9\u6587\u6863\u7a0d\u540e\u63a5\u5165\u3002",
   noNotice: "\u6682\u65e0\u65b0\u901a\u77e5\u3002",
   heroTitle: "看清每笔交易哪里做对，哪里需要改。",
-  heroDesc: "上传交割单后，系统会整理买卖过程、市场环境和结果，并告诉你下次遇到类似情况可以怎么处理。",
-  workflowTitle: "\u4ea4\u5272\u5355 \u2192 \u4ea4\u6613\u4e8b\u5b9e \u2192 \u5e02\u573a\u73af\u5883 \u2192 \u590d\u76d8\u7ed3\u8bba",
-  workflowDesc: "上传后会自动整理交易细节、当时的市场情况和改进建议，并生成一份容易看懂的复盘报告。",
-  chooseFile: "\u8f93\u5165\u4ea4\u5272\u5355",
+  heroDesc: "输入交易事实后，系统会整理买卖过程、市场环境和结果，并告诉你下次遇到类似情况可以怎么处理。",
+  workflowTitle: "\u8f93\u5165\u4ea4\u6613 \u2192 \u4ea4\u6613\u4e8b\u5b9e \u2192 \u5e02\u573a\u73af\u5883 \u2192 \u590d\u76d8\u7ed3\u8bba",
+  workflowDesc: "输入后会自动整理交易细节、当时的市场情况和改进建议，并生成一份容易看懂的复盘报告。",
   generate: "\u751f\u6210\u62a5\u544a",
   generating: "\u6b63\u5728\u751f\u6210\u62a5\u544a",
   reselect: "\u91cd\u65b0\u9009\u62e9",
@@ -169,13 +163,13 @@ const copy = {
   modeDetail: "更详细的报告",
   modeDetailDesc: "生成研究 JSON，并附加更长 memo。",
   done: "\u62a5\u544a\u5df2\u751f\u6210\uff0c\u6b63\u5728\u8fdb\u5165\u8be6\u60c5\u9875\u3002",
-  reset: "\u5df2\u56de\u5230\u4e0a\u4f20\u72b6\u6001\u3002",
+  reset: "\u5df2\u6e05\u7a7a\u4ea4\u6613\u4fe1\u606f\u3002",
   noUrl: "\u540e\u7aef\u5df2\u8fd4\u56de\u7ed3\u679c\uff0c\u4f46\u6ca1\u6709\u62a5\u544a URL\u3002",
   fallbackError: "\u62a5\u544a\u751f\u6210\u5931\u8d25\uff0c\u8bf7\u68c0\u67e5\u540e\u7aef\u670d\u52a1\u3002",
 };
 
 const workflow = [
-  { icon: Upload, title: "\u8f93\u5165", text: "\u586b\u5199\u4ea4\u6613\u4e8b\u5b9e" },
+  { icon: ClipboardCheck, title: "\u8f93\u5165", text: "\u586b\u5199\u4ea4\u6613\u4e8b\u5b9e" },
   { icon: ScanLine, title: "\u6574\u7406", text: "AI \u6574\u7406\u4ea4\u6613\u7ec6\u8282" },
   { icon: LineChart, title: "\u7814\u7a76", text: "\u591a\u7ef4\u5ea6\u5206\u6790\u4ea4\u6613\u8868\u73b0" },
   { icon: ClipboardCheck, title: "\u62a5\u544a", text: "\u751f\u6210\u53ef\u6267\u884c\u62a5\u544a" },
@@ -233,9 +227,6 @@ export default function ReviewPage() {
     buyPrice: "",
     side: "buy",
   });
-  const [inputMode, setInputMode] = useState<InputMode>("manual");
-  const [csvFile, setCsvFile] = useState<File | null>(null);
-  const [showCsvGuide, setShowCsvGuide] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [reportUrl, setReportUrl] = useState("");
   const [reportRoute, setReportRoute] = useState("");
@@ -292,17 +283,6 @@ export default function ReviewPage() {
     setErrorText("");
   }
 
-  function selectInputMode(mode: InputMode) {
-    if (generating) return;
-    setInputMode(mode);
-    setErrorText("");
-  }
-
-  function updateCsvFile(file: File | null) {
-    setCsvFile(file);
-    setErrorText("");
-  }
-
   function manualTradeReady() {
     return Boolean(
       manualTrade.stockName.trim() &&
@@ -337,16 +317,6 @@ export default function ReviewPage() {
     if (!normalizedManualTradeTime()) return "交易时间格式异常，请重新选择";
     if (!manualTrade.buyPrice.trim()) return "请填写买入价格";
     if (!normalizedManualBuyPrice()) return "买入价格格式异常，请输入大于 0 的数字";
-    return "";
-  }
-
-  function csvTradeReady() {
-    return Boolean(csvFile && /\.(csv|xls|xlsx)$/i.test(csvFile.name));
-  }
-
-  function csvTradeError() {
-    if (!csvFile) return "请先选择交割单文件";
-    if (!/\.(csv|xls|xlsx)$/i.test(csvFile.name)) return "请上传 .csv、.xls 或 .xlsx 格式的交割单文件";
     return "";
   }
 
@@ -442,8 +412,8 @@ export default function ReviewPage() {
   }
 
   async function generateReport() {
-    const validationMessage = inputMode === "csv" ? csvTradeError() : manualTradeError();
-    if (inputMode === "csv" ? !csvTradeReady() : !manualTradeReady()) {
+    const validationMessage = manualTradeError();
+    if (!manualTradeReady()) {
       const message = validationMessage;
       setErrorText(message);
       showToast(message);
@@ -468,17 +438,12 @@ export default function ReviewPage() {
     try {
       const formData = new FormData();
       formData.append("research_model_tier", researchModelTier);
-      if (inputMode === "csv") {
-        if (!csvFile) throw new Error("请先选择交割单文件");
-        formData.append("file", csvFile, csvFile.name);
-      } else {
-        const tradeTime = normalizedManualTradeTime();
-        formData.append("manual_trade", "1");
-        formData.append("manual_stock_name", manualTrade.stockName.trim());
-        formData.append("manual_trade_at", `${manualTrade.tradeDate.trim()}T${tradeTime}`);
-        formData.append("manual_price", normalizedManualBuyPrice());
-        formData.append("manual_side", manualTrade.side);
-      }
+      const tradeTime = normalizedManualTradeTime();
+      formData.append("manual_trade", "1");
+      formData.append("manual_stock_name", manualTrade.stockName.trim());
+      formData.append("manual_trade_at", `${manualTrade.tradeDate.trim()}T${tradeTime}`);
+      formData.append("manual_price", normalizedManualBuyPrice());
+      formData.append("manual_side", manualTrade.side);
 
       const response = await fetch(`${API_BASE}/api/reports`, {
         method: "POST",
@@ -564,9 +529,8 @@ export default function ReviewPage() {
     }
   }
 
-  function resetUpload() {
+  function resetTrade() {
     setManualTrade({ stockName: "", tradeDate: "", tradeTime: "", buyPrice: "", side: "buy" });
-    setCsvFile(null);
     setReportUrl("");
     setReportRoute("");
     setAgentSummaryUrl("");
@@ -593,7 +557,7 @@ export default function ReviewPage() {
       <section className="review-console-main">
         <header className="review-console-topbar">
           <div className="review-topbar-title">
-            <span className="topbar-icon"><FileUp /></span>
+            <span className="topbar-icon"><ClipboardCheck /></span>
             <b>{copy.pageTitle}</b>
             <i>BETA</i>
           </div>
@@ -606,7 +570,7 @@ export default function ReviewPage() {
         <MobileTaskHeader
           eyebrow="AI REVIEW"
           title="AI 复盘"
-          description="输入一笔交易或上传交割单，快速看清哪里做对、哪里需要改。"
+          description="手动输入一笔交易，快速看清哪里做对、哪里需要改。"
           status="生成成功后首次查看扣除 2 次"
         />
         <section className="review-console-hero">
@@ -624,21 +588,11 @@ export default function ReviewPage() {
               <div className="manual-trade-head">
                 <CalendarClock />
                 <div>
-                  <h2>输入交割单</h2>
-                  <p>{inputMode === "csv" ? "上传 CSV 或 Excel 交割单，系统会自动识别成交记录。" : "直接用你填写的交易事实生成复盘。"}</p>
+                  <h2>输入交易信息</h2>
+                  <p>直接用你填写的交易事实生成复盘。</p>
                 </div>
               </div>
-              <div className="trade-input-switch" aria-label="交割单输入方式">
-                <button className={inputMode === "manual" ? "active" : ""} type="button" onClick={() => selectInputMode("manual")} disabled={generating}>
-                  手动输入
-                </button>
-                <button className={inputMode === "csv" ? "active" : ""} type="button" onClick={() => selectInputMode("csv")} disabled={generating}>
-                  文件上传
-                </button>
-              </div>
-              {inputMode === "manual" ? (
-                <>
-                <div className="manual-trade-grid">
+              <div className="manual-trade-grid">
                   <label>
                     <span>股票名字</span>
                     <input
@@ -699,39 +653,15 @@ export default function ReviewPage() {
                     卖出
                   </button>
               </div>
-                </>
-              ) : (
-                <div className="csv-trade-upload">
-                  <input
-                    key={csvFile ? csvFile.name : "empty-csv"}
-                    id="csv-trade-file"
-                    type="file"
-                    accept=".csv,.xls,.xlsx,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                    onChange={(event) => updateCsvFile(event.target.files?.[0] || null)}
-                    disabled={generating}
-                  />
-                  <label htmlFor="csv-trade-file">
-                    <FileUp />
-                    <span>
-                      <b>{csvFile ? csvFile.name : "选择交割单文件"}</b>
-                      <small>{csvFile ? `${Math.max(1, Math.round(csvFile.size / 1024))} KB` : "支持券商导出的 CSV、XLS、XLSX 成交明细。"}</small>
-                    </span>
-                  </label>
-                  <button className="csv-guide-button" type="button" onClick={() => setShowCsvGuide(true)}>
-                    <CircleHelp />
-                    文件制作说明
-                  </button>
-                </div>
-              )}
             </div>
             {(
               <>
                 <div className="upload-action-row">
                   <button className="primary-gold-action" type="button" onClick={generateReport} disabled={generating}>
-                    {generating ? <Loader2 className="spin-icon" /> : <Upload />}
+                    {generating ? <Loader2 className="spin-icon" /> : <ClipboardCheck />}
                     {generating ? copy.generating : copy.generate}
                   </button>
-                  <button className="ghost-action" type="button" onClick={resetUpload} disabled={generating}>
+                  <button className="ghost-action" type="button" onClick={resetTrade} disabled={generating}>
                     <RefreshCw />
                     {copy.reselect}
                   </button>
@@ -885,48 +815,6 @@ export default function ReviewPage() {
         )}
       </section>
       <div className={`studio-toast ${toast ? "show" : ""}`}>{toast}</div>
-      {showCsvGuide && (
-        <div className="csv-guide-backdrop" role="presentation" onMouseDown={() => setShowCsvGuide(false)}>
-          <section className="csv-guide-modal" role="dialog" aria-modal="true" aria-labelledby="csv-guide-title" onMouseDown={(event) => event.stopPropagation()}>
-            <button className="csv-guide-close" type="button" onClick={() => setShowCsvGuide(false)} aria-label="关闭说明">
-              <X />
-            </button>
-            <h2 id="csv-guide-title">交割单文件说明</h2>
-            <p>支持上传 CSV、XLS、XLSX。用 Excel 制作时，第一行保留表头，保存后直接上传即可。</p>
-            <div className="csv-guide-table" role="table" aria-label="交割单字段说明">
-              <div role="row">
-                <b role="cell">股票名称</b>
-                <span role="cell">如：东材科技</span>
-              </div>
-              <div role="row">
-                <b role="cell">股票代码</b>
-                <span role="cell">如：601208</span>
-              </div>
-              <div role="row">
-                <b role="cell">成交日期</b>
-                <span role="cell">如：2026-06-09</span>
-              </div>
-              <div role="row">
-                <b role="cell">成交时间</b>
-                <span role="cell">如：09:25:30</span>
-              </div>
-              <div role="row">
-                <b role="cell">买卖方向</b>
-                <span role="cell">填写：买入 或 卖出</span>
-              </div>
-              <div role="row">
-                <b role="cell">成交数量</b>
-                <span role="cell">如：100</span>
-              </div>
-              <div role="row">
-                <b role="cell">成交价格</b>
-                <span role="cell">如：58.71</span>
-              </div>
-            </div>
-            <p className="csv-guide-tip">至少保留一条完整成交记录；券商导出的表格可直接上传，字段名相近也可以自动识别。</p>
-          </section>
-        </div>
-      )}
     </main>
   );
 }

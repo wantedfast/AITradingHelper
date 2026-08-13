@@ -12,3 +12,6 @@ frontend/.next-dev/
 frontend/out/
 frontend/*.log
 frontend/tsconfig.tsbuildinfo
+prototypes/**/node_modules/
+prototypes/**/dist/
+prototypes/**/*.log

@@ -73,6 +73,18 @@ PERMANENT_EMAIL_ERROR_MARKERS = (
     "account does not exist",
     "invalid recipient",
 )
+EMAIL_SUPPRESSION_ERROR_MARKERS = (
+    "blacklisted by the recipient",
+    "blocked by the recipient",
+    "blocked by recipient",
+    "recipient has blocked",
+    "recipient blocked",
+    "收件人拒收",
+    "收件人已拒绝",
+    "被收件人屏蔽",
+    "收件人黑名单",
+)
+EMAIL_SUPPRESSION_SKIP_REASON = "邮箱已列入全局不发送名单（收件人拒收）"
 DAILY_TOP5_CLOSE_EMAIL_RETRY_MINUTES = 5
 CREDIT_PACKAGES = {
     "pack_10": {"plan_name": "10 次使用包", "credits": 10, "amount_cents": 990},
@@ -395,6 +407,16 @@ def init_auth_db(db_path: Path) -> None:
                 UNIQUE (campaign_id, user_id)
             );
 
+            CREATE TABLE IF NOT EXISTS email_suppressions (
+                email TEXT PRIMARY KEY,
+                reason TEXT NOT NULL,
+                provider_error TEXT NOT NULL DEFAULT '',
+                source_kind TEXT NOT NULL DEFAULT '',
+                source_delivery_id INTEGER,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS sms_codes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 phone TEXT NOT NULL,
@@ -453,6 +475,8 @@ def init_auth_db(db_path: Path) -> None:
                 ON daily_top5_close_email_campaigns(calculation_status, next_calculation_at, id);
             CREATE INDEX IF NOT EXISTS idx_daily_top5_close_email_deliveries_queue
                 ON daily_top5_close_email_deliveries(status, next_attempt_at, id);
+            CREATE INDEX IF NOT EXISTS idx_email_suppressions_updated
+                ON email_suppressions(updated_at DESC);
             CREATE INDEX IF NOT EXISTS idx_sms_codes_phone ON sms_codes(phone, purpose, created_at);
             CREATE INDEX IF NOT EXISTS idx_email_codes_email ON email_codes(email, purpose, created_at);
             CREATE INDEX IF NOT EXISTS idx_agreement_acceptances_user ON agreement_acceptances(user_id, accepted_at);
@@ -619,6 +643,8 @@ def send_email_code(db_path: Path, *, email: str, purpose: str = "register", ip:
     now_dt = datetime.now(CN_TZ)
     now = now_dt.isoformat()
     with _connect(db_path) as conn:
+        if _is_email_suppressed(conn, email):
+            raise AuthError(EMAIL_SUPPRESSION_SKIP_REASON, 409)
         recent = conn.execute(
             """
             SELECT created_at
@@ -2823,6 +2849,7 @@ def retry_update_email_campaign(db_path: Path, *, campaign_id: int) -> dict[str,
             UPDATE update_email_deliveries
             SET status = 'pending', attempt_count = 0, next_attempt_at = ?, last_error = NULL, updated_at = ?
             WHERE campaign_id = ? AND status = 'failed'
+              AND LOWER(TRIM(email)) NOT IN (SELECT email FROM email_suppressions)
             """,
             (now, now, campaign_id),
         )
@@ -2874,16 +2901,20 @@ def create_daily_top5_email_campaign(db_path: Path, *, report: dict[str, Any]) -
         ).fetchall()
         for user in users:
             email = str(user["email"] or "").strip().lower()
+            suppressed = _is_email_suppressed(conn, email)
             eligible = bool(
                 email
                 and int(user["email_verified"] or 0) == 1
                 and int(user["update_emails_enabled"] or 0) == 1
+                and not suppressed
             )
             membership_active = _has_active_membership(user)
             if not email or int(user["email_verified"] or 0) != 1:
                 error = "邮箱未验证"
             elif int(user["update_emails_enabled"] or 0) != 1:
                 error = "用户已关闭邮件推送"
+            elif suppressed:
+                error = EMAIL_SUPPRESSION_SKIP_REASON
             else:
                 error = None
             conn.execute(
@@ -2924,6 +2955,7 @@ def retry_daily_top5_email_campaign(db_path: Path, *, campaign_id: int) -> dict[
                 last_error = NULL, updated_at = ?
             WHERE campaign_id = ? AND status = 'failed'
               AND COALESCE(last_error, '') NOT LIKE '[permanent] %'
+              AND LOWER(TRIM(email)) NOT IN (SELECT email FROM email_suppressions)
             """,
             (now, now, campaign_id),
         )
@@ -3037,6 +3069,7 @@ def retry_daily_top5_close_email_campaign(
                 SET status = 'pending', attempt_count = 0, next_attempt_at = ?,
                     last_error = NULL, updated_at = ?
                 WHERE campaign_id = ? AND status = 'failed'
+                  AND LOWER(TRIM(email)) NOT IN (SELECT email FROM email_suppressions)
                 """,
                 (now, now, campaign_id),
             )
@@ -3111,13 +3144,16 @@ def create_ai_report_email_campaign(
             email = str(user["email"] or "").strip().lower()
             verified = int(user["email_verified"] or 0) == 1
             opted_in = int(user["update_emails_enabled"] or 0) == 1
-            eligible = bool(email and verified and opted_in)
+            suppressed = _is_email_suppressed(conn, email)
+            eligible = bool(email and verified and opted_in and not suppressed)
             membership_active = _has_active_membership(user)
             reason = None
             if not email or not verified:
                 reason = "邮箱未验证"
             elif not opted_in:
                 reason = "用户已关闭邮件推送"
+            elif suppressed:
+                reason = EMAIL_SUPPRESSION_SKIP_REASON
             conn.execute(
                 """
                 INSERT INTO ai_report_email_deliveries (
@@ -3155,6 +3191,7 @@ def retry_ai_report_email_campaign(db_path: Path, *, campaign_id: int) -> dict[s
             SET status = 'pending', attempt_count = 0, next_attempt_at = ?,
                 last_error = NULL, updated_at = ?
             WHERE campaign_id = ? AND status = 'failed'
+              AND LOWER(TRIM(email)) NOT IN (SELECT email FROM email_suppressions)
             """,
             (now, now, campaign_id),
         )
@@ -3178,6 +3215,101 @@ def _stored_email_error(exc: Exception) -> str:
     if _is_permanent_email_error(message) and not message.lower().startswith(PERMANENT_EMAIL_ERROR_PREFIX):
         return f"{PERMANENT_EMAIL_ERROR_PREFIX}{message}"[:500]
     return message
+
+
+def _is_recipient_suppression_error(value: object) -> bool:
+    message = str(value or "").strip().lower()
+    if not message:
+        return False
+    return any(marker in message for marker in EMAIL_SUPPRESSION_ERROR_MARKERS)
+
+
+def _is_email_suppressed(conn: sqlite3.Connection, email: object) -> bool:
+    normalized = str(email or "").strip().lower()
+    if not normalized:
+        return False
+    return conn.execute(
+        "SELECT 1 FROM email_suppressions WHERE email = ?",
+        (normalized,),
+    ).fetchone() is not None
+
+
+def _record_email_suppression(
+    conn: sqlite3.Connection,
+    *,
+    email: object,
+    provider_error: object,
+    source_kind: str,
+    source_delivery_id: int | None,
+) -> bool:
+    normalized = str(email or "").strip().lower()
+    error = str(provider_error or "").strip()[:500]
+    if not normalized or not _is_recipient_suppression_error(error):
+        return False
+    now = _now()
+    conn.execute(
+        """
+        INSERT INTO email_suppressions (
+            email, reason, provider_error, source_kind, source_delivery_id, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(email) DO UPDATE SET
+            reason = excluded.reason,
+            provider_error = excluded.provider_error,
+            source_kind = excluded.source_kind,
+            source_delivery_id = excluded.source_delivery_id,
+            updated_at = excluded.updated_at
+        """,
+        (
+            normalized,
+            EMAIL_SUPPRESSION_SKIP_REASON,
+            error,
+            str(source_kind or "")[:64],
+            source_delivery_id,
+            now,
+            now,
+        ),
+    )
+    return True
+
+
+def _skip_suppressed_pending_deliveries(
+    conn: sqlite3.Connection,
+    *,
+    delivery_table: str,
+) -> set[int]:
+    if delivery_table not in {
+        "update_email_deliveries",
+        "daily_top5_email_deliveries",
+        "daily_top5_close_email_deliveries",
+        "ai_report_email_deliveries",
+    }:
+        raise ValueError("unsupported email delivery table")
+    campaign_ids = {
+        int(row["campaign_id"])
+        for row in conn.execute(
+            f"""
+            SELECT DISTINCT d.campaign_id
+            FROM {delivery_table} d
+            JOIN email_suppressions s ON s.email = LOWER(TRIM(d.email))
+            WHERE d.status = 'pending'
+            """
+        ).fetchall()
+    }
+    if campaign_ids:
+        conn.execute(
+            f"""
+            UPDATE {delivery_table}
+            SET status = 'skipped', next_attempt_at = NULL,
+                last_error = ?, updated_at = ?
+            WHERE status = 'pending'
+              AND EXISTS (
+                  SELECT 1 FROM email_suppressions s
+                  WHERE s.email = LOWER(TRIM({delivery_table}.email))
+              )
+            """,
+            (EMAIL_SUPPRESSION_SKIP_REASON, _now()),
+        )
+    return campaign_ids
 
 
 def recover_update_email_queue(db_path: Path) -> int:
@@ -3340,6 +3472,10 @@ def process_next_update_email(
             )
             for campaign_id in excluded_campaigns:
                 _refresh_email_campaign_status(conn, campaign_id)
+        for campaign_id in _skip_suppressed_pending_deliveries(
+            conn, delivery_table="update_email_deliveries"
+        ):
+            _refresh_email_campaign_status(conn, campaign_id)
         row = conn.execute(
             """
             SELECT d.id, d.campaign_id, d.email, d.attempt_count,
@@ -3377,18 +3513,26 @@ def process_next_update_email(
         else:
             _send_update_notice_email(delivery)
     except Exception as exc:
+        error = _stored_email_error(exc)
         with _connect(db_path) as conn:
-            if attempt >= UPDATE_EMAIL_MAX_ATTEMPTS:
+            _record_email_suppression(
+                conn,
+                email=delivery["email"],
+                provider_error=error,
+                source_kind="update_notice",
+                source_delivery_id=int(delivery["id"]),
+            )
+            if _is_recipient_suppression_error(error) or attempt >= UPDATE_EMAIL_MAX_ATTEMPTS:
                 conn.execute(
-                    "UPDATE update_email_deliveries SET status = 'failed', last_error = ?, updated_at = ? WHERE id = ?",
-                    (str(exc)[:500], _now(), delivery["id"]),
+                    "UPDATE update_email_deliveries SET status = 'failed', next_attempt_at = NULL, last_error = ?, updated_at = ? WHERE id = ?",
+                    (error, _now(), delivery["id"]),
                 )
             else:
                 delay = UPDATE_EMAIL_RETRY_MINUTES[min(attempt - 1, len(UPDATE_EMAIL_RETRY_MINUTES) - 1)]
                 next_attempt = (datetime.now(CN_TZ) + timedelta(minutes=delay)).isoformat()
                 conn.execute(
                     "UPDATE update_email_deliveries SET status = 'pending', next_attempt_at = ?, last_error = ?, updated_at = ? WHERE id = ?",
-                    (next_attempt, str(exc)[:500], _now(), delivery["id"]),
+                    (next_attempt, error, _now(), delivery["id"]),
                 )
             _refresh_email_campaign_status(conn, int(delivery["campaign_id"]))
     else:
@@ -3410,6 +3554,10 @@ def process_next_daily_top5_email(
     now = _now()
     with _connect(db_path) as conn:
         conn.execute("BEGIN IMMEDIATE")
+        for campaign_id in _skip_suppressed_pending_deliveries(
+            conn, delivery_table="daily_top5_email_deliveries"
+        ):
+            _refresh_daily_top5_email_campaign_status(conn, campaign_id)
         row = conn.execute(
             """
             SELECT d.id, d.campaign_id, d.email, d.content_variant,
@@ -3449,7 +3597,18 @@ def process_next_daily_top5_email(
     except Exception as exc:
         error = _stored_email_error(exc)
         with _connect(db_path) as conn:
-            if _is_permanent_email_error(error) or attempt >= DAILY_TOP5_EMAIL_MAX_ATTEMPTS:
+            _record_email_suppression(
+                conn,
+                email=delivery["email"],
+                provider_error=error,
+                source_kind="daily_top5",
+                source_delivery_id=int(delivery["id"]),
+            )
+            if (
+                _is_recipient_suppression_error(error)
+                or _is_permanent_email_error(error)
+                or attempt >= DAILY_TOP5_EMAIL_MAX_ATTEMPTS
+            ):
                 conn.execute(
                     """
                     UPDATE daily_top5_email_deliveries
@@ -3594,12 +3753,15 @@ def process_next_daily_top5_close_email(
                         email = str(user["email"] or "").strip().lower()
                         verified = int(user["email_verified"] or 0) == 1
                         opted_in = int(user["update_emails_enabled"] or 0) == 1
-                        eligible = bool(email and verified and opted_in)
+                        suppressed = _is_email_suppressed(conn, email)
+                        eligible = bool(email and verified and opted_in and not suppressed)
                         reason = None
                         if not email or not verified:
                             reason = "邮箱未验证"
                         elif not opted_in:
                             reason = "用户已关闭邮件推送"
+                        elif suppressed:
+                            reason = EMAIL_SUPPRESSION_SKIP_REASON
                         conn.execute(
                             """
                             INSERT INTO daily_top5_close_email_deliveries (
@@ -3665,6 +3827,10 @@ def process_next_daily_top5_close_email(
 
     with _connect(db_path) as conn:
         conn.execute("BEGIN IMMEDIATE")
+        for campaign_id in _skip_suppressed_pending_deliveries(
+            conn, delivery_table="daily_top5_close_email_deliveries"
+        ):
+            _refresh_daily_top5_close_email_campaign_status(conn, campaign_id)
         row = conn.execute(
             """
             SELECT d.id, d.campaign_id, d.email, d.attempt_count, c.trade_date, c.close_report_json
@@ -3706,15 +3872,23 @@ def process_next_daily_top5_close_email(
         else:
             _send_daily_top5_close_email(delivery)
     except Exception as exc:
+        error = _stored_email_error(exc)
         with _connect(db_path) as conn:
-            if attempt >= UPDATE_EMAIL_MAX_ATTEMPTS:
+            _record_email_suppression(
+                conn,
+                email=delivery["email"],
+                provider_error=error,
+                source_kind="daily_top5_close",
+                source_delivery_id=int(delivery["id"]),
+            )
+            if _is_recipient_suppression_error(error) or attempt >= UPDATE_EMAIL_MAX_ATTEMPTS:
                 conn.execute(
                     """
                     UPDATE daily_top5_close_email_deliveries
-                    SET status = 'failed', last_error = ?, updated_at = ?
+                    SET status = 'failed', next_attempt_at = NULL, last_error = ?, updated_at = ?
                     WHERE id = ?
                     """,
-                    (str(exc)[:500], _now(), delivery["id"]),
+                    (error, _now(), delivery["id"]),
                 )
             else:
                 delay = UPDATE_EMAIL_RETRY_MINUTES[min(attempt - 1, len(UPDATE_EMAIL_RETRY_MINUTES) - 1)]
@@ -3725,7 +3899,7 @@ def process_next_daily_top5_close_email(
                     SET status = 'pending', next_attempt_at = ?, last_error = ?, updated_at = ?
                     WHERE id = ?
                     """,
-                    (next_attempt, str(exc)[:500], _now(), delivery["id"]),
+                    (next_attempt, error, _now(), delivery["id"]),
                 )
             _refresh_daily_top5_close_email_campaign_status(conn, int(delivery["campaign_id"]))
     else:
@@ -3754,6 +3928,10 @@ def process_next_ai_report_email(
     now = _now()
     with _connect(db_path) as conn:
         conn.execute("BEGIN IMMEDIATE")
+        for campaign_id in _skip_suppressed_pending_deliveries(
+            conn, delivery_table="ai_report_email_deliveries"
+        ):
+            _refresh_ai_report_email_campaign_status(conn, campaign_id)
         query = """
             SELECT d.id, d.campaign_id, d.email, d.content_variant,
                    d.membership_active, d.attempt_count,
@@ -3793,11 +3971,19 @@ def process_next_ai_report_email(
         else:
             _send_ai_report_email(delivery)
     except Exception as exc:
+        error = _stored_email_error(exc)
         with _connect(db_path) as conn:
-            if attempt >= UPDATE_EMAIL_MAX_ATTEMPTS:
+            _record_email_suppression(
+                conn,
+                email=delivery["email"],
+                provider_error=error,
+                source_kind=str(delivery.get("report_type") or "ai_report"),
+                source_delivery_id=int(delivery["id"]),
+            )
+            if _is_recipient_suppression_error(error) or attempt >= UPDATE_EMAIL_MAX_ATTEMPTS:
                 conn.execute(
-                    "UPDATE ai_report_email_deliveries SET status = 'failed', last_error = ?, updated_at = ? WHERE id = ?",
-                    (str(exc)[:500], _now(), delivery["id"]),
+                    "UPDATE ai_report_email_deliveries SET status = 'failed', next_attempt_at = NULL, last_error = ?, updated_at = ? WHERE id = ?",
+                    (error, _now(), delivery["id"]),
                 )
             else:
                 delay = UPDATE_EMAIL_RETRY_MINUTES[min(attempt - 1, len(UPDATE_EMAIL_RETRY_MINUTES) - 1)]
@@ -3808,7 +3994,7 @@ def process_next_ai_report_email(
                     SET status = 'pending', next_attempt_at = ?, last_error = ?, updated_at = ?
                     WHERE id = ?
                     """,
-                    (next_attempt, str(exc)[:500], _now(), delivery["id"]),
+                    (next_attempt, error, _now(), delivery["id"]),
                 )
             _refresh_ai_report_email_campaign_status(conn, int(delivery["campaign_id"]))
     else:
@@ -4603,6 +4789,9 @@ def notify_credit_added(db_path: Path, *, user_id: int, credits: int, reason: st
             balance = _credit_balance(conn, user_id)
         if not email:
             return {"sent": False, "skipped": True, "error": "用户未绑定邮箱"}
+        with _connect(db_path) as conn:
+            if _is_email_suppressed(conn, email):
+                return {"sent": False, "skipped": True, "error": EMAIL_SUPPRESSION_SKIP_REASON}
         reason = (reason or "平台为你增加了使用次数").strip()
         text = (
             f"{username}，你好：\n\n"
@@ -4622,6 +4811,14 @@ def notify_credit_added(db_path: Path, *, user_id: int, credits: int, reason: st
         _send_email_message(email, subject="盈航使用次数已增加", text=text, html=html)
         return {"sent": True, "email": _mask_email(email)}
     except Exception as exc:
+        with _connect(db_path) as conn:
+            _record_email_suppression(
+                conn,
+                email=locals().get("email", ""),
+                provider_error=exc,
+                source_kind="credit_added",
+                source_delivery_id=None,
+            )
         return {"sent": False, "error": str(exc)}
 
 
@@ -5137,9 +5334,17 @@ def _create_update_email_campaign(
     ).fetchall()
     for user in users:
         email = str(user["email"] or "").strip().lower()
-        eligible = bool(email and int(user["email_verified"] or 0) == 1 and int(user["update_emails_enabled"] or 0) == 1)
+        suppressed = _is_email_suppressed(conn, email)
+        eligible = bool(
+            email
+            and int(user["email_verified"] or 0) == 1
+            and int(user["update_emails_enabled"] or 0) == 1
+            and not suppressed
+        )
         reason = None
-        if not eligible:
+        if suppressed:
+            reason = EMAIL_SUPPRESSION_SKIP_REASON
+        elif not eligible:
             reason = "邮箱未验证或用户已关闭产品更新邮件"
         conn.execute(
             """

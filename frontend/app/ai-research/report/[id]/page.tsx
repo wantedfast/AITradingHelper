@@ -6,7 +6,7 @@ import { ArrowLeft, FileText, Loader2, RefreshCcw } from "lucide-react";
 import { MainSidebar } from "@/components/main-sidebar";
 import { FinancialDisclaimer } from "@/components/financial-disclaimer";
 import { getAuthToken, storeUser, usageBillingText, type UserProfile } from "@/lib/auth-client";
-import { type AiResearchReport, ReportBody, ReportMeta } from "../../report-components";
+import { type AiResearchReport, isBeginnerResearchReport, ReportBody, ReportMeta } from "../../report-components";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || (process.env.NODE_ENV === "development" ? "http://127.0.0.1:8600" : "");
 
@@ -76,11 +76,11 @@ export default function AiResearchReportPage() {
         {billingMessage ? <p className="auction-message" role="status">{billingMessage}</p> : null}
         {report ? (
           <section className="ai-research-inline-stack ai-research-inline-report dated-report-content">
-            <section className="review-workbench-hero market-day-report-hero">
+            {!isBeginnerResearchReport(report) ? <section className="review-workbench-hero market-day-report-hero">
               <div className="review-hero-copy"><p className="review-kicker">盘前研报</p><h1>{report.title || "AI 研报"}</h1><p>{report.summary || "本篇研报已生成。"}</p></div>
               <ReportMeta report={report} />
-            </section>
-            {report.tags?.length ? <section className="research-panel ai-tag-panel">{report.tags.map((tag) => <span key={tag}>{tag}</span>)}</section> : null}
+            </section> : null}
+            {!isBeginnerResearchReport(report) && report.tags?.length ? <section className="research-panel ai-tag-panel">{report.tags.map((tag) => <span key={tag}>{tag}</span>)}</section> : null}
             <ReportBody report={report} />
           </section>
         ) : null}
