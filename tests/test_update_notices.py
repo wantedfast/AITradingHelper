@@ -25,10 +25,22 @@ from trade_review_agent.auth_system import (
     set_update_email_preference,
     unpublish_update_notice,
     update_update_notice,
+    _safe_markdown_email_html,
 )
 
 
 class UpdateNoticeTest(unittest.TestCase):
+    def test_markdown_email_renders_https_image_safely(self):
+        html = _safe_markdown_email_html(
+            "![新版研报](https://invest.example.test/images/update.jpg)\n\n"
+            "![危险图片](javascript:alert(1))"
+        )
+
+        self.assertIn('<img src="https://invest.example.test/images/update.jpg"', html)
+        self.assertIn('alt="新版研报"', html)
+        self.assertNotIn('<img src="javascript:', html)
+        self.assertIn("javascript:alert(1)", html)
+
     def _create_admin(self, db_path: Path) -> int:
         init_auth_db(db_path)
         with closing(sqlite3.connect(db_path)) as conn:

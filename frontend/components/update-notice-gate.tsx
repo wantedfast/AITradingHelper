@@ -194,6 +194,20 @@ function renderNoticeMarkdown(markdown: string, noticeId: number): ReactNode[] {
       blocks.push(<pre key={`${noticeId}-code-${index}`}><code>{code.join("\n")}</code></pre>);
       continue;
     }
+    const image = /^!\[([^\]\n]*)\]\((https?:\/\/[^\s)]+)\)$/.exec(trimmed);
+    if (image) {
+      blocks.push(
+        <img
+          key={`${noticeId}-image-${index}`}
+          className="site-update-notice-image"
+          src={image[2]}
+          alt={image[1]}
+          loading="lazy"
+        />,
+      );
+      index += 1;
+      continue;
+    }
     const heading = /^(#{1,3})\s+(.+)$/.exec(trimmed);
     if (heading) {
       const content = renderMarkdownInline(heading[2], `${noticeId}-heading-${index}`);

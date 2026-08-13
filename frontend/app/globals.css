@@ -16153,6 +16153,14 @@ button.radar-core,
 .site-update-notice-body pre { overflow-x: auto; white-space: pre-wrap; }
 .site-update-notice-body code { font-family: var(--font-mono); color: #b9edf1; }
 .site-update-notice-body a { color: #8fe7ef; text-decoration: underline; text-underline-offset: 3px; }
+.site-update-notice-image {
+  display: block;
+  width: 100%;
+  height: auto;
+  margin: 18px auto;
+  border: 1px solid rgba(214, 178, 76, 0.22);
+  border-radius: 12px;
+}
 
 .site-update-notice-list {
   display: grid;

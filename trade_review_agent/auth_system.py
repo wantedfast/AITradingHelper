@@ -6226,6 +6226,17 @@ def _safe_markdown_email_html(markdown: str) -> str:
         if not line.strip():
             close_list()
             continue
+        image_match = re.match(r"^!\[([^\]\n]*)\]\((https?://[^\s)]+)\)$", line.strip())
+        if image_match:
+            close_list()
+            alt_text, image_url = image_match.groups()
+            html_parts.append(
+                '<p style="margin:18px 0;text-align:center;">'
+                f'<img src="{_html_escape(image_url)}" alt="{_html_escape(alt_text)}" '
+                'style="display:block;width:100%;max-width:760px;height:auto;margin:0 auto;border:0;border-radius:8px;" />'
+                '</p>'
+            )
+            continue
         heading = re.match(r"^(#{1,3})\s+(.+)$", line.strip())
         if heading:
             close_list()
