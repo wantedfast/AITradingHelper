@@ -5,7 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import { ArrowLeft, Loader2, RefreshCcw, TrendingUp } from "lucide-react";
 import { MainSidebar } from "@/components/main-sidebar";
 import { FinancialDisclaimer } from "@/components/financial-disclaimer";
-import { MarketDayReportView, type MarketDayEnvelope } from "@/components/market-day-report-view";
+import { MarketDayReportView, hasBeginnerMarketDayDashboard, type MarketDayEnvelope } from "@/components/market-day-report-view";
 import { getAuthToken, storeUser, usageBillingText, type UserProfile } from "@/lib/auth-client";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || (process.env.NODE_ENV === "development" ? "http://127.0.0.1:8600" : "");
@@ -27,6 +27,7 @@ export default function MarketDayReportPage() {
   const [message, setMessage] = useState("");
   const [billingMessage, setBillingMessage] = useState("");
   const [envelope, setEnvelope] = useState<MarketDayEnvelope | null>(null);
+  const beginnerReport = Boolean(envelope?.report && hasBeginnerMarketDayDashboard(envelope.report));
 
   const loadReport = useCallback(async () => {
     const token = getAuthToken();
@@ -71,7 +72,7 @@ export default function MarketDayReportPage() {
   useEffect(() => { void loadReport(); }, [loadReport]);
 
   return (
-    <main className="review-workbench-page market-day-page">
+    <main className={`review-workbench-page market-day-page ${beginnerReport ? "ai-beginner-report-page" : ""}`}>
       <MainSidebar activeKey="market-day" />
       <section className="review-workbench-main">
         <header className="review-workbench-topbar">
@@ -81,7 +82,7 @@ export default function MarketDayReportPage() {
             <button type="button" onClick={() => void loadReport()} disabled={loading}>{loading ? <Loader2 className="spin-icon" /> : <RefreshCcw />}<span>刷新</span></button>
           </div>
         </header>
-        <FinancialDisclaimer compact />
+        {!beginnerReport ? <FinancialDisclaimer compact /> : null}
         {loading && !envelope ? <section className="research-panel market-day-loading-panel" role="status"><Loader2 className="spin-icon" /><b>正在读取行情报告</b></section> : null}
         {message ? <section className="research-panel market-day-loading-panel is-error" role="alert"><b>报告状态</b><span>{message}</span></section> : null}
         {envelope ? <MarketDayReportView envelope={envelope} billingMessage={billingMessage} /> : null}

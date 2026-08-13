@@ -180,7 +180,7 @@ class EmailSuppressionTest(unittest.TestCase):
                 "SELECT status, last_error FROM ai_report_email_deliveries WHERE campaign_id = ?",
                 (future_ai["id"],),
             ).fetchone()
-        self.assertEqual(failed["status"], "failed")
+        self.assertEqual(failed["status"], "skipped")
         self.assertIn("blacklisted by the recipient", failed["last_error"])
         self.assertEqual(suppression["email"], "blocked@example.test")
         self.assertEqual(skipped["status"], "skipped")
@@ -206,8 +206,9 @@ class EmailSuppressionTest(unittest.TestCase):
             )
         )
         retried = retry_daily_top5_email_campaign(self.db_path, campaign_id=int(first["id"]))
-        self.assertEqual(retried["failed"], 1)
+        self.assertEqual(retried["failed"], 0)
         self.assertEqual(retried["pending"], 0)
+        self.assertEqual(retried["skipped"], 1)
         sent: list[str] = []
         process_next_ai_report_email(
             self.db_path,
@@ -224,7 +225,7 @@ class EmailSuppressionTest(unittest.TestCase):
                 "SELECT status, last_error FROM ai_report_email_deliveries WHERE campaign_id = ?",
                 (already_enqueued["id"],),
             ).fetchone()
-        self.assertEqual(source_status, "failed")
+        self.assertEqual(source_status, "skipped")
         self.assertEqual(queued_status, "skipped")
         self.assertIn("全局不发送名单", queued_error)
 
@@ -303,7 +304,7 @@ class EmailSuppressionTest(unittest.TestCase):
                 ).fetchall()
             ]
         self.assertEqual(suppression_count, 1)
-        self.assertEqual(statuses, ["failed", "failed"])
+        self.assertEqual(statuses, ["skipped", "skipped"])
 
     def test_non_blocking_smtp_errors_never_add_suppression(self) -> None:
         errors = (
@@ -338,6 +339,30 @@ class EmailSuppressionTest(unittest.TestCase):
                             "UPDATE daily_top5_email_deliveries SET next_attempt_at = '2099-01-01' WHERE campaign_id = ?",
                             (campaign["id"],),
                         )
+
+    def test_provider_blacklist_variants_also_trigger_suppression(self) -> None:
+        campaign = create_daily_top5_email_campaign(
+            self.db_path,
+            report=_top5_report(trade_date="2026-08-25", report_id="provider-blacklist-variant"),
+        )
+
+        self.assertTrue(
+            process_next_daily_top5_email(
+                self.db_path,
+                sender=lambda _delivery: (_ for _ in ()).throw(
+                    RuntimeError("550 mail is rejected by recipients because user in blacklist")
+                ),
+            )
+        )
+
+        future_update = self._create_update_campaign(request_id="suppression-update-variant-001")
+        self.assertEqual(campaign["pending"], 1)
+        self.assertEqual(future_update["pending"], 0)
+        self.assertEqual(future_update["skipped"], 1)
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            suppression = conn.execute("SELECT email, provider_error FROM email_suppressions").fetchone()
+        self.assertEqual(suppression[0], "blocked@example.test")
+        self.assertIn("user in blacklist", suppression[1])
 
 
 if __name__ == "__main__":

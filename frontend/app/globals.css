@@ -5009,6 +5009,42 @@ h1 {
   .ai-beginner-prototype .markdown-report h2 { font-size: 19px; }
 }
 
+.ai-beginner-market-day .market-day-billing-note {
+  margin-bottom: 12px;
+}
+
+.ai-beginner-market-day .market-day-beginner-changes {
+  margin-top: 12px;
+}
+
+.ai-beginner-market-day .market-day-beginner-changes ul {
+  display: grid;
+  gap: 9px;
+  margin: 14px 0 0;
+  padding-left: 20px;
+}
+
+.ai-beginner-market-day .market-day-professional-section + .market-day-professional-section {
+  margin-top: 24px;
+}
+
+.ai-beginner-market-day .market-day-professional-summary {
+  margin: 0 0 10px;
+}
+
+.ai-beginner-market-day .market-day-professional-section .market-day-line-list,
+.ai-beginner-market-day .market-day-professional-section .market-day-evidence-list {
+  margin-top: 14px;
+}
+
+.ai-beginner-market-day .market-day-professional-section .market-day-chip-row {
+  margin-bottom: 4px;
+}
+
+.ai-beginner-market-day .market-day-strong-list--samples article {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .review-entry {
   min-height: 100vh;
   display: grid;

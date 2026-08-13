@@ -168,6 +168,115 @@ AI_RESEARCH_BEGINNER_FORBIDDEN_ADVICE = (
     "目标价", "收益率", "保证上涨", "稳赚", "必涨",
 )
 
+MARKET_DAY_SCHEMA_VERSION = 2
+MARKET_DAY_BEGINNER_STANCES = {"observe", "cautious", "stand_aside"}
+MARKET_DAY_BEGINNER_TIMES = ("09:25", "09:35", "10:30")
+MARKET_DAY_BEGINNER_FORBIDDEN_TERMS = (
+    "\u5f3a\u4fee\u590d",
+    "\u6269\u6563",
+    "\u56de\u6d41",
+    "\u627f\u63a5",
+    "\u5f31\u8f6c\u5f3a",
+    "\u5bbd\u5ea6",
+    "\u62e5\u6324\u5ea6",
+    "\u664b\u7ea7\u7387",
+    "\u9ad8\u4f4d\u8d1f\u53cd\u9988",
+)
+MARKET_DAY_BEGINNER_FORBIDDEN_SCORE_PHRASES = (
+    "\u6392\u540d",
+    "\u699c\u5355",
+    "\u7b2c\u4e00\u540d",
+    "\u8bc4\u5206",
+    "\u6253\u5206",
+    "\u5206\u6570",
+    "\u80dc\u7387",
+    "\u6982\u7387",
+    "\u8bc4\u7ea7",
+    "\u6700\u5f3a\u80a1",
+    "\u5f3a\u52bf\u80a1",
+    "\u4e2a\u80a1\u699c",
+)
+MARKET_DAY_BEGINNER_FORBIDDEN_STOCK_PHRASES = (
+    "\u4e70\u8c01",
+    "\u63a8\u8350",
+    "\u9f99\u5934\u80a1",
+)
+MARKET_DAY_BEGINNER_FORBIDDEN_COMPANY_SUFFIXES = (
+    "\u80a1\u4efd",
+    "\u79d1\u6280",
+    "\u836f\u4e1a",
+    "\u7535\u5b50",
+    "\u7535\u6c14",
+    "\u901a\u4fe1",
+    "\u7cbe\u5bc6",
+    "\u8bc1\u5238",
+    "\u94f6\u884c",
+    "\u96c6\u56e2",
+    "\u6750\u6599",
+    "\u6c7d\u8f66",
+    "\u80fd\u6e90",
+)
+MARKET_DAY_BEGINNER_SCORE_REGEXES = (
+    re.compile(r"\d+(?:\.\d+)?\s*/\s*10"),
+    re.compile(r"\d+(?:\.\d+)?\s*\u5206"),
+)
+MARKET_DAY_BEGINNER_STOCK_CODE_RE = re.compile(r"\b\d{6}\b")
+MARKET_DAY_BEGINNER_COMPANY_NAME_RE = re.compile(
+    r"[\u4e00-\u9fffA-Za-z]{2,12}(?:"
+    + "|".join(MARKET_DAY_BEGINNER_FORBIDDEN_COMPANY_SUFFIXES)
+    + r")"
+)
+BEGINNER_GENERIC_TOPIC_MARKERS = (
+    "\u5e02\u573a",
+    "\u6307\u6570",
+    "\u60c5\u7eea",
+    "\u65b9\u5411",
+    "\u677f\u5757",
+    "\u9898\u6750",
+    "\u4e3b\u7ebf",
+    "\u5907\u9009",
+    "\u6210\u4ea4",
+    "\u91cf\u80fd",
+    "\u524d\u6392",
+    "\u540e\u6392",
+    "\u6743\u91cd",
+    "\u6210\u957f",
+    "\u79d1\u6280",
+    "\u786c\u4ef6",
+    "\u8bbe\u5907",
+    "\u901a\u4fe1",
+    "\u534a\u5bfc\u4f53",
+    "\u7535\u7f51",
+    "\u50a8\u80fd",
+    "\u9ec4\u91d1",
+    "\u533b\u836f",
+    "\u6d88\u8d39",
+    "\u6559\u80b2",
+    "\u8f6f\u4ef6",
+    "\u5730\u4ea7",
+    "\u94f6\u884c",
+    "\u8bc1\u5238",
+    "\u65e9\u76d8",
+    "\u5c3e\u76d8",
+    "\u5f00\u76d8",
+    "\u56de\u843d",
+    "\u7a33\u4f4f",
+    "\u9ad8\u5f00",
+    "\u4f4e\u5f00",
+)
+BEGINNER_STOCK_NAME_CONTEXT_RE = re.compile(
+    r"(?:\u770b|\u76ef|\u5173\u6ce8|\u89c2\u5bdf|\u5148\u770b|\u53ea\u770b|"
+    r"\u4f18\u5148\u770b|\u8ddf\u8e2a)\s*([\u4e00-\u9fff]{2,6})(?:\u4f1a\u4e0d\u4f1a|"
+    r"\u80fd\u4e0d\u80fd|\u662f\u5426|\u7ee7\u7eed|\u8868\u73b0|\u8d70\u5f3a|"
+    r"\u8d70\u5f31|\u4e0a\u6da8|\u4e0b\u8dcc)"
+)
+BEGINNER_SHORT_STOCK_ALIAS_RE = re.compile(
+    r"(?:\u660e\u5929|\u5982\u679c|\u8981\u662f|\u82e5|"
+    r"\u7b49|)([\u4e00-\u9fff]{2,4})(?:\u4f1a\u4e0d\u4f1a|\u80fd\u4e0d\u80fd|"
+    r"\u662f\u5426|\u7ee7\u7eed|\u8868\u73b0|\u8d70\u5f3a|\u8d70\u5f31|"
+    r"\u4e0a\u6da8|\u4e0b\u8dcc|\u51b2\u9ad8|\u56de\u843d)"
+)
+
 def normalize_research_model_tier(value: object = None) -> str:
     # The detailed report tier is disabled. Always normalize requests from
     # current and legacy clients to the supported standard report pipeline.
@@ -191,6 +300,10 @@ class SingleInstanceThreadingHTTPServer(ThreadingHTTPServer):
 
 class AIResearchPayloadError(ValueError):
     """A v2 AI research payload that is structurally unsafe to publish."""
+
+
+class MarketDayPayloadError(ValueError):
+    """A v2 market day payload that is structurally unsafe to publish."""
 
 
 class TradeReviewHandler(BaseHTTPRequestHandler):
@@ -477,7 +590,7 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             self._json({"error": "not found"}, status=404)
         except AuthError as exc:
             self._json({"error": exc.message}, status=exc.status)
-        except AIResearchPayloadError as exc:
+        except (AIResearchPayloadError, MarketDayPayloadError) as exc:
             self._send_error(exc, status=422)
         except ValueError as exc:
             self._send_error(exc, status=400)
@@ -2715,6 +2828,16 @@ def _recover_report_manifest(run_id: str, run_dir: Path | None) -> dict | None:
 
 
 def _api_error_payload(exc: Exception, *, request_id: str, run_id: str = "", stage: str = "") -> dict:
+    if isinstance(exc, MarketDayPayloadError):
+        return {
+            "error": str(exc),
+            "detail": str(exc),
+            "code": "MARKET_DAY_PAYLOAD_INVALID",
+            "retryable": False,
+            "request_id": request_id,
+            "run_id": run_id,
+            "stage": stage,
+        }
     if isinstance(exc, AIResearchPayloadError):
         return {
             "error": str(exc),
@@ -3750,6 +3873,7 @@ def _market_day_report_from_push_payload(payload: dict, *, request_id: str) -> d
     if not isinstance(payload, dict):
         raise ValueError("market day report payload must be a JSON object")
 
+    schema_version = _market_day_schema_version(payload.get("schema_version"))
     raw_run_id = str(payload.get("run_id") or "").strip()
     if not raw_run_id or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,95}", raw_run_id):
         raise ValueError("run_id is required and must use only letters, numbers, dot, underscore, or hyphen")
@@ -3762,9 +3886,14 @@ def _market_day_report_from_push_payload(payload: dict, *, request_id: str) -> d
     body = payload.get("report")
     if not isinstance(body, dict) or not body:
         raise ValueError("report is required and must be a non-empty JSON object")
+    if schema_version == MARKET_DAY_SCHEMA_VERSION:
+        expected_run_id = f"market-day-{market_date}"
+        if raw_run_id != expected_run_id:
+            raise MarketDayPayloadError("schema_version 2 run_id must equal market-day-YYYY-MM-DD and match market_date")
+        body = _normalize_market_day_v2_report(body, market_date=market_date)
 
     received_at = datetime.now(CN_TZ).strftime("%Y-%m-%d %H:%M:%S")
-    return {
+    report = {
         "run_id": raw_run_id,
         "request_id": request_id,
         "received_at": received_at,
@@ -3772,6 +3901,9 @@ def _market_day_report_from_push_payload(payload: dict, *, request_id: str) -> d
         "source": "codex_push",
         "report": body,
     }
+    if schema_version == MARKET_DAY_SCHEMA_VERSION:
+        report["schema_version"] = MARKET_DAY_SCHEMA_VERSION
+    return report
 
 
 def _assert_market_day_push_secret(*, expected: str, provided: str) -> None:
@@ -3781,6 +3913,289 @@ def _assert_market_day_push_secret(*, expected: str, provided: str) -> None:
     provided = str(provided or "").strip()
     if not provided or not secrets.compare_digest(provided, expected):
         raise AuthError("market day report push secret mismatch", status=401)
+
+
+def _market_day_schema_version(value: object) -> int:
+    if isinstance(value, bool):
+        raise MarketDayPayloadError("market day schema_version must be 1 or 2")
+    if value in (None, "", 1, "1"):
+        return 1
+    if value in (MARKET_DAY_SCHEMA_VERSION, str(MARKET_DAY_SCHEMA_VERSION)):
+        return MARKET_DAY_SCHEMA_VERSION
+    raise MarketDayPayloadError("market day schema_version must be 1 or 2")
+
+
+def _normalize_market_day_v2_report(value: object, *, market_date: str) -> dict:
+    if not isinstance(value, dict) or not value:
+        raise MarketDayPayloadError("report is required and must be a non-empty JSON object")
+    report_market_date = str(value.get("marketDate") or value.get("market_date") or "").strip()
+    if report_market_date and normalize_market_date(report_market_date) != market_date:
+        raise MarketDayPayloadError("report.marketDate must match market_date")
+    beginner_decision = value.get("beginner_decision")
+    if not isinstance(beginner_decision, dict):
+        raise MarketDayPayloadError("schema_version 2 requires report.beginner_decision")
+
+    normalized = dict(value)
+    normalized["beginner_decision"] = _normalize_market_day_beginner_decision(beginner_decision)
+    return normalized
+
+
+def _normalize_market_day_beginner_decision(value: object) -> dict:
+    if not isinstance(value, dict):
+        raise MarketDayPayloadError("schema_version 2 requires report.beginner_decision")
+
+    stance = str(value.get("stance") or "").strip()
+    if stance not in MARKET_DAY_BEGINNER_STANCES:
+        raise MarketDayPayloadError("report.beginner_decision.stance is invalid")
+
+    headline = _required_market_day_beginner_text(value.get("headline"), "report.beginner_decision.headline", limit=160)
+    what_changed = _normalize_market_day_beginner_text_list(
+        value.get("what_changed"),
+        "what_changed",
+        minimum=1,
+        maximum=3,
+    )
+    primary_focus = _normalize_market_day_beginner_focus(value.get("primary_focus"), "primary_focus", allow_none=True)
+    backup_focus = _normalize_market_day_beginner_focus(
+        value.get("backup_focus"),
+        "backup_focus",
+        allow_none=True,
+        condition_key="condition",
+    )
+    if stance == "stand_aside":
+        if primary_focus is not None:
+            raise MarketDayPayloadError("report.beginner_decision.primary_focus must be null when stance is stand_aside")
+        if "明天暂不预设主线" not in headline:
+            raise MarketDayPayloadError("report.beginner_decision.headline must state 明天暂不预设主线 when stance is stand_aside")
+    elif primary_focus is None:
+        raise MarketDayPayloadError("report.beginner_decision.primary_focus is required unless stance is stand_aside")
+
+    continue_conditions = _normalize_market_day_beginner_conditions(
+        value.get("continue_conditions"),
+        "continue_conditions",
+        minimum=0 if stance == "stand_aside" else 1,
+        maximum=3,
+    )
+    stop_conditions = _normalize_market_day_beginner_conditions(
+        value.get("stop_conditions"),
+        "stop_conditions",
+        minimum=1,
+        maximum=3,
+    )
+    timeline = _normalize_market_day_beginner_timeline(value.get("timeline"))
+    avoid_actions = _normalize_market_day_beginner_text_list(
+        value.get("avoid_actions"),
+        "avoid_actions",
+        minimum=1,
+        maximum=3,
+    )
+    term_explanations = _normalize_market_day_beginner_term_explanations(value.get("term_explanations"))
+
+    normalized = {
+        "stance": stance,
+        "headline": headline,
+        "what_changed": what_changed,
+        "primary_focus": primary_focus,
+        "continue_conditions": continue_conditions,
+        "stop_conditions": stop_conditions,
+        "timeline": timeline,
+        "backup_focus": backup_focus,
+        "avoid_actions": avoid_actions,
+        "term_explanations": term_explanations,
+    }
+    _validate_market_day_beginner_visible_language(normalized)
+    return normalized
+
+
+def _normalize_market_day_beginner_focus(
+    value: object,
+    field: str,
+    *,
+    allow_none: bool,
+    condition_key: str = "reason",
+) -> dict | None:
+    if value is None and allow_none:
+        return None
+    if not isinstance(value, dict):
+        raise MarketDayPayloadError(f"report.beginner_decision.{field} must be an object or null")
+    return {
+        "name": _required_market_day_beginner_text(
+            value.get("name"),
+            f"report.beginner_decision.{field}.name",
+            limit=80,
+        ),
+        condition_key: _required_market_day_beginner_text(
+            value.get(condition_key),
+            f"report.beginner_decision.{field}.{condition_key}",
+            limit=240,
+        ),
+    }
+
+
+def _normalize_market_day_beginner_conditions(
+    value: object,
+    field: str,
+    *,
+    minimum: int,
+    maximum: int,
+) -> list[dict]:
+    if not isinstance(value, list) or not minimum <= len(value) <= maximum:
+        raise MarketDayPayloadError(f"report.beginner_decision.{field} must contain {minimum}-{maximum} items")
+    result = []
+    for index, item in enumerate(value):
+        if not isinstance(item, dict):
+            raise MarketDayPayloadError(f"report.beginner_decision.{field}[{index}] must be an object")
+        result.append({
+            "time": _required_market_day_beginner_text(
+                item.get("time"),
+                f"report.beginner_decision.{field}[{index}].time",
+                limit=20,
+            ),
+            "observation": _required_market_day_beginner_text(
+                item.get("observation"),
+                f"report.beginner_decision.{field}[{index}].observation",
+                limit=240,
+            ),
+            "action": _required_market_day_beginner_text(
+                item.get("action"),
+                f"report.beginner_decision.{field}[{index}].action",
+                limit=160,
+            ),
+        })
+    return result
+
+
+def _normalize_market_day_beginner_timeline(value: object) -> list[dict]:
+    if not isinstance(value, list) or len(value) != len(MARKET_DAY_BEGINNER_TIMES):
+        raise MarketDayPayloadError("report.beginner_decision.timeline must contain 09:25, 09:35 and 10:30")
+    result = []
+    for index, (item, expected_time) in enumerate(zip(value, MARKET_DAY_BEGINNER_TIMES)):
+        if not isinstance(item, dict) or str(item.get("time") or "").strip() != expected_time:
+            raise MarketDayPayloadError("report.beginner_decision.timeline must be ordered as 09:25, 09:35 and 10:30")
+        result.append({
+            "time": expected_time,
+            "observation": _required_market_day_beginner_text(
+                item.get("observation"),
+                f"report.beginner_decision.timeline[{index}].observation",
+                limit=240,
+            ),
+            "action": _required_market_day_beginner_text(
+                item.get("action"),
+                f"report.beginner_decision.timeline[{index}].action",
+                limit=160,
+            ),
+            "if_unmet": _required_market_day_beginner_text(
+                item.get("if_unmet"),
+                f"report.beginner_decision.timeline[{index}].if_unmet",
+                limit=160,
+            ),
+        })
+    return result
+
+
+def _normalize_market_day_beginner_text_list(
+    value: object,
+    field: str,
+    *,
+    minimum: int,
+    maximum: int,
+) -> list[str]:
+    if not isinstance(value, list) or not minimum <= len(value) <= maximum:
+        raise MarketDayPayloadError(f"report.beginner_decision.{field} must contain {minimum}-{maximum} items")
+    return [
+        _required_market_day_beginner_text(
+            item,
+            f"report.beginner_decision.{field}[{index}]",
+            limit=160,
+        )
+        for index, item in enumerate(value)
+    ]
+
+
+def _normalize_market_day_beginner_term_explanations(value: object) -> list[dict]:
+    if value is None:
+        return []
+    if not isinstance(value, list) or len(value) > 12:
+        raise MarketDayPayloadError("report.beginner_decision.term_explanations must contain at most 12 items")
+    result = []
+    for index, item in enumerate(value):
+        if not isinstance(item, dict):
+            raise MarketDayPayloadError(f"report.beginner_decision.term_explanations[{index}] must be an object")
+        result.append({
+            "term": _required_market_day_beginner_text(
+                item.get("term"),
+                f"report.beginner_decision.term_explanations[{index}].term",
+                limit=40,
+            ),
+            "plain": _required_market_day_beginner_text(
+                item.get("plain"),
+                f"report.beginner_decision.term_explanations[{index}].plain",
+                limit=240,
+            ),
+        })
+    return result
+
+
+def _required_market_day_beginner_text(value: object, field: str, *, limit: int) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise MarketDayPayloadError(f"{field} is required")
+    if len(text) > limit:
+        raise MarketDayPayloadError(f"{field} must not exceed {limit} characters")
+    return text
+
+
+def _validate_market_day_beginner_visible_language(decision: dict) -> None:
+    visible = dict(decision)
+    visible.pop("term_explanations", None)
+    serialized = json.dumps(visible, ensure_ascii=False)
+    for term in MARKET_DAY_BEGINNER_FORBIDDEN_TERMS:
+        if term in serialized:
+            raise MarketDayPayloadError(f"report.beginner_decision contains prohibited jargon: {term}")
+    for phrase in AI_RESEARCH_BEGINNER_FORBIDDEN_ADVICE:
+        if phrase in serialized:
+            raise MarketDayPayloadError(f"report.beginner_decision contains prohibited investment instruction: {phrase}")
+    for phrase in MARKET_DAY_BEGINNER_FORBIDDEN_SCORE_PHRASES:
+        if phrase in serialized:
+            raise MarketDayPayloadError(f"report.beginner_decision contains prohibited score implication: {phrase}")
+    for phrase in MARKET_DAY_BEGINNER_FORBIDDEN_STOCK_PHRASES:
+        if phrase in serialized:
+            raise MarketDayPayloadError(f"report.beginner_decision contains prohibited stock recommendation: {phrase}")
+    for pattern in MARKET_DAY_BEGINNER_SCORE_REGEXES:
+        match = pattern.search(serialized)
+        if match:
+            raise MarketDayPayloadError(
+                f"report.beginner_decision contains prohibited score implication: {match.group(0)}"
+            )
+    code_match = MARKET_DAY_BEGINNER_STOCK_CODE_RE.search(serialized)
+    if code_match:
+        raise MarketDayPayloadError(
+            f"report.beginner_decision contains prohibited stock code: {code_match.group(0)}"
+        )
+    company_match = _prohibited_beginner_stock_name(serialized)
+    if company_match:
+        raise MarketDayPayloadError(
+            f"report.beginner_decision contains prohibited stock name: {company_match}"
+        )
+
+
+def _prohibited_beginner_stock_name(text: str) -> str:
+    context_match = BEGINNER_STOCK_NAME_CONTEXT_RE.search(text)
+    if context_match:
+        candidate = context_match.group(1)
+        if not any(marker in candidate for marker in BEGINNER_GENERIC_TOPIC_MARKERS):
+            return candidate
+    alias_match = BEGINNER_SHORT_STOCK_ALIAS_RE.search(text)
+    if alias_match:
+        candidate = alias_match.group(1)
+        if not any(marker in candidate for marker in BEGINNER_GENERIC_TOPIC_MARKERS):
+            return candidate
+    company_match = MARKET_DAY_BEGINNER_COMPANY_NAME_RE.search(text)
+    if company_match:
+        candidate = company_match.group(0)
+        if not any(marker in candidate for marker in BEGINNER_GENERIC_TOPIC_MARKERS):
+            return candidate
+    return ""
 
 
 def _ai_research_report_from_payload(*, payload: dict, headers: dict[str, str], source_ip: str, request_id: str) -> dict:
@@ -4017,6 +4432,23 @@ def _validate_beginner_visible_language(decision: dict) -> None:
     for phrase in AI_RESEARCH_BEGINNER_FORBIDDEN_ADVICE:
         if phrase in serialized:
             raise AIResearchPayloadError(f"beginner_decision contains prohibited investment instruction: {phrase}")
+    for phrase in MARKET_DAY_BEGINNER_FORBIDDEN_SCORE_PHRASES:
+        if phrase in serialized:
+            raise AIResearchPayloadError(f"beginner_decision contains prohibited score implication: {phrase}")
+    for pattern in MARKET_DAY_BEGINNER_SCORE_REGEXES:
+        match = pattern.search(serialized)
+        if match:
+            raise AIResearchPayloadError(
+                f"beginner_decision contains prohibited score implication: {match.group(0)}"
+            )
+    code_match = MARKET_DAY_BEGINNER_STOCK_CODE_RE.search(serialized)
+    if code_match:
+        raise AIResearchPayloadError(
+            f"beginner_decision contains prohibited stock code: {code_match.group(0)}"
+        )
+    stock_name = _prohibited_beginner_stock_name(serialized)
+    if stock_name:
+        raise AIResearchPayloadError(f"beginner_decision contains prohibited stock name: {stock_name}")
 
 
 def _safe_run_id(value: str) -> str:

@@ -1,0 +1,150 @@
+{
+  "schema_version": 2,
+  "run_id": "market-day-2026-08-12",
+  "market_date": "2026-08-12",
+  "status": "SUCCESS",
+  "execution": {
+    "tradingDayConfirmed": true,
+    "reportGenerated": true,
+    "qualityCheckPassed": true,
+    "webhookCalled": false,
+    "httpStatus": null,
+    "returnedRunId": null,
+    "sourceCount": 4,
+    "missingEvidenceCount": 2,
+    "deliveredToAITradingHelper": false,
+    "failureStage": null,
+    "message": "使用 2026-08-12 实际收盘报告构造的本地 v2 验收样本。"
+  },
+  "report": {
+    "marketDate": "2026-08-12",
+    "informationCutoff": "2026-08-12 19:00:00 Asia/Shanghai",
+    "oneLineConclusion": "强修复：无明确唯一主线，板块轮动且成交缩量是主要分歧。",
+    "beginner_decision": {
+      "stance": "stand_aside",
+      "headline": "市场比昨天明显转强，但成交反而减少，明天暂不预设主线。",
+      "what_changed": [
+        "五个主要指数全部上涨，成长方向涨幅更大。",
+        "涨停股票增加到 92 只，收盘跌停为 0 只。",
+        "成交金额比前一天减少，多个方向同时活跃但没有一个持续领先。"
+      ],
+      "primary_focus": null,
+      "continue_conditions": [],
+      "stop_conditions": [
+        {
+          "time": "09:35",
+          "observation": "上涨仍只集中在少数昨天已经很强的股票，其他相关股票多数转弱。",
+          "action": "放弃寻找当天主线，不临时追其他方向。"
+        },
+        {
+          "time": "10:30",
+          "observation": "市场成交继续减少，而且主要指数由上涨转为明显走弱。",
+          "action": "结束方向判断，只记录市场变化。"
+        }
+      ],
+      "timeline": [
+        {
+          "time": "09:25",
+          "observation": "记录昨天活跃方向的开盘状态，以及高位股票是否出现快速下跌。",
+          "action": "只记录，不因为开盘热闹就下结论。",
+          "if_unmet": "出现集中下跌时，明天暂不寻找主线。"
+        },
+        {
+          "time": "09:35",
+          "observation": "观察是否有一个方向出现多只股票共同保持上涨，市场成交是否稳定。",
+          "action": "只有方向和成交同时稳定，才把它列为候选观察方向。",
+          "if_unmet": "继续保持观望，不在多个题材之间切换。"
+        },
+        {
+          "time": "10:30",
+          "observation": "确认候选方向是否仍然持续，而不是只有一两只股票上涨。",
+          "action": "满足时继续记录这个方向，否则结束当天判断。",
+          "if_unmet": "放弃方向性判断，等待收盘后重新复盘。"
+        }
+      ],
+      "backup_focus": null,
+      "avoid_actions": [
+        "不把今天上涨直接理解成明天还会上涨。",
+        "不因为看到高位连续涨停股票就追逐热度。",
+        "没有明确方向时，不在多个题材之间来回切换。"
+      ],
+      "term_explanations": [
+        {"term": "强修复", "plain": "市场表现比前一天明显改善，但不代表这种强势一定能持续。"},
+        {"term": "市场宽度", "plain": "上涨覆盖了多少股票，用来判断上涨是否普遍。"},
+        {"term": "炸板", "plain": "盘中一度涨停，但收盘前又打开涨停。"}
+      ]
+    },
+    "marketStage": {
+      "label": "强修复",
+      "reason": "主要指数全部上涨，涨停增加且跌停为零；但成交减少，持续性仍需确认。",
+      "confidence": 6
+    },
+    "indices": [
+      {"name": "上证指数", "code": "000001", "close": "3946.68", "changePct": "+0.32%", "evidenceSourceIds": ["S2", "S3"]},
+      {"name": "深证成指", "code": "399001", "close": "14414.43", "changePct": "+1.09%", "evidenceSourceIds": ["S2", "S3"]},
+      {"name": "创业板指", "code": "399006", "close": "3602.08", "changePct": "+1.49%", "evidenceSourceIds": ["S2", "S3"]},
+      {"name": "科创50", "code": "000688", "close": "1736.99", "changePct": "+1.61%", "evidenceSourceIds": ["S2", "S3"]},
+      {"name": "北证50", "code": "899050", "close": "1115.84", "changePct": "+0.24%", "evidenceSourceIds": ["S2", "S3"]}
+    ],
+    "marketBreadth": {
+      "upCount": "证据不足",
+      "downCount": "证据不足",
+      "flatCount": "证据不足",
+      "largeVsSmall": "均衡",
+      "weightVsTheme": "题材偏强",
+      "summary": "五个宽基指数均上涨，但没有取得统一的全市场涨跌家数。"
+    },
+    "marketMood": {
+      "summary": "涨停增加、炸板减少且跌停为零，但成交额减少，市场偏强但持续性尚未确认。",
+      "limitUpCount": "92只（东方财富涨停股池口径）",
+      "limitDownCount": "0只（东方财富跌停股池口径）",
+      "brokenBoardCount": "13只（东方财富炸板股池口径）",
+      "brokenBoardRate": "12.4%",
+      "heightBoard": "9连板",
+      "turnover": "指数成交额代理口径约21673.13亿元，较前一日减少约1684.27亿元",
+      "score": 6,
+      "scoreReason": "修复事实明确，但统一宽度与完整高位反馈缺失。"
+    },
+    "mainline": {
+      "name": "无明确唯一主线",
+      "isClearMainline": false,
+      "confidence": 4,
+      "reason": "设备、电网、地产、通信和软件等多个方向同时活跃，没有单一方向在成交、上涨覆盖和催化上形成明显优势。",
+      "branches": ["设备与电网", "地产链", "通信与软件"],
+      "evidence": [{"type": "板块涨停结构", "content": "多个行业涨停数量接近，未形成单一集中方向。", "sourceIds": ["S4"]}],
+      "riskOrDivergence": "方向分散且成交减少，持续性需要下一交易日确认。",
+      "score": 4,
+      "scoreReason": "多方向均有事实支持，但缺少任何单线的充分优势。"
+    },
+    "strongestStocks": [
+      {
+        "rank": 1,
+        "name": "传智教育",
+        "code": "003032",
+        "leaderType": "高度板",
+        "theme": "教育",
+        "strengthReason": "涨停股池记录为9连板，是当日最高连板。",
+        "evidence": [{"content": "东方财富涨停股池记录为9天9板。", "sourceIds": ["S4"]}],
+        "riskOrDivergence": "单一个股高度不能证明教育成为市场主线。",
+        "score": 8,
+        "scoreReason": "仅作为市场热度样本，不是推荐。"
+      }
+    ],
+    "secondaryLines": [],
+    "fakeOrWeakLines": [],
+    "watchPoints": [],
+    "sources": [
+      {"id": "S2", "title": "腾讯行情收盘数据", "publisher": "腾讯", "url": "https://gu.qq.com/", "supports": ["指数收盘数据"]},
+      {"id": "S3", "title": "东方财富指数行情", "publisher": "东方财富", "url": "https://quote.eastmoney.com/", "supports": ["指数交叉验证"]},
+      {"id": "S4", "title": "东方财富涨停股池", "publisher": "东方财富", "url": "https://quote.eastmoney.com/ztb/", "supports": ["涨停与连板结构"]},
+      {"id": "S5", "title": "交易日安排", "publisher": "交易所", "url": "https://www.sse.com.cn/", "supports": ["交易日确认"]}
+    ],
+    "audit": {
+      "dataScope": "保留原报告统计口径",
+      "missingEvidence": ["统一全市场涨跌家数", "完整连板晋级率"],
+      "sourceWarnings": ["成交额为指数代理口径，不是全市场去重成交额"],
+      "unverifiedClaimsExcluded": [],
+      "qualityChecks": []
+    }
+  }
+}

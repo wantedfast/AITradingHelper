@@ -7,7 +7,7 @@ import { MainSidebar } from "@/components/main-sidebar";
 import { FinancialDisclaimer } from "@/components/financial-disclaimer";
 import { MobileActionDock } from "@/components/mobile-action-dock";
 import { MobileTaskHeader } from "@/components/mobile-task-header";
-import { MarketDayReportView, type MarketDayEnvelope } from "@/components/market-day-report-view";
+import { MarketDayReportView, hasBeginnerMarketDayDashboard, type MarketDayEnvelope } from "@/components/market-day-report-view";
 import { getAuthToken, storeUser, usageBillingText, type UserProfile } from "@/lib/auth-client";
 import { canReadDatedReport, shouldShowDatedReportPayment, type BillingStatus } from "@/lib/dated-report-access";
 
@@ -62,6 +62,7 @@ export default function MarketDayPage() {
   const requestRef = useRef(0);
 
   const isToday = selectedDate === todayIsoDate();
+  const beginnerReport = Boolean(reportEnvelope?.report && hasBeginnerMarketDayDashboard(reportEnvelope.report));
 
   function clearSelection(nextMessage = "") {
     requestRef.current += 1;
@@ -164,7 +165,7 @@ export default function MarketDayPage() {
         setSummary(null);
         setReportEnvelope(null);
         loadedRunIdRef.current = "";
-        setMessage("所选日期暂无当日行情报告，不会扣除使用次数。");
+        setMessage("所选日期暂时无当日行情报告，不会扣除使用次数。");
         return;
       }
 
@@ -202,43 +203,59 @@ export default function MarketDayPage() {
   }, [isToday, loadReports]);
 
   return (
-    <main className="review-workbench-page auction-page dated-report-page market-day-page">
-      <MainSidebar activeKey="market-day" note="每天 19:00（晚上 7 点）总结市场在炒什么、哪些板块强弱，并给出第二天关注重点。" />
+    <main className={`review-workbench-page auction-page dated-report-page market-day-page ${beginnerReport ? "ai-beginner-report-page" : ""}`}>
+      <MainSidebar activeKey="market-day" note="每天 19:00 总结市场在炒什么、哪些板块强弱，并给出第二天关注重点。" />
       <section className="review-workbench-main auction-main">
         <header className="auction-topbar">
-          <div><span>DAILY MARKET REVIEW</span><b>AI 当日行情</b></div>
+          <div>
+            {beginnerReport ? (
+              <>
+                <p className="ai-prototype-eyebrow">MARKET DAY · BEGINNER VIEW</p>
+                <h1>AI 当日行情 <span>· 明日观察</span></h1>
+              </>
+            ) : (
+              <>
+                <span>DAILY MARKET REVIEW</span>
+                <b>AI 当日行情</b>
+              </>
+            )}
+          </div>
           <div className="auction-topbar-actions">
             <label className="auction-date-picker">
               <CalendarDays />
               <input type="date" value={selectedDate} max={todayIsoDate()} onChange={(event) => handleDateChange(event.target.value)} />
             </label>
             <button type="button" onClick={() => void loadReports()} disabled={loading}>
-                {loading ? <Loader2 className="spin-icon" /> : <RefreshCcw />}<span>刷新报告</span>
+              {loading ? <Loader2 className="spin-icon" /> : <RefreshCcw />}<span>刷新报告</span>
             </button>
           </div>
         </header>
 
-        <FinancialDisclaimer compact={canReadDatedReport(billingStatus)} />
+        {!beginnerReport ? <FinancialDisclaimer compact={canReadDatedReport(billingStatus)} /> : null}
 
-        <MobileTaskHeader
-          eyebrow={<><TrendingUp />{selectedDate}</>}
-          title="AI 当日行情"
-          description={canReadDatedReport(billingStatus) ? summary?.one_line_conclusion || "当天市场总结已准备好。" : billingStatus === "pending_view" ? `确认后扣除 ${billingCost} 次使用机会。` : "所选日期暂无报告，可稍后刷新。"}
-          status={billingStatusText(billingStatus, isToday)}
-        />
+        {!beginnerReport ? (
+          <MobileTaskHeader
+            eyebrow={<><TrendingUp />{selectedDate}</>}
+            title="AI 当日行情"
+            description={canReadDatedReport(billingStatus) ? summary?.one_line_conclusion || "当天市场总结已准备好。" : billingStatus === "pending_view" ? `确认后扣除 ${billingCost} 次使用机会。` : "所选日期暂时无报告，可稍后刷新。"}
+            status={billingStatusText(billingStatus, isToday)}
+          />
+        ) : null}
 
-        <section className="auction-hero dated-report-hero">
-          <div>
-            <p className="auction-kicker"><TrendingUp />{selectedDate} · {canReadDatedReport(billingStatus) ? "可以直接查看" : billingStatus === "pending_view" ? "确认后查看" : "等待报告"}</p>
-            <h1>{canReadDatedReport(billingStatus) ? summary?.one_line_conclusion || "等待所选日期的行情报告" : billingStatus === "pending_view" ? `查看今天行情将扣除 ${billingCost} 次使用机会` : "所选日期暂无行情报告"}</h1>
-            <p>{canReadDatedReport(billingStatus) ? summary?.mainline ? `当前主线：${summary.mainline}` : "报告正文已在当前页面展开。" : billingStatus === "pending_view" ? "同一份报告重复刷新不重复扣费；若今天生成了新批次，会重新要求确认。" : "没有数据不会扣除使用次数，可以稍后刷新或选择其他日期。"}</p>
-          </div>
-          <div className="auction-status-strip">
-            <article><span>所选日期</span><b>{selectedDate}</b></article>
-            <article><span>报告状态</span><b>{summary ? "已生成" : "暂无数据"}</b></article>
-            <article><span>计费状态</span><b>{billingStatusText(billingStatus, isToday)}</b></article>
-          </div>
-        </section>
+        {!beginnerReport ? (
+          <section className="auction-hero dated-report-hero">
+            <div>
+              <p className="auction-kicker"><TrendingUp />{selectedDate} · {canReadDatedReport(billingStatus) ? "可以直接查看" : billingStatus === "pending_view" ? "确认后查看" : "等待报告"}</p>
+              <h1>{canReadDatedReport(billingStatus) ? summary?.one_line_conclusion || "等待所选日期的行情报告" : billingStatus === "pending_view" ? `查看今天行情将扣除 ${billingCost} 次使用机会` : "所选日期暂时无行情报告"}</h1>
+              <p>{canReadDatedReport(billingStatus) ? summary?.mainline ? `当前主线：${summary.mainline}` : "报告正文已在当前页面展开。" : billingStatus === "pending_view" ? "同一份报告重复刷新不重复扣费；若今天生成了新批次，会重新要求确认。" : "没有数据不会扣除使用次数，可以稍后刷新或选择其他日期。"}</p>
+            </div>
+            <div className="auction-status-strip">
+              <article><span>所选日期</span><b>{selectedDate}</b></article>
+              <article><span>报告状态</span><b>{summary ? "已生成" : "暂无数据"}</b></article>
+              <article><span>计费状态</span><b>{billingStatusText(billingStatus, isToday)}</b></article>
+            </div>
+          </section>
+        ) : null}
 
         {shouldShowDatedReportPayment(billingStatus, Boolean(summary)) ? (
           <section className="auction-panel auction-confirm-panel">
@@ -251,10 +268,10 @@ export default function MarketDayPage() {
         ) : (
           <>
             {loading && !reportEnvelope ? <LoadingPanel text="正在读取所选日期的行情报告" /> : null}
-            {message ? <p className="auction-message" role="status">{message}</p> : null}
-            {billingMessage ? <p className="auction-message" role="status">{billingMessage}</p> : null}
-            {!loading && billingStatus === "no_data" ? <EmptyPanel text="所选日期暂无行情报告，请稍后刷新或选择其他日期。" /> : null}
-            {reportEnvelope ? <MarketDayReportView envelope={reportEnvelope} /> : null}
+            {message && !beginnerReport ? <p className="auction-message" role="status">{message}</p> : null}
+            {billingMessage && !beginnerReport ? <p className="auction-message" role="status">{billingMessage}</p> : null}
+            {!loading && billingStatus === "no_data" ? <EmptyPanel text="所选日期暂时无行情报告，请稍后刷新或选择其他日期。" /> : null}
+            {reportEnvelope ? <MarketDayReportView envelope={reportEnvelope} billingMessage={billingMessage} /> : null}
           </>
         )}
       </section>

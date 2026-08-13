@@ -79,6 +79,16 @@ EMAIL_SUPPRESSION_ERROR_MARKERS = (
     "blocked by recipient",
     "recipient has blocked",
     "recipient blocked",
+    "mail is rejected by recipient",
+    "mail is rejected by recipients",
+    "rejected by recipient",
+    "rejected by recipients",
+    "receiver rejected",
+    "recipient denied",
+    "recipient in blacklist",
+    "recipient in black list",
+    "user in blacklist",
+    "user in black list",
     "收件人拒收",
     "收件人已拒绝",
     "被收件人屏蔽",
@@ -2523,7 +2533,7 @@ def _admin_email_campaign_source(kind: str) -> tuple[str, str, Callable[[sqlite3
 
 def _admin_email_failure_category(error: str) -> str:
     value = str(error or "").lower()
-    if "blacklisted by the recipient" in value or "blocked" in value or "拒收" in value or "黑名单" in value:
+    if _is_recipient_suppression_error(value):
         return "recipient_blocked"
     if any(marker in value for marker in ("user unknown", "no such user", "recipient not found", "mailbox not found", "invalid recipient", "does not exist")):
         return "invalid_recipient"
@@ -3333,7 +3343,7 @@ def recover_daily_top5_email_queue(db_path: Path) -> int:
         normalized = 0
         for row in conn.execute(
             """
-            SELECT id, campaign_id, last_error
+            SELECT id, campaign_id, email, last_error
             FROM daily_top5_email_deliveries
             WHERE status IN ('pending', 'sending') AND last_error IS NOT NULL
             """
@@ -3343,13 +3353,23 @@ def recover_daily_top5_email_queue(db_path: Path) -> int:
             error = str(row["last_error"] or "")
             if not error.lower().startswith(PERMANENT_EMAIL_ERROR_PREFIX):
                 error = f"{PERMANENT_EMAIL_ERROR_PREFIX}{error}"[:500]
+            status = "failed"
+            if _is_recipient_suppression_error(error):
+                _record_email_suppression(
+                    conn,
+                    email=row["email"],
+                    provider_error=error,
+                    source_kind="daily_top5",
+                    source_delivery_id=int(row["id"]),
+                )
+                status = "skipped"
             conn.execute(
                 """
                 UPDATE daily_top5_email_deliveries
-                SET status = 'failed', next_attempt_at = NULL, last_error = ?, updated_at = ?
+                SET status = ?, next_attempt_at = NULL, last_error = ?, updated_at = ?
                 WHERE id = ?
                 """,
-                (error, _now(), row["id"]),
+                (status, error, _now(), row["id"]),
             )
             affected_campaigns.add(int(row["campaign_id"]))
             normalized += 1
@@ -3522,7 +3542,12 @@ def process_next_update_email(
                 source_kind="update_notice",
                 source_delivery_id=int(delivery["id"]),
             )
-            if _is_recipient_suppression_error(error) or attempt >= UPDATE_EMAIL_MAX_ATTEMPTS:
+            if _is_recipient_suppression_error(error):
+                conn.execute(
+                    "UPDATE update_email_deliveries SET status = 'skipped', next_attempt_at = NULL, last_error = ?, updated_at = ? WHERE id = ?",
+                    (error, _now(), delivery["id"]),
+                )
+            elif attempt >= UPDATE_EMAIL_MAX_ATTEMPTS:
                 conn.execute(
                     "UPDATE update_email_deliveries SET status = 'failed', next_attempt_at = NULL, last_error = ?, updated_at = ? WHERE id = ?",
                     (error, _now(), delivery["id"]),
@@ -3604,11 +3629,16 @@ def process_next_daily_top5_email(
                 source_kind="daily_top5",
                 source_delivery_id=int(delivery["id"]),
             )
-            if (
-                _is_recipient_suppression_error(error)
-                or _is_permanent_email_error(error)
-                or attempt >= DAILY_TOP5_EMAIL_MAX_ATTEMPTS
-            ):
+            if _is_recipient_suppression_error(error):
+                conn.execute(
+                    """
+                    UPDATE daily_top5_email_deliveries
+                    SET status = 'skipped', next_attempt_at = NULL, last_error = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (error, _now(), delivery["id"]),
+                )
+            elif _is_permanent_email_error(error) or attempt >= DAILY_TOP5_EMAIL_MAX_ATTEMPTS:
                 conn.execute(
                     """
                     UPDATE daily_top5_email_deliveries
@@ -3881,7 +3911,16 @@ def process_next_daily_top5_close_email(
                 source_kind="daily_top5_close",
                 source_delivery_id=int(delivery["id"]),
             )
-            if _is_recipient_suppression_error(error) or attempt >= UPDATE_EMAIL_MAX_ATTEMPTS:
+            if _is_recipient_suppression_error(error):
+                conn.execute(
+                    """
+                    UPDATE daily_top5_close_email_deliveries
+                    SET status = 'skipped', next_attempt_at = NULL, last_error = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (error, _now(), delivery["id"]),
+                )
+            elif attempt >= UPDATE_EMAIL_MAX_ATTEMPTS:
                 conn.execute(
                     """
                     UPDATE daily_top5_close_email_deliveries
@@ -3980,7 +4019,12 @@ def process_next_ai_report_email(
                 source_kind=str(delivery.get("report_type") or "ai_report"),
                 source_delivery_id=int(delivery["id"]),
             )
-            if _is_recipient_suppression_error(error) or attempt >= UPDATE_EMAIL_MAX_ATTEMPTS:
+            if _is_recipient_suppression_error(error):
+                conn.execute(
+                    "UPDATE ai_report_email_deliveries SET status = 'skipped', next_attempt_at = NULL, last_error = ?, updated_at = ? WHERE id = ?",
+                    (error, _now(), delivery["id"]),
+                )
+            elif attempt >= UPDATE_EMAIL_MAX_ATTEMPTS:
                 conn.execute(
                     "UPDATE ai_report_email_deliveries SET status = 'failed', next_attempt_at = NULL, last_error = ?, updated_at = ? WHERE id = ?",
                     (error, _now(), delivery["id"]),

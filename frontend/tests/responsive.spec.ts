@@ -93,6 +93,74 @@ const marketDayReport = {
   },
 };
 
+const marketDayV2Report = {
+  run_id: "responsive-market-day",
+  market_date: "2026-07-15",
+  report: {
+    schema_version: 2,
+    marketDate: "2026-07-15",
+    oneLineConclusion: "今天是修复，不等于明天已经有一条可以直接跟随的强主线。",
+    marketMood: {
+      summary: "涨停增多、跌停较少，但缩量和分散并存。",
+      limitUpCount: "42",
+      limitDownCount: "3",
+      heightBoard: "5",
+      turnover: "1.2万亿",
+      score: 6.2,
+      scoreReason: "公开数据支持修复，但不足以把明天定义成单一主线延续。",
+    },
+    mainline: {
+      name: "没有明确单一主线",
+      reason: wideMarkdownTable,
+      branches: ["设备", "电网", "地产链"],
+      confidence: 5,
+      isClearMainline: false,
+      riskOrDivergence: "如果明天继续缩量且热点切换过快，这种修复容易失去持续性。",
+      scoreReason: "主线判断更多建立在排除法，而不是单线确认。",
+    },
+    previousDayComparison: {
+      continuity: "待确认",
+      previousCoreFeedback: "今天比昨天更强的是封板质量和指数表现，但缩量没有解决。",
+    },
+    strongestStocks: [
+      {
+        rank: 1,
+        name: "示例样本A",
+        code: "000001",
+        leaderType: "高度样本",
+        theme: "设备",
+        strengthReason: "连板高度最突出，但不足以单独代表主线。",
+        evidence: [{ content: "收盘时仍维持连板结构。" }],
+        riskOrDivergence: "板块广度与成交没有同步确认。",
+        score: 8,
+      },
+    ],
+    watchPoints: ["看明天 09:35 是否只剩一个方向还能维持强势。"],
+    audit: { missingEvidence: ["统一全市场广度仍待补充"], sourceWarnings: ["测试数据用于响应式验证"] },
+    beginner_decision: {
+      stance: "cautious",
+      headline: "今天是修复，不等于明天已经有一条可以直接跟的强主线。",
+      what_changed: ["相比昨天，涨停更多了。", "相比昨天，跌停更少了。", "相比昨天，成交额没有同步放大。"],
+      primary_focus: { name: "设备链修复", reason: "它是今天相对集中、但还没完全确认的观察方向。" },
+      continue_conditions: [
+        { time: "09:35", observation: "设备链里不止一只样本还能维持强势。", action: "只继续观察这一个方向。" },
+      ],
+      stop_conditions: [
+        { time: "09:35", observation: "开盘热度很快分散到多个不相关方向。", action: "停止关注，不临时换题材。" },
+        { time: "10:30", observation: "样本冲高后回落，而且没有重新稳住。", action: "明天暂不行动。" },
+      ],
+      timeline: [
+        { time: "09:25", observation: "看修复方向是不是普遍高开。", action: "先记录，不急着扩大判断。", if_unmet: "继续等待 09:35 再确认。" },
+        { time: "09:35", observation: "看是否只剩一个方向还能保持强势。", action: "只有满足时才继续观察。", if_unmet: "立即停止。" },
+        { time: "10:30", observation: "看回落后有没有重新稳住。", action: "重新稳住再维持原判断。", if_unmet: "明天暂不行动。" },
+      ],
+      backup_focus: null,
+      avoid_actions: ["不要把今天最热的单只样本当成明天主线。"],
+      term_explanations: [{ term: "承接", plain: "下跌后还能重新稳住并继续有人愿意参与。" }],
+    },
+  },
+};
+
 const aiResearchReport = {
   run_id: "responsive-ai-research",
   research_date: "2026-07-15",
@@ -138,10 +206,11 @@ function json(route: Route, body: unknown, status = 200) {
 
 async function installStableApiFixtures(
   page: Page,
-  options: { datedBillingStatus?: "charged" | "pending_view"; beginnerV2?: boolean } = {},
+  options: { datedBillingStatus?: "charged" | "pending_view"; beginnerV2?: boolean; marketDayBeginnerV2?: boolean } = {},
 ) {
   const datedBillingStatus = options.datedBillingStatus || "charged";
   const researchReport = options.beginnerV2 ? aiResearchV2Report : aiResearchReport;
+  const currentMarketDayReport = options.marketDayBeginnerV2 ? marketDayV2Report : marketDayReport;
   await page.addInitScript((user) => {
     window.localStorage.setItem("ai_trade_token", "responsive-test-token");
     window.localStorage.setItem("ai_trade_user", JSON.stringify(user));
@@ -195,14 +264,17 @@ async function installStableApiFixtures(
       return json(route, {
         selected_date: url.searchParams.get("date"),
         available_dates: ["2026-07-15"],
-        reports: [{ run_id: marketDayReport.run_id, market_date: "2026-07-15", mainline: "测试主线", one_line_conclusion: "移动端行情报告布局验证" }],
+        reports: [{ run_id: currentMarketDayReport.run_id, market_date: "2026-07-15", mainline: "测试主线", one_line_conclusion: "移动端行情报告布局验证" }],
         billing_status: datedBillingStatus,
         billing_cost: datedBillingStatus === "pending_view" ? 1 : 0,
         user: fixtureUser,
       });
     }
-    if (path === `/api/market-day/reports/${marketDayReport.run_id}/status`) {
-      return json(route, { status: "done", stage: "done", report: marketDayReport });
+    if (path === `/api/market-day/reports/${currentMarketDayReport.run_id}/status`) {
+      return json(route, { status: "done", stage: "done", report: currentMarketDayReport });
+    }
+    if (path === `/api/market-day/reports/${currentMarketDayReport.run_id}/ack`) {
+      return json(route, { billing_status: "charged", user: fixtureUser });
     }
     if (path === "/api/ai-research/reports") {
       return json(route, {
@@ -455,6 +527,35 @@ test.describe("AI research beginner decision layer", () => {
     const research = page.locator("details.mobile-report-disclosure").filter({ hasText: "研究依据与术语解释" }).first();
     await expect(research).not.toHaveAttribute("open", "");
     await expectNoGlobalHorizontalOverflow(page, "AI research beginner decision layer");
+  });
+});
+
+test.describe("Market Day v2 beginner decision layer", () => {
+  test.use({ viewport: { width: 390, height: 844 } });
+
+  test("shows what changed first, keeps professional content collapsed, and avoids mobile overflow", async ({ page }) => {
+    await installStableApiFixtures(page, { marketDayBeginnerV2: true });
+    await page.goto("/market-day", { waitUntil: "domcontentloaded" });
+    await page.locator('input[type="date"]').fill("2026-07-15");
+
+    const dashboard = page.locator(".ai-beginner-dashboard");
+    await expect(dashboard).toBeVisible();
+    await expect(dashboard.getByText("今天发生了什么 / 相比昨天")).toBeVisible();
+    await expect(dashboard.getByText("相比昨天，涨停更多了。")).toBeVisible();
+    await expect(dashboard.getByText("明天只观察：")).toBeVisible();
+    await expect(dashboard.getByText("设备链修复", { exact: true })).toBeVisible();
+    await expect(dashboard.getByRole("heading", { name: "继续观察" })).toBeVisible();
+    await expect(dashboard.getByRole("heading", { name: "立即停止" })).toBeVisible();
+    await expect(dashboard.getByRole("heading", { name: "明天开盘后怎么观察" })).toBeVisible();
+    const timeline = dashboard.locator(".action-flow ol");
+    await expect(timeline.getByText("09:25", { exact: true })).toBeVisible();
+    await expect(timeline.getByText("09:35", { exact: true })).toBeVisible();
+    await expect(timeline.getByText("10:30", { exact: true })).toBeVisible();
+
+    const researchToggle = dashboard.locator(".research-details > button");
+    await expect(researchToggle).toHaveAttribute("aria-expanded", "false");
+    await expect(dashboard.getByText("市场热度样本（不是推荐）")).toHaveCount(0);
+    await expectNoGlobalHorizontalOverflow(page, "Market Day v2 beginner decision layer");
   });
 });
 

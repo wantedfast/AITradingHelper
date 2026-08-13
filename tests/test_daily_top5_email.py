@@ -284,7 +284,7 @@ class DailyTop5EmailTest(unittest.TestCase):
         self.assertEqual(status, "failed")
         self.assertFalse(process_next_daily_top5_email(self.db_path, sender=lambda _delivery: None))
 
-    def test_recipient_blacklist_is_a_permanent_failure_and_is_not_retried(self) -> None:
+    def test_recipient_blacklist_is_suppressed_and_is_not_retried(self) -> None:
         campaign = create_daily_top5_email_campaign(self.db_path, report=complete_report())
         campaign_id = int(campaign["id"])
         with closing(sqlite3.connect(self.db_path)) as conn:
@@ -307,17 +307,18 @@ class DailyTop5EmailTest(unittest.TestCase):
                 """,
                 (campaign_id,),
             ).fetchone()
-        self.assertEqual(row[0], "failed")
+        self.assertEqual(row[0], "skipped")
         self.assertEqual(row[1], 1)
         self.assertIsNone(row[2])
         self.assertTrue(str(row[3]).startswith("[permanent] "))
 
         refreshed = create_daily_top5_email_campaign(self.db_path, report=complete_report())
-        self.assertEqual(refreshed["permanent_failed"], 1)
+        self.assertEqual(refreshed["permanent_failed"], 0)
         self.assertEqual(refreshed["retryable_failed"], 0)
         retried = retry_daily_top5_email_campaign(self.db_path, campaign_id=campaign_id)
-        self.assertEqual(retried["failed"], 1)
+        self.assertEqual(retried["failed"], 0)
         self.assertEqual(retried["pending"], 0)
+        self.assertEqual(retried["skipped"], 1)
 
     def test_qq_rate_limit_remains_pending_for_automatic_retry(self) -> None:
         campaign = create_daily_top5_email_campaign(
@@ -406,10 +407,10 @@ class DailyTop5EmailTest(unittest.TestCase):
             status = conn.execute(
                 "SELECT status FROM daily_top5_email_campaigns WHERE id = ?", (campaign_id,)
             ).fetchone()[0]
-        self.assertEqual(delivery[0], "failed")
+        self.assertEqual(delivery[0], "skipped")
         self.assertIsNone(delivery[1])
         self.assertTrue(str(delivery[2]).startswith("[permanent] "))
-        self.assertEqual(status, "failed")
+        self.assertEqual(status, "completed")
 
     def test_delivery_failed_under_old_limit_is_automatically_requeued(self) -> None:
         campaign = create_daily_top5_email_campaign(self.db_path, report=complete_report())

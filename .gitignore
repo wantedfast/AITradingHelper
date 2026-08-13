@@ -9,7 +9,10 @@ frontend/node_modules/
 frontend/.npm-cache/
 frontend/.next/
 frontend/.next-dev/
+frontend/.next-codex-market-day/
 frontend/out/
+frontend/test-results/
+frontend/playwright-report/
 frontend/*.log
 frontend/tsconfig.tsbuildinfo
 prototypes/**/node_modules/
