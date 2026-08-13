@@ -9,7 +9,7 @@ import { MobileActionDock } from "@/components/mobile-action-dock";
 import { MobileTaskHeader } from "@/components/mobile-task-header";
 import { getAuthToken, storeUser, usageBillingText, type UserProfile } from "@/lib/auth-client";
 import { canReadDatedReport, shouldShowDatedReportPayment, type BillingStatus } from "@/lib/dated-report-access";
-import { type AiResearchReport, type AiResearchSummary, ReportBody, ReportMeta } from "./report-components";
+import { type AiResearchReport, type AiResearchSummary, isBeginnerResearchReport, ReportBody, ReportMeta } from "./report-components";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || (process.env.NODE_ENV === "development" ? "http://127.0.0.1:8600" : "");
 
@@ -52,6 +52,7 @@ function AiResearchPageContent() {
   const ackedRunIdsRef = useRef<Set<string>>(new Set());
   const requestRef = useRef(0);
   const isToday = selectedDate === todayIsoDate();
+  const beginnerReport = Boolean(report && isBeginnerResearchReport(report));
 
   function clearSelection(nextMessage = "") {
     requestRef.current += 1;
@@ -206,14 +207,14 @@ function AiResearchPageContent() {
 
         <FinancialDisclaimer compact={canReadDatedReport(billingStatus)} />
 
-        <MobileTaskHeader
+        {!beginnerReport ? <MobileTaskHeader
           eyebrow={<><FileText />{selectedDate}</>}
           title="AI 研报"
           description={canReadDatedReport(billingStatus) ? summary?.summary || "国内外重要信息已经整理完成。" : billingStatus === "pending_view" ? `确认后扣除 ${billingCost} 次使用机会。` : "所选日期暂无研报，可稍后刷新。"}
           status={billingStatusText(billingStatus, isToday)}
-        />
+        /> : null}
 
-        <section className="auction-hero dated-report-hero">
+        {!beginnerReport ? <section className="auction-hero dated-report-hero">
           <div>
             <p className="auction-kicker"><FileText />{selectedDate} · {canReadDatedReport(billingStatus) ? "可以直接查看" : billingStatus === "pending_view" ? "确认后查看" : "等待研报"}</p>
             <h1>{canReadDatedReport(billingStatus) ? summary?.title || "等待所选日期的最新研报" : billingStatus === "pending_view" ? `查看今天研报将扣除 ${billingCost} 次使用机会` : "所选日期暂无 AI 研报"}</h1>
@@ -224,7 +225,7 @@ function AiResearchPageContent() {
             <article><span>研报状态</span><b>{summary ? "已生成" : "暂无数据"}</b></article>
             <article><span>计费状态</span><b>{billingStatusText(billingStatus, isToday)}</b></article>
           </div>
-        </section>
+        </section> : null}
 
         {shouldShowDatedReportPayment(billingStatus, Boolean(summary)) ? (
           <section className="auction-panel auction-confirm-panel">
@@ -249,13 +250,14 @@ function AiResearchPageContent() {
 }
 
 function InlineReport({ report }: { report: AiResearchReport }) {
+  const beginner = isBeginnerResearchReport(report);
   return (
     <section id="ai-research-inline-report" className="ai-research-inline-stack ai-research-inline-report dated-report-content">
-      <section className="review-workbench-hero market-day-report-hero">
+      {!beginner ? <section className="review-workbench-hero market-day-report-hero">
         <div className="review-hero-copy"><p className="review-kicker">盘前研报</p><h1>{report.title || "AI 研报"}</h1><p>{report.summary || "本篇研报已生成。"}</p></div>
         <ReportMeta report={report} />
-      </section>
-      {report.tags?.length ? <section className="research-panel ai-tag-panel">{report.tags.map((tag) => <span key={tag}>{tag}</span>)}</section> : null}
+      </section> : null}
+      {!beginner && report.tags?.length ? <section className="research-panel ai-tag-panel">{report.tags.map((tag) => <span key={tag}>{tag}</span>)}</section> : null}
       <ReportBody report={report} />
     </section>
   );
