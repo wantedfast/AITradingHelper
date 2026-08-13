@@ -26,6 +26,7 @@ export default function AiResearchReportPage() {
   const [message, setMessage] = useState("");
   const [billingMessage, setBillingMessage] = useState("");
   const [report, setReport] = useState<AiResearchReport | null>(null);
+  const beginnerReport = Boolean(report && isBeginnerResearchReport(report));
 
   const loadReport = useCallback(async () => {
     const token = getAuthToken();
@@ -60,11 +61,15 @@ export default function AiResearchReportPage() {
   useEffect(() => { void loadReport(); }, [loadReport]);
 
   return (
-    <main className="review-workbench-page market-day-page ai-research-page">
-      <MainSidebar activeKey="ai-research" />
+    <main className={`review-workbench-page market-day-page ai-research-page ${beginnerReport ? "ai-beginner-report-page" : ""}`}>
+      <MainSidebar
+        activeKey="ai-research"
+        note={beginnerReport ? "每天 08:30 汇总重要消息，帮助你先看懂市场，再决定是否参与。" : undefined}
+        prototypeIcons={beginnerReport}
+      />
       <section className="review-workbench-main">
         <header className="review-workbench-topbar">
-          <div className="review-topbar-title"><span className="topbar-icon"><FileText /></span><b>AI 研报</b><i>{report?.research_date || "REPORT"}</i></div>
+          <div className="review-topbar-title"><span className="topbar-icon"><FileText /></span><b>AI 研报{report && isBeginnerResearchReport(report) ? " · 30秒判断" : ""}</b><i>{report?.research_date || "REPORT"}</i></div>
           <div className="review-workbench-actions">
             <button type="button" onClick={() => router.push("/ai-research")}><ArrowLeft /><span>返回日期选择</span></button>
             <button type="button" onClick={() => void loadReport()} disabled={loading}>{loading ? <Loader2 className="spin-icon" /> : <RefreshCcw />}<span>刷新</span></button>
