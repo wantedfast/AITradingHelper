@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import base64
+import imaplib
 import json
 import mimetypes
 import os
@@ -15,7 +16,9 @@ import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
+from email import policy
 from email.message import EmailMessage
+from email.parser import BytesParser
 from pathlib import Path
 from typing import Any, Callable, Iterator
 from zoneinfo import ZoneInfo
@@ -95,6 +98,25 @@ EMAIL_SUPPRESSION_ERROR_MARKERS = (
     "收件人黑名单",
 )
 EMAIL_SUPPRESSION_SKIP_REASON = "邮箱已列入全局不发送名单（收件人拒收）"
+BOUNCE_IMAP_SYSTEM_SENDERS = (
+    "mailer-daemon",
+    "postmaster",
+    "mail delivery subsystem",
+    "delivery status notification",
+    "system",
+)
+BOUNCE_IMAP_DSN_SUBJECT_MARKERS = (
+    "delivery status notification",
+    "undeliverable",
+    "delivery failure",
+    "mail delivery failed",
+    "rejected",
+)
+BCC_RECIPIENT_HEADER_RE = re.compile(
+    r"(?:final-recipient|original-recipient)\s*:\s*[^;\r\n]+;\s*([^\s;<>]+@[^\s;<>]+)",
+    re.IGNORECASE,
+)
+FAILED_RECIPIENT_RE = re.compile(r"([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})")
 DAILY_TOP5_CLOSE_EMAIL_RETRY_MINUTES = 5
 CREDIT_PACKAGES = {
     "pack_10": {"plan_name": "10 次使用包", "credits": 10, "amount_cents": 990},
@@ -427,6 +449,19 @@ def init_auth_db(db_path: Path) -> None:
                 updated_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS email_bounce_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                mailbox_uid TEXT NOT NULL UNIQUE,
+                message_id TEXT,
+                status TEXT NOT NULL DEFAULT '',
+                source_sender TEXT NOT NULL DEFAULT '',
+                subject TEXT NOT NULL DEFAULT '',
+                suppressed_email TEXT NOT NULL DEFAULT '',
+                provider_error TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS sms_codes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 phone TEXT NOT NULL,
@@ -487,6 +522,10 @@ def init_auth_db(db_path: Path) -> None:
                 ON daily_top5_close_email_deliveries(status, next_attempt_at, id);
             CREATE INDEX IF NOT EXISTS idx_email_suppressions_updated
                 ON email_suppressions(updated_at DESC);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_email_bounce_events_message_id
+                ON email_bounce_events(message_id) WHERE message_id IS NOT NULL AND message_id != '';
+            CREATE INDEX IF NOT EXISTS idx_email_bounce_events_updated
+                ON email_bounce_events(updated_at DESC);
             CREATE INDEX IF NOT EXISTS idx_sms_codes_phone ON sms_codes(phone, purpose, created_at);
             CREATE INDEX IF NOT EXISTS idx_email_codes_email ON email_codes(email, purpose, created_at);
             CREATE INDEX IF NOT EXISTS idx_agreement_acceptances_user ON agreement_acceptances(user_id, accepted_at);
@@ -3280,6 +3319,284 @@ def _record_email_suppression(
         ),
     )
     return True
+
+
+def _bounce_imap_enabled() -> bool:
+    return os.getenv("BOUNCE_IMAP_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _bounce_imap_connection_settings() -> tuple[str, int, str, str]:
+    host = os.getenv("BOUNCE_IMAP_HOST", "imap.gmail.com").strip() or "imap.gmail.com"
+    raw_port = os.getenv("BOUNCE_IMAP_PORT", "993").strip() or "993"
+    username = os.getenv("BOUNCE_IMAP_USER", os.getenv("SMTP_USER", "")).strip()
+    password = os.getenv("BOUNCE_IMAP_PASSWORD", os.getenv("SMTP_PASSWORD", "")).strip()
+    try:
+        port = int(raw_port)
+    except ValueError as exc:
+        raise AuthError("BOUNCE_IMAP_PORT 必须是整数", 500) from exc
+    if not username or not password:
+        raise AuthError("Bounce IMAP 未配置完整，请检查 BOUNCE_IMAP_USER/BOUNCE_IMAP_PASSWORD 或 SMTP_USER/SMTP_PASSWORD", 500)
+    return host, max(1, port), username, password
+
+
+def _decode_header_value(value: object) -> str:
+    return str(value or "").strip()
+
+
+def _imap_fetch_payload(fetch_data: object) -> bytes:
+    chunks: list[bytes] = []
+    if isinstance(fetch_data, (list, tuple)):
+        for item in fetch_data:
+            if isinstance(item, tuple) and len(item) >= 2 and isinstance(item[1], (bytes, bytearray)):
+                chunks.append(bytes(item[1]))
+    return b"".join(chunks)
+
+
+def _extract_failed_recipient_values(value: object) -> list[str]:
+    matches: list[str] = []
+    for matched in FAILED_RECIPIENT_RE.findall(str(value or "")):
+        normalized = normalize_email(matched)
+        if normalized and EMAIL_RE.fullmatch(normalized):
+            matches.append(normalized)
+    return matches
+
+
+def _dsn_recipient_emails(message: EmailMessage) -> list[str]:
+    found: list[str] = []
+
+    def collect(value: object) -> None:
+        for item in _extract_failed_recipient_values(value):
+            if item not in found:
+                found.append(item)
+
+    def collect_dsn_recipient_headers(value: object) -> None:
+        for matched in BCC_RECIPIENT_HEADER_RE.findall(str(value or "")):
+            normalized = normalize_email(matched)
+            if normalized and EMAIL_RE.fullmatch(normalized) and normalized not in found:
+                found.append(normalized)
+
+    collect(message.get("X-Failed-Recipients", ""))
+    for header in ("Final-Recipient", "Original-Recipient"):
+        collect_dsn_recipient_headers(message.get(header, ""))
+
+    for part in message.walk():
+        if part.get_content_type() == "message/delivery-status":
+            payload = part.get_payload()
+            if isinstance(payload, list):
+                for block in payload:
+                    collect(block.get("X-Failed-Recipients", ""))
+                    for header in ("Final-Recipient", "Original-Recipient"):
+                        collect_dsn_recipient_headers(block.get(header, ""))
+                    collect_dsn_recipient_headers(block.as_string())
+        elif part.get_content_type() == "message/rfc822":
+            payload = part.get_payload()
+            if isinstance(payload, list):
+                for nested in payload:
+                    for header in ("X-Failed-Recipients", "Delivered-To", "To"):
+                        collect(nested.get(header, ""))
+        collect_dsn_recipient_headers(part.as_string())
+
+    collect_dsn_recipient_headers(message.as_string())
+    return found
+
+
+def _bounce_diagnostic_text(message: EmailMessage) -> str:
+    fragments: list[str] = [
+        _decode_header_value(message.get("Subject", "")),
+        _decode_header_value(message.get("From", "")),
+    ]
+    for part in message.walk():
+        ctype = part.get_content_type()
+        if ctype == "message/delivery-status":
+            payload = part.get_payload()
+            if isinstance(payload, list):
+                for block in payload:
+                    for header in ("Action", "Status", "Diagnostic-Code", "Remote-MTA", "Final-Recipient", "Original-Recipient"):
+                        fragments.append(_decode_header_value(block.get(header, "")))
+        elif part.get_content_maintype() == "text":
+            try:
+                content = str(part.get_content() or "").strip()
+            except Exception:
+                raw = part.get_payload(decode=True) or b""
+                content = raw.decode("utf-8", errors="replace").strip()
+            if content:
+                fragments.append(content[:1000])
+    return "\n".join(item for item in fragments if item).strip()[:2000]
+
+
+def _looks_like_system_dsn(header_message: EmailMessage) -> bool:
+    sender = _decode_header_value(header_message.get("From", "")).lower()
+    subject = _decode_header_value(header_message.get("Subject", "")).lower()
+    auto_submitted = _decode_header_value(header_message.get("Auto-Submitted", "")).lower()
+    content_type = _decode_header_value(header_message.get("Content-Type", "")).lower()
+    sender_match = any(marker in sender for marker in BOUNCE_IMAP_SYSTEM_SENDERS)
+    auto_match = auto_submitted in {"auto-generated", "auto-replied"} or "auto-generated" in auto_submitted
+    type_match = "multipart/report" in content_type or "delivery-status" in content_type or "message/rfc822" in content_type
+    subject_match = any(marker in subject for marker in BOUNCE_IMAP_DSN_SUBJECT_MARKERS)
+    return bool((sender_match or auto_match) and (type_match or subject_match))
+
+
+def _bounce_event_row(
+    conn: sqlite3.Connection,
+    *,
+    mailbox_uid: str,
+    message_id: str,
+) -> sqlite3.Row | None:
+    normalized_uid = str(mailbox_uid or "").strip()
+    normalized_message_id = str(message_id or "").strip()
+    row = conn.execute(
+        "SELECT * FROM email_bounce_events WHERE mailbox_uid = ?",
+        (normalized_uid,),
+    ).fetchone()
+    if row is not None or not normalized_message_id:
+        return row
+    return conn.execute(
+        "SELECT * FROM email_bounce_events WHERE message_id = ?",
+        (normalized_message_id,),
+    ).fetchone()
+
+
+def _record_bounce_event(
+    conn: sqlite3.Connection,
+    *,
+    mailbox_uid: str,
+    message_id: str,
+    status: str,
+    source_sender: str,
+    subject: str,
+    suppressed_email: str,
+    provider_error: str,
+) -> None:
+    now = _now()
+    conn.execute(
+        """
+        INSERT INTO email_bounce_events (
+            mailbox_uid, message_id, status, source_sender, subject, suppressed_email, provider_error, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(mailbox_uid) DO UPDATE SET
+            message_id = COALESCE(NULLIF(excluded.message_id, ''), email_bounce_events.message_id),
+            status = excluded.status,
+            source_sender = excluded.source_sender,
+            subject = excluded.subject,
+            suppressed_email = excluded.suppressed_email,
+            provider_error = excluded.provider_error,
+            updated_at = excluded.updated_at
+        """,
+        (
+            str(mailbox_uid or "").strip(),
+            str(message_id or "").strip(),
+            str(status or "").strip()[:32],
+            str(source_sender or "").strip()[:255],
+            str(subject or "").strip()[:255],
+            str(suppressed_email or "").strip()[:255],
+            str(provider_error or "").strip()[:2000],
+            now,
+            now,
+        ),
+    )
+
+
+def _archive_bounce_imap_message(client: Any, mailbox_uid: str) -> None:
+    client.uid("STORE", mailbox_uid, "+FLAGS", "(\\Seen)")
+    client.uid("STORE", mailbox_uid, "-X-GM-LABELS", "(\\Inbox)")
+
+
+def process_bounce_imap_inbox(
+    db_path: Path,
+    *,
+    client_factory: Callable[[str, int], Any] | None = None,
+    max_messages: int = 20,
+) -> dict[str, int]:
+    if not _bounce_imap_enabled():
+        return {"checked": 0, "suppressed": 0, "archived": 0}
+    host, port, username, password = _bounce_imap_connection_settings()
+    client = (client_factory or imaplib.IMAP4_SSL)(host, port)
+    checked = 0
+    suppressed = 0
+    archived = 0
+    try:
+        client.login(username, password)
+        status, _ = client.select("INBOX")
+        if str(status or "").upper() != "OK":
+            raise RuntimeError("Bounce IMAP 无法打开 INBOX")
+        status, data = client.uid("search", None, "UNSEEN")
+        if str(status or "").upper() != "OK":
+            raise RuntimeError("Bounce IMAP 无法搜索未读邮件")
+        mailbox_uids = [item for item in str((data or [b""])[0], "utf-8", errors="ignore").split() if item][: max(1, max_messages)]
+        for mailbox_uid in mailbox_uids:
+            header_status, header_data = client.uid("fetch", mailbox_uid, "(BODY.PEEK[HEADER])")
+            if str(header_status or "").upper() != "OK":
+                continue
+            header_bytes = _imap_fetch_payload(header_data)
+            if not header_bytes:
+                continue
+            header_message = BytesParser(policy=policy.default).parsebytes(header_bytes)
+            if not _looks_like_system_dsn(header_message):
+                continue
+            checked += 1
+            message_id = _decode_header_value(header_message.get("Message-ID", ""))
+            with _connect(db_path) as conn:
+                existing = _bounce_event_row(conn, mailbox_uid=mailbox_uid, message_id=message_id)
+            if existing is not None:
+                if str(existing["status"] or "") == "suppressed":
+                    _archive_bounce_imap_message(client, mailbox_uid)
+                    archived += 1
+                continue
+            fetch_status, fetch_data = client.uid("fetch", mailbox_uid, "(RFC822)")
+            if str(fetch_status or "").upper() != "OK":
+                continue
+            raw_message = _imap_fetch_payload(fetch_data)
+            if not raw_message:
+                continue
+            message = BytesParser(policy=policy.default).parsebytes(raw_message)
+            recipients = _dsn_recipient_emails(message)
+            diagnostic = _bounce_diagnostic_text(message)
+            sender = _decode_header_value(message.get("From", ""))
+            subject = _decode_header_value(message.get("Subject", ""))
+            matched_email = ""
+            if _is_recipient_suppression_error(diagnostic):
+                with _connect(db_path) as conn:
+                    for recipient in recipients:
+                        if _record_email_suppression(
+                            conn,
+                            email=recipient,
+                            provider_error=diagnostic,
+                            source_kind="bounce_imap",
+                            source_delivery_id=None,
+                        ):
+                            matched_email = recipient
+                            suppressed += 1
+                    _record_bounce_event(
+                        conn,
+                        mailbox_uid=mailbox_uid,
+                        message_id=message_id,
+                        status="suppressed" if matched_email else "ignored",
+                        source_sender=sender,
+                        subject=subject,
+                        suppressed_email=matched_email,
+                        provider_error=diagnostic,
+                    )
+                if matched_email:
+                    _archive_bounce_imap_message(client, mailbox_uid)
+                    archived += 1
+                continue
+            with _connect(db_path) as conn:
+                _record_bounce_event(
+                    conn,
+                    mailbox_uid=mailbox_uid,
+                    message_id=message_id,
+                    status="ignored",
+                    source_sender=sender,
+                    subject=subject,
+                    suppressed_email="",
+                    provider_error=diagnostic,
+                )
+        return {"checked": checked, "suppressed": suppressed, "archived": archived}
+    finally:
+        try:
+            client.logout()
+        except Exception:
+            pass
 
 
 def _skip_suppressed_pending_deliveries(

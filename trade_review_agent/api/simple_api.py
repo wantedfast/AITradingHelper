@@ -67,6 +67,7 @@ from trade_review_agent.auth_system import (
     mark_order_paid_by_order_no,
     mark_order_paid,
     membership_plans,
+    process_bounce_imap_inbox,
     process_next_update_email,
     process_next_daily_top5_email,
     process_next_daily_top5_close_email,
@@ -5197,6 +5198,34 @@ def _start_update_email_queue_worker() -> None:
         thread.start()
 
 
+def _bounce_imap_worker() -> None:
+    while True:
+        try:
+            process_bounce_imap_inbox(AUTH_DB)
+        except Exception as exc:
+            _write_api_error(
+                request_id="bounce-imap-worker",
+                method="WORKER",
+                path="/workers/bounce-imap",
+                run_id="",
+                stage="bounce_imap_inbox",
+                exc=exc,
+                recovered=True,
+            )
+        time.sleep(60)
+
+
+def _start_bounce_imap_worker() -> None:
+    if os.getenv("BOUNCE_IMAP_ENABLED", "").strip().lower() not in {"1", "true", "yes", "on"}:
+        return
+    thread = threading.Thread(
+        target=_bounce_imap_worker,
+        name="bounce-imap-worker",
+        daemon=True,
+    )
+    thread.start()
+
+
 def _configured_update_email_worker_count() -> int:
     raw = os.getenv("UPDATE_EMAIL_WORKER_COUNT", str(UPDATE_EMAIL_WORKER_COUNT)).strip()
     try:
@@ -5219,6 +5248,7 @@ def run(host: str = "0.0.0.0", port: int = 8600) -> None:
     WATCH_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
     _start_auction_top1_refresh_clock()
     _start_update_email_queue_worker()
+    _start_bounce_imap_worker()
     server = SingleInstanceThreadingHTTPServer((host, port), TradeReviewHandler)
     print(f"Trade Review API listening on http://{host}:{port}", flush=True)
     server.serve_forever()
