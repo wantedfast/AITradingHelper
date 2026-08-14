@@ -180,6 +180,7 @@ class WebhookApiTest(unittest.TestCase):
                         "code": "001257",
                         "name": "盛龙股份",
                         "theme": "有色金属/小金属",
+                        "today_open_price": 23.45,
                         "today_open_change": "4.29",
                         "label": "昨日龙头延续",
                         "theme_level": "竞价超预期主线",
@@ -216,12 +217,30 @@ class WebhookApiTest(unittest.TestCase):
         public = simple_api._auction_strength_public_report(report)
 
         self.assertEqual(public["trade_date"], "2026-06-17")
+        self.assertEqual(public["top5_strong_stocks"][0]["today_open_price"], 23.45)
         self.assertEqual(public["summary"]["one_sentence"], "强题材核心高开。")
         self.assertEqual(public["top5_strong_stocks"][0]["name"], "盛龙股份")
         self.assertEqual(public["top5_strong_stocks"][0]["observe_after_930"], "看承接。")
         self.assertEqual(public["top5_avoid_stocks"][0]["name"], "福达合金")
         self.assertEqual(public["top5_avoid_stocks"][0]["risk_after_930"], "警惕杀跌。")
         self.assertEqual(public["global_conclusion"]["strongest_theme_cluster"], "有色金属/小金属")
+
+    def test_public_report_recovers_open_price_from_legacy_raw_payload(self):
+        report = simple_api._auction_strength_report_from_payload(
+            payload={
+                "trade_date": "2026-08-13",
+                "top5_strong_stocks": [
+                    {"rank": 1, "code": "002229", "name": "鸿博股份", "today_open_price": 18.76}
+                ],
+            },
+            source_ip="127.0.0.1",
+            request_id="legacy-open-price",
+        )
+        report["top5_strong_stocks"][0].pop("today_open_price", None)
+
+        public = simple_api._auction_strength_public_report(report)
+
+        self.assertEqual(public["top5_strong_stocks"][0]["today_open_price"], 18.76)
 
     def test_recent_auction_strength_reports_reads_newest_first(self):
         with tempfile.TemporaryDirectory() as temp_dir:
