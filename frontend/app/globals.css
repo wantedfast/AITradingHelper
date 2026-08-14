@@ -15043,6 +15043,15 @@ button.radar-core,
   font-weight: 600;
 }
 
+.auction-stock-open-price {
+  display: inline-block;
+  margin-top: 6px;
+  color: rgba(242, 238, 224, 0.68);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
 .auction-stock-card strong {
   flex: 0 0 auto;
   border-radius: 999px;

@@ -34,6 +34,7 @@ type StrongStock = {
   code: string;
   name: string;
   theme: string;
+  today_open_price?: number | null;
   today_open_change: string;
   today_open_change_pct?: string | number;
   label: string;
@@ -49,6 +50,7 @@ type AvoidStock = {
   code: string;
   name: string;
   theme: string;
+  today_open_price?: number | null;
   today_open_change: string;
   today_open_change_pct?: string | number;
   label: string;
@@ -174,6 +176,11 @@ function changeText(value: string | number | undefined) {
   if (value === undefined || value === null || value === "") return "--";
   const text = String(value);
   return text.includes("%") ? text : `${text}%`;
+}
+
+function formatStockPrice(value: number | null | undefined) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return "暂无";
+  return `${value.toFixed(2)} 元`;
 }
 
 function stockTitle(item: { name?: string; code?: string }) {
@@ -437,7 +444,10 @@ export default function AuctionStrengthPage() {
                       <div className="auction-stock-rank">{stock.rank}</div>
                       <div>
                         <header>
-                          <h2>{stock.name} <small>{stock.code}</small></h2>
+                          <div>
+                            <h2>{stock.name} <small>{stock.code}</small></h2>
+                            <span className="auction-stock-open-price">开盘价 {formatStockPrice(stock.today_open_price)}</span>
+                          </div>
                           <strong data-tone={changeTone(stock.today_open_change ?? stock.today_open_change_pct)}>{changeText(stock.today_open_change ?? stock.today_open_change_pct)}</strong>
                         </header>
                         <div className="auction-chip-row">
@@ -483,7 +493,10 @@ export default function AuctionStrengthPage() {
                       <div className="auction-stock-rank">{stock.rank}</div>
                       <div>
                         <header>
-                          <h2>{stock.name} <small>{stock.code}</small></h2>
+                          <div>
+                            <h2>{stock.name} <small>{stock.code}</small></h2>
+                            <span className="auction-stock-open-price">开盘价 {formatStockPrice(stock.today_open_price)}</span>
+                          </div>
                           <strong data-tone={changeTone(stock.today_open_change ?? stock.today_open_change_pct)}>{changeText(stock.today_open_change ?? stock.today_open_change_pct)}</strong>
                         </header>
                         <div className="auction-chip-row">
