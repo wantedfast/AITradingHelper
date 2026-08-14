@@ -40,6 +40,8 @@ const sidebar = read("components/main-sidebar.tsx");
 const home = read("app/page.tsx");
 const review = read("app/review/page.tsx");
 const dailyTop5 = read("app/auction-strength/page.tsx");
+assert.match(dailyTop5, /today_open_price\?: number \| null/);
+assert.match(dailyTop5, /开盘价 \{formatStockPrice\(stock\.today_open_price\)\}/);
 const ticker = read("components/auction-strength-performance-ticker.tsx");
 
 assert.ok(fs.existsSync(path.join(frontend, "app", "auction-strength", "page.tsx")), "old /auction-strength route must remain");

@@ -4567,6 +4567,7 @@ def _auction_stock_items(value: object, *, mode: str) -> list[dict]:
                 "code": _short_text(raw_item.get("code"), 16),
                 "name": _short_text(raw_item.get("name"), 80),
                 "theme": _short_text(raw_item.get("theme"), 120),
+                "today_open_price": _auction_number(raw_item.get("today_open_price")),
                 "today_open_change": _short_text(raw_item.get("today_open_change") if raw_item.get("today_open_change") not in {None, ""} else raw_item.get("today_open_change_pct"), 40),
                 "label": _short_text(label_value, 80),
                 "theme_level": _short_text(raw_item.get("theme_level") or raw_item.get("expectation_status"), 120),
@@ -4711,6 +4712,7 @@ def _is_today_trade_date(trade_date: str) -> bool:
 def _auction_strength_public_report(report: dict) -> dict:
     summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
     conclusion = report.get("global_conclusion") if isinstance(report.get("global_conclusion"), dict) else {}
+    raw_payload = report.get("raw_payload") if isinstance(report.get("raw_payload"), dict) else {}
     public_report = {
         "id": str(report.get("id") or ""),
         "request_id": str(report.get("request_id") or ""),
@@ -4723,8 +4725,16 @@ def _auction_strength_public_report(report: dict) -> dict:
             "selection_logic": str(summary.get("selection_logic") or ""),
             "data_limit": str(summary.get("data_limit") or ""),
         },
-        "top5_strong_stocks": _public_auction_stock_items(report.get("top5_strong_stocks"), follow_key="observe_after_930"),
-        "top5_avoid_stocks": _public_auction_stock_items(report.get("top5_avoid_stocks"), follow_key="risk_after_930"),
+        "top5_strong_stocks": _public_auction_stock_items(
+            report.get("top5_strong_stocks"),
+            follow_key="observe_after_930",
+            raw_value=raw_payload.get("top5_strong_stocks"),
+        ),
+        "top5_avoid_stocks": _public_auction_stock_items(
+            report.get("top5_avoid_stocks"),
+            follow_key="risk_after_930",
+            raw_value=raw_payload.get("top5_avoid_stocks"),
+        ),
         "global_conclusion": {
             "strongest_stock_at_925": str(conclusion.get("strongest_stock_at_925") or ""),
             "strongest_theme_cluster": str(conclusion.get("strongest_theme_cluster") or ""),
@@ -4759,19 +4769,30 @@ def _auction_strength_report_summary(report: dict) -> dict:
     }
 
 
-def _public_auction_stock_items(value: object, *, follow_key: str) -> list[dict]:
+def _public_auction_stock_items(value: object, *, follow_key: str, raw_value: object = None) -> list[dict]:
     if not isinstance(value, list):
         return []
+    raw_items = raw_value if isinstance(raw_value, list) else []
+    raw_by_code = {
+        str(item.get("code") or "").strip(): item
+        for item in raw_items
+        if isinstance(item, dict) and str(item.get("code") or "").strip()
+    }
     items = []
     for raw_item in value:
         if not isinstance(raw_item, dict):
             continue
+        source_item = raw_by_code.get(str(raw_item.get("code") or "").strip(), {})
+        open_price = raw_item.get("today_open_price")
+        if open_price in {None, ""} and isinstance(source_item, dict):
+            open_price = source_item.get("today_open_price")
         items.append(
             {
                 "rank": _safe_rank(raw_item.get("rank"), fallback=len(items) + 1),
                 "code": str(raw_item.get("code") or ""),
                 "name": str(raw_item.get("name") or ""),
                 "theme": str(raw_item.get("theme") or ""),
+                "today_open_price": _auction_number(open_price),
                 "today_open_change": str(raw_item.get("today_open_change") or ""),
                 "label": str(raw_item.get("label") or ""),
                 "theme_level": str(raw_item.get("theme_level") or ""),
