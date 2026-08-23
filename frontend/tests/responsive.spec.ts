@@ -1136,8 +1136,22 @@ test.describe("public pricing and mandatory notices", () => {
       return json(route, {});
     });
     await page.goto("/credits", { waitUntil: "domcontentloaded" });
-    await expect(page.getByAltText("支付宝收款二维码")).toBeVisible();
-    await expect(page.getByAltText("微信收款二维码")).toBeVisible();
+    const alipayQr = page.getByAltText("支付宝收款二维码");
+    const wechatQr = page.getByAltText("微信收款二维码");
+    await expect(alipayQr).toBeVisible();
+    await expect(wechatQr).toBeVisible();
+    const alipayBox = await alipayQr.evaluate((node) => {
+      const rect = node.getBoundingClientRect();
+      return { width: rect.width, height: rect.height };
+    });
+    const wechatBox = await wechatQr.evaluate((node) => {
+      const rect = node.getBoundingClientRect();
+      return { width: rect.width, height: rect.height };
+    });
+    expect(alipayBox.width).toBeGreaterThanOrEqual(300);
+    expect(alipayBox.height / alipayBox.width).toBeCloseTo(2560 / 1708, 2);
+    expect(wechatBox.width).toBeGreaterThanOrEqual(300);
+    expect(wechatBox.height / wechatBox.width).toBeCloseTo(1124 / 828, 2);
     await expect(page.getByText("收款码暂未配置")).toHaveCount(0);
   });
 });

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import type { ReactNode } from "react";
-import { BarChart3, FileText, FileUp, Info, TrendingUp, Trophy } from "lucide-react";
+import { BarChart3, Boxes, FileText, FileUp, Info, TrendingUp, Trophy } from "lucide-react";
 import {
   Article as PhArticle,
   ChartBar as PhChartBar,
@@ -12,7 +12,7 @@ import {
   Trophy as PhTrophy,
 } from "@phosphor-icons/react";
 
-type MainSidebarKey = "review" | "watch" | "market-day" | "ai-research" | "auction-strength";
+type MainSidebarKey = "review" | "watch" | "market-day" | "ai-research" | "auction-strength" | "stock-research";
 
 type MainSidebarProps = {
   activeKey: MainSidebarKey;
@@ -34,6 +34,7 @@ const navItems: Array<{
   { key: "watch", href: "/watch", label: "AI 盯盘", shortLabel: "盯盘", icon: BarChart3, prototypeIcon: PhChartBar },
   { key: "market-day", href: "/market-day", label: "AI 当日行情", shortLabel: "行情", icon: TrendingUp, prototypeIcon: PhTrendUp },
   { key: "ai-research", href: "/ai-research", label: "AI 研报", shortLabel: "研报", icon: FileText, prototypeIcon: PhFileText },
+  { key: "stock-research", href: "/stock-research", label: "产业链研究", shortLabel: "产业链", icon: Boxes, prototypeIcon: PhFileText },
 ];
 
 export function MainSidebar({ activeKey, note, hrefOverrides, prototypeIcons = false }: MainSidebarProps) {
@@ -46,7 +47,7 @@ export function MainSidebar({ activeKey, note, hrefOverrides, prototypeIcons = f
           <small>AI TRADING</small>
         </span>
       </Link>
-      <nav className="review-workbench-nav" aria-label="五个核心功能">
+      <nav className="review-workbench-nav" aria-label="核心功能">
         {navItems.map(({ key, href, label, shortLabel, icon, prototypeIcon }) => {
           const Icon = prototypeIcons ? prototypeIcon : icon;
           return (
@@ -78,7 +79,7 @@ export function MainSidebar({ activeKey, note, hrefOverrides, prototypeIcons = f
 
 export function MobileFeatureNav({ activeKey }: Pick<MainSidebarProps, "activeKey">) {
   return (
-    <nav className="mobile-only-feature-nav" aria-label="五个核心功能">
+    <nav className="mobile-only-feature-nav" aria-label="核心功能">
       {navItems.map(({ key, href, shortLabel, icon: Icon }) => (
         <Link aria-current={activeKey === key ? "page" : undefined} className={activeKey === key ? "active" : undefined} href={href} key={key}>
           <Icon aria-hidden="true" />

@@ -128,6 +128,19 @@ from trade_review_agent.review.simple_wang_report import run_simple_wang_review
 from trade_review_agent.watch.voice_settings import VoiceSettings, load_voice_settings, normalize_voice_settings, save_voice_settings, voice_settings_payload
 from trade_review_agent.watch.watch_agent import build_watch_plan, narrate_alert_event, preview_voice_line
 from trade_review_agent.watch.watch_form_ocr import extract_watch_form_from_image
+from trade_review_agent.stock_research import (
+    admin_list_jobs as list_admin_stock_research_jobs,
+    benchmark_summary as stock_research_benchmark_summary,
+    create_job as create_stock_research_job,
+    get_job as get_stock_research_job,
+    get_report as get_stock_research_report,
+    init_schema as init_stock_research_schema,
+    list_reports as list_stock_research_reports,
+    quota_status as stock_research_quota_status,
+    recover_jobs as recover_stock_research_jobs,
+    record_benchmark_result as record_stock_research_benchmark_result,
+    retry_job as retry_stock_research_job,
+)
 
 
 BASE_DIR = Path(__file__).resolve().parents[2]
@@ -340,6 +353,15 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             if path == "/api/admin/feedback":
                 self._admin_feedback()
                 return
+            if path == "/api/admin/stock-research/jobs":
+                self._admin_stock_research_jobs()
+                return
+            if path == "/api/admin/stock-research/benchmark":
+                self._admin_stock_research_benchmark()
+                return
+            if re.fullmatch(r"/api/admin/stock-research/jobs/sr-[a-f0-9]+", path):
+                self._admin_stock_research_job_detail(path)
+                return
             if path == "/api/public/membership/plans":
                 self._public_membership_plans()
                 return
@@ -393,6 +415,15 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/ai-research/reports":
                 self._list_ai_research_reports()
+                return
+            if path == "/api/stock-research/reports":
+                self._stock_research_reports()
+                return
+            if re.fullmatch(r"/api/stock-research/jobs/sr-[a-f0-9]+/status", path):
+                self._stock_research_job_status(path)
+                return
+            if re.fullmatch(r"/api/stock-research/reports/report-[a-f0-9]+", path):
+                self._stock_research_report(path)
                 return
             if path == "/api/webhooks":
                 self._list_webhooks()
@@ -465,6 +496,12 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             if path == "/api/auth/email-preferences":
                 self._auth_email_preferences()
                 return
+            if path == "/api/stock-research/jobs":
+                self._create_stock_research_job()
+                return
+            if path == "/api/admin/stock-research/benchmark":
+                self._admin_record_stock_research_benchmark()
+                return
             if path.startswith("/api/update-notices/") and path.endswith("/ack"):
                 self._acknowledge_update_notice(path)
                 return
@@ -509,6 +546,9 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                 return
             if path.startswith("/api/admin/users/"):
                 self._admin_user_action(path)
+                return
+            if re.fullmatch(r"/api/admin/stock-research/jobs/sr-[a-f0-9]+/retry", path):
+                self._admin_retry_stock_research_job(path)
                 return
             if path == "/api/admin/update-notices" or path.startswith("/api/admin/update-notices/"):
                 self._admin_update_notice_action(path)
@@ -1466,6 +1506,68 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                 recovered=False,
             )
             self._json({"ok": False, "error": "金数据回调处理失败"}, status=500)
+
+    def _create_stock_research_job(self) -> None:
+        user = self._require_user()
+        request_payload = self._read_json_body()
+        requested_provider = str(request_payload.get("provider") or "") if user.get("role") == "admin" else ""
+        job = create_stock_research_job(
+            AUTH_DB,
+            user=user,
+            payload=request_payload,
+            request_ip=self._client_ip(),
+            provider_name=requested_provider,
+        )
+        quota = stock_research_quota_status(AUTH_DB, user_id=int(user["id"]))
+        self._json({"job": job, "quota": quota, "billing_cost": int(quota["next_credit_cost"]), "charged": False}, status=202)
+
+    def _stock_research_job_status(self, path: str) -> None:
+        user = self._require_user()
+        job_id = path.split("/")[4]
+        job = get_stock_research_job(AUTH_DB, job_id, user_id=int(user["id"]))
+        self._json({"job": job}, cache_control="no-store")
+
+    def _stock_research_reports(self) -> None:
+        user = self._require_user()
+        limit = self._query_int("limit", default=30)
+        self._json({
+            "reports": list_stock_research_reports(AUTH_DB, user_id=int(user["id"]), limit=limit),
+            "quota": stock_research_quota_status(AUTH_DB, user_id=int(user["id"])),
+        })
+
+    def _stock_research_report(self, path: str) -> None:
+        user = self._require_user()
+        report_id = path.rsplit("/", 1)[-1]
+        self._json({"report": get_stock_research_report(AUTH_DB, report_id, user_id=int(user["id"]))})
+
+    def _admin_stock_research_jobs(self) -> None:
+        self._require_admin()
+        status = self._query_value("status")
+        limit = self._query_int("limit", default=100)
+        jobs = list_admin_stock_research_jobs(AUTH_DB, status=status, limit=limit)
+        self._json({"jobs": jobs, "total": len(jobs)}, cache_control="no-store")
+
+    def _admin_stock_research_benchmark(self) -> None:
+        self._require_admin()
+        self._json(stock_research_benchmark_summary(AUTH_DB), cache_control="no-store")
+
+    def _admin_record_stock_research_benchmark(self) -> None:
+        admin = self._require_admin()
+        self._json(record_stock_research_benchmark_result(AUTH_DB, admin_id=int(admin["id"]), payload=self._read_json_body()))
+
+    def _admin_stock_research_job_detail(self, path: str) -> None:
+        self._require_admin()
+        job_id = path.rsplit("/", 1)[-1]
+        job = get_stock_research_job(AUTH_DB, job_id, admin=True)
+        payload: dict[str, object] = {"job": job}
+        if job.get("report_id"):
+            payload["report"] = get_stock_research_report(AUTH_DB, str(job["report_id"]), admin=True)
+        self._json(payload, cache_control="no-store")
+
+    def _admin_retry_stock_research_job(self, path: str) -> None:
+        self._require_admin()
+        job_id = path.split("/")[-2]
+        self._json({"job": retry_stock_research_job(AUTH_DB, job_id)}, status=202)
 
     def _admin_dashboard(self) -> None:
         self._require_admin()
@@ -5260,6 +5362,7 @@ def run(host: str = "0.0.0.0", port: int = 8600) -> None:
     load_env(BASE_DIR / ".env")
     _assert_port_available(host, port)
     init_auth_db(AUTH_DB)
+    init_stock_research_schema(AUTH_DB)
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     MARKET_DAY_REPORT_DIR.mkdir(parents=True, exist_ok=True)
@@ -5270,6 +5373,7 @@ def run(host: str = "0.0.0.0", port: int = 8600) -> None:
     _start_auction_top1_refresh_clock()
     _start_update_email_queue_worker()
     _start_bounce_imap_worker()
+    recover_stock_research_jobs(AUTH_DB)
     server = SingleInstanceThreadingHTTPServer((host, port), TradeReviewHandler)
     print(f"Trade Review API listening on http://{host}:{port}", flush=True)
     server.serve_forever()

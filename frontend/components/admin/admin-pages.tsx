@@ -253,6 +253,29 @@ type OutlookDeviceConnection = {
   interval_seconds: string;
 };
 
+type AdminStockResearchJob = {
+  id: string;
+  user_id: number;
+  username?: string;
+  email?: string;
+  subject_type: "stock" | "industry_chain";
+  subject_name: string;
+  stock_code?: string;
+  status: string;
+  stage: string;
+  provider: string;
+  model_names?: string;
+  attempts: number;
+  progress: number;
+  input_tokens: number;
+  output_tokens: number;
+  search_count: number;
+  cost_cny: number;
+  error_message?: string;
+  source_count?: number;
+  created_at: string;
+};
+
 type GrantDraft = {
   credits: string;
   reason: string;
@@ -1575,6 +1598,58 @@ export function AdminEmailsPage() {
   );
 }
 
+export function AdminStockResearchPage() {
+  const { params, replaceQuery } = useAdminQuery();
+  const status = params.get("status") || "";
+  const jobs = useAdminData<{ jobs: AdminStockResearchJob[]; total: number }>(`/api/admin/stock-research/jobs?${buildQuery({ status, limit: 200 })}`);
+  const [message, setMessage] = useState("");
+
+  async function retry(job: AdminStockResearchJob) {
+    setMessage("");
+    try {
+      await apiFetch(`/api/admin/stock-research/jobs/${job.id}/retry`, { method: "POST" });
+      setMessage(`已重新提交 ${job.subject_name}，原任务不会重复扣费。`);
+      jobs.reload();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "重试失败");
+    }
+  }
+
+  return <section className="admin-section-stack">
+    <PageToolbar title="产业链逆向研究" actions={<button type="button" onClick={jobs.reload} disabled={jobs.loading}><RefreshCw />刷新</button>} />
+    <AdminStatusFilters value={status || "all"} onChange={(value) => replaceQuery({ status: value === "all" ? "" : value })} options={["all", "queued", "running", "completed", "failed", "timed_out", "payment_required"]} />
+    {message ? <div className="admin-alert">{message}</div> : null}
+    <PageState loading={jobs.loading} error={jobs.error} hasData={Boolean(jobs.data)} onRetry={jobs.reload}>
+      <section className="admin-panel">
+        <div className="admin-panel-head"><h2>研究任务</h2><span>{jobs.data?.total || 0} 条</span></div>
+        <div className="admin-list admin-list-stack">
+          {(jobs.data?.jobs || []).map((job) => <article className="admin-list-item" key={job.id}>
+            <div>
+              <header><b>{job.subject_name}{job.stock_code ? ` · ${job.stock_code}` : ""}</b><span>{stockResearchStatusLabel(job.status)}</span></header>
+              <p>{job.subject_type === "stock" ? "单股研究" : "产业链研究"} · {job.provider} · {job.model_names || "模型待记录"} · 阶段 {job.stage} · 进度 {job.progress}%</p>
+              <small>{job.username || job.email || `用户 #${job.user_id}`} · {formatDate(job.created_at)}</small>
+              <small>输入 {job.input_tokens.toLocaleString()} · 输出 {job.output_tokens.toLocaleString()} tokens · 搜索 {job.search_count} 次 · 来源 {job.source_count || 0} 条 · ¥{Number(job.cost_cny || 0).toFixed(2)}</small>
+              {job.error_message ? <em className="admin-error-text">{job.error_message}</em> : null}
+            </div>
+            {["failed", "timed_out", "payment_required", "cancelled"].includes(job.status) ? <button className="admin-secondary-button" onClick={() => void retry(job)} type="button"><RefreshCw />人工重试</button> : null}
+          </article>)}
+          {!jobs.data?.jobs.length ? <EmptyState message="当前筛选条件下暂无研究任务。" /> : null}
+        </div>
+      </section>
+    </PageState>
+  </section>;
+}
+
+function stockResearchStatusLabel(value: string) {
+  if (value === "queued") return "排队中";
+  if (value === "running" || value === "retrying") return "生成中";
+  if (value === "completed") return "已完成";
+  if (value === "timed_out") return "已超时";
+  if (value === "payment_required") return "余额不足";
+  if (value === "failed") return "生成失败";
+  return value;
+}
+
 function PageToolbar({ title, actions }: { title: string; actions: ReactNode }) {
   return (
     <div className="admin-page-toolbar">
@@ -1814,6 +1889,7 @@ function featureLabel(value: string) {
   if (value === "auction_strength_view") return "每日 TOP5";
   if (value === "market_day_report") return "AI 当日行情";
   if (value === "ai_research_view") return "AI 研报";
+  if (value === "stock_reverse_research") return "产业链逆向研究";
   if (value === "membership_free") return "会员免扣";
   return value;
 }

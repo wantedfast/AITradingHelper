@@ -10,6 +10,7 @@ BASE_DIR = Path(__file__).resolve().parents[2]
 CACHE_PATH = BASE_DIR / "work" / "stock_code_name_cache.json"
 
 KNOWN_CODES = {
+    "华正新材": "603186",
     "东材科技": "601208",
     "黄河旋风": "600172",
     "长电科技": "600584",
@@ -27,7 +28,7 @@ KNOWN_CODES = {
 }
 
 
-def resolve_stock_code(name: str | None, *, allow_fetch: bool = True) -> str:
+def resolve_stock_code(name: str | None, *, allow_fetch: bool = True, exact_only: bool = False) -> str:
     text = _clean_name(name)
     if not text:
         return ""
@@ -42,6 +43,8 @@ def resolve_stock_code(name: str | None, *, allow_fetch: bool = True) -> str:
         return mapping[text]
 
     if not allow_fetch:
+        if exact_only:
+            return ""
         for stock_name, code in mapping.items():
             if text in stock_name or stock_name in text:
                 return code
@@ -50,6 +53,9 @@ def resolve_stock_code(name: str | None, *, allow_fetch: bool = True) -> str:
     mapping = _fetch_mapping()
     if text in mapping:
         return mapping[text]
+
+    if exact_only:
+        return ""
 
     for stock_name, code in mapping.items():
         if text in stock_name or stock_name in text:

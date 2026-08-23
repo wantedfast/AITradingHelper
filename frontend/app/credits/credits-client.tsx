@@ -430,9 +430,10 @@ function parsePositiveInteger(raw: string) {
 }
 
 function QrBox({ title, src }: { title: string; src: string }) {
+  const dimensions = title === "支付宝" ? { width: 1708, height: 2560 } : { width: 828, height: 1124 };
   return (
     <div className="billing-qr">
-      {src ? <Image src={src} alt={`${title}收款二维码`} width={180} height={180} unoptimized /> : <span>收款码暂未配置</span>}
+      {src ? <Image src={src} alt={`${title}收款二维码`} {...dimensions} sizes="(max-width: 920px) 100vw, 420px" unoptimized /> : <span>收款码暂未配置</span>}
       <code>{title}收款码</code>
     </div>
   );
