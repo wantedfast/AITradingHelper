@@ -18,3 +18,5 @@ frontend/tsconfig.tsbuildinfo
 prototypes/**/node_modules/
 prototypes/**/dist/
 prototypes/**/*.log
+/artifacts/
+/.market-day-audit-*.json

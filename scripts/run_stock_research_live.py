@@ -100,27 +100,87 @@ def render_html(report: dict) -> str:
     def esc(value: object) -> str:
         return html.escape(str(value or ""))
 
-    def section(title: str, key: str) -> str:
-        value = report.get(key) if isinstance(report.get(key), dict) else {}
-        ids = " ".join(f"<i>{esc(item)}</i>" for item in value.get("evidence_ids", []) or [])
-        return f"<article><small>{esc(title)}</small><p>{esc(value.get('summary') or '证据不足')}</p><div>{ids}</div></article>"
+    evidence_map = {str(item.get("id")): item for item in report.get("evidence") or []}
 
-    score = report.get("input_stock_score") or {}
-    ranking = "".join(
-        f"<li><b>{index}. {esc(item.get('name'))}</b><span>{esc(item.get('position'))} · {esc(item.get('reason'))}</span></li>"
-        for index, item in enumerate(report.get("core_asset_ranking") or [], 1)
+    def citations(ids: object) -> str:
+        links = []
+        for evidence_id in ids if isinstance(ids, list) else []:
+            item = evidence_map.get(str(evidence_id))
+            if item:
+                links.append(f"<a class='cite' href='{esc(item.get('url'))}' target='_blank' rel='noreferrer'>来源：{esc(item.get('title'))}</a>")
+        return "".join(links)
+
+    def text(value: object) -> str:
+        if value in (None, ""):
+            return "—"
+        if isinstance(value, list):
+            return "、".join(text(item) for item in value)
+        if isinstance(value, dict):
+            return esc(value.get("name") or value.get("label") or value.get("summary") or "—")
+        return esc(value)
+
+    def facts(items: list[tuple[str, object]]) -> str:
+        visible = [(label, value) for label, value in items if value not in (None, "", [])]
+        return "<dl class='facts'>" + "".join(f"<div><dt>{esc(label)}</dt><dd>{text(value)}</dd></div>" for label, value in visible) + "</dl>" if visible else ""
+
+    def role(index: str, title: str, value: dict, body: str = "") -> str:
+        return (
+            f"<section class='role'><header><b>{index}</b><div><small>SPECIALIST REVIEW</small><h2>{esc(title)}</h2></div></header>"
+            f"<p class='summary'>{esc(value.get('summary') or '证据不足，暂不下结论')}</p>{body}"
+            f"<div class='cites'>{citations(value.get('evidence_ids'))}</div></section>"
+        )
+
+    capital = report.get("capital_logic") or {}
+    speculation = capital.get("speculation_json") or {}
+    product = report.get("product_path") or {}
+    bom = report.get("bom") or {}
+    bottleneck = report.get("bottleneck") or {}
+    profit = report.get("profit_flow") or {}
+    judge = report.get("judge") or {}
+    path = "<div class='path'>" + "".join(f"<span>{esc(item)}</span>" for item in product.get("path") or []) + "</div>"
+    bom_rows = "".join(
+        "<tr>" + "".join(f"<td>{text(cell)}</td>" for cell in (
+            item.get("node"), item.get("chain_position"), item.get("a_share_companies"),
+            item.get("value_trend"), item.get("evidence_confidence"),
+        )) + "</tr>" for item in bom.get("items") or []
     )
+    bom_table = f"<div class='table'><table><thead><tr><th>BOM 节点</th><th>产业位置</th><th>对应 A 股</th><th>价值变化</th><th>可信度</th></tr></thead><tbody>{bom_rows}</tbody></table></div>"
+    profit_rows = "".join(
+        "<tr>" + "".join(f"<td>{text(cell)}</td>" for cell in (
+            item.get("node"), f"{item.get('stars', '—')} 星", item.get("classification"),
+            item.get("pricing_power"), item.get("profit_elasticity"),
+        )) + "</tr>" for item in profit.get("ranked_nodes") or []
+    )
+    profit_table = f"<div class='table'><table><thead><tr><th>环节</th><th>等级</th><th>定位</th><th>定价权</th><th>利润弹性</th></tr></thead><tbody>{profit_rows}</tbody></table></div>"
+    conflict_cards = "".join(
+        f"<article class='conflict'><small>争议 {index}</small><p>{esc(item.get('issue') if isinstance(item, dict) else item)}</p>"
+        f"<strong>{esc(item.get('resolution') if isinstance(item, dict) else '')}</strong>"
+        f"{citations(item.get('evidence_ids') if isinstance(item, dict) else [])}</article>"
+        for index, item in enumerate(judge.get("role_conflicts") or [], 1)
+    )
+    judge_body = f"<div class='judge'><h3>最终裁决</h3><p>{esc(judge.get('conclusion'))}</p></div><div class='conflicts'>{conflict_cards}</div>"
+    score = report.get("input_stock_score") or {}
+    def ranking(title: str, rows: list[dict]) -> str:
+        content = "".join(
+            f"<li><b>{index}</b><div><strong>{esc(item.get('name'))}{' · ' + esc(item.get('code')) if item.get('code') else ''}</strong>"
+            f"<span>{esc(item.get('position') or item.get('industry_position'))} · {esc(item.get('reason'))}</span></div>{citations(item.get('evidence_ids'))}</li>"
+            for index, item in enumerate(rows, 1)
+        )
+        return f"<section class='ranking'><h2>{esc(title)}</h2><ol>{content or '<li>证据不足，暂不排名</li>'}</ol></section>"
     evidence = "".join(
         f"<a href='{esc(item.get('url'))}' target='_blank'><b>{esc(item.get('id'))} · {esc(item.get('source_tier'))}级</b><span>{esc(item.get('title'))}</span><em>{esc(item.get('publisher'))}</em></a>"
         for item in report.get("evidence") or []
     )
     subject = report.get("subject") if isinstance(report.get("subject"), dict) else {}
+    meta = report.get("meta") or {}
     return f"""<!doctype html><html lang='zh-CN'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>华正新材产业链逆向研究</title>
-    <style>body{{margin:0;background:#080a09;color:#eee8db;font-family:Arial,'Microsoft YaHei';line-height:1.7}}main{{max-width:1100px;margin:auto;padding:48px 22px}}header{{border:1px solid #544723;border-radius:20px;padding:30px;background:#12140f}}h1{{font-size:42px;margin:8px 0}}header span,article small,h2{{color:#d4af43}}.grid{{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:16px 0}}article,section{{border:1px solid #30352e;border-radius:15px;padding:20px;background:#111410}}article p{{font-size:17px}}i{{font-style:normal;border:1px solid #5e512a;color:#d7bc65;border-radius:20px;padding:2px 7px;margin-right:6px}}.score{{display:flex;align-items:center;gap:22px}}.score strong{{font-size:55px;color:#d4af43}}li{{display:grid;padding:12px;border-top:1px solid #2a2e28}}li span{{color:#9aa099}}.evidence{{display:grid;gap:8px}}.evidence a{{display:grid;grid-template-columns:90px 1fr auto;color:#eee;text-decoration:none;border:1px solid #2c302a;border-radius:10px;padding:12px}}.evidence a b{{color:#d4af43}}.evidence em{{color:#888;font-style:normal}}@media(max-width:650px){{.grid{{grid-template-columns:1fr}}h1{{font-size:32px}}.evidence a{{grid-template-columns:1fr}}}}</style>
-    <main><header><span>SIX-ROLE REVERSE RESEARCH</span><h1>{esc(subject.get('name'))} · {esc(subject.get('code'))}</h1><p>{esc(report.get('headline'))}</p></header>
-    <div class='grid'>{section('资金为什么炒','capital_logic')}{section('利润真正流向','profit_flow')}{section('当前产业瓶颈','bottleneck')}{section('输入对象定位','positioning')}{section('最重要证伪信号','judge')}</div>
-    <section class='score'><div><h2>三高综合评分</h2><strong>{esc(score.get('core_score'))}</strong><p>壁垒 {esc(score.get('barrier'))} · 利润 {esc(score.get('profit'))} · 成长 {esc(score.get('growth'))}</p></div><small>不是上涨概率或买入评级</small></section>
-    <section><h2>同产业链核心资产</h2><ol>{ranking}</ol></section><section><h2>完整证据</h2><div class='evidence'>{evidence}</div></section></main></html>"""
+    <style>body{{margin:0;background:#080a09;color:#eee8db;font-family:Arial,'Microsoft YaHei';line-height:1.7}}main{{max-width:1160px;margin:auto;padding:48px 22px}}.hero,.role,.score,.ranking,.evidence-section{{border:1px solid #30352e;border-radius:18px;padding:24px;background:#111410}}.hero{{border-color:#544723;background:radial-gradient(circle at 90% 0,#302816 0,transparent 35%),#12140f}}h1{{font-size:42px;margin:8px 0}}h2,.hero>span,.role small{{color:#d4af43}}.meta{{color:#7d837c;font-size:13px}}.dashboard{{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:16px 0}}.dashboard article{{border:1px solid #30352e;border-radius:14px;padding:18px;background:#10130f}}.dashboard article:last-child{{grid-column:1/-1}}.dashboard small{{color:#d4af43}}.roles{{display:grid;gap:16px;margin:18px 0}}.role>header{{display:flex;gap:14px;align-items:center;border-bottom:1px solid #2c302a;padding-bottom:12px}}.role>header>b{{display:grid;place-items:center;width:42px;height:42px;border:1px solid #665629;border-radius:50%;color:#d4af43}}.role h2{{margin:0;color:#eee8db}}.summary{{font-size:17px}}.facts{{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:#30332d;border:1px solid #30332d;border-radius:11px;overflow:hidden}}.facts div{{background:#0c0f0c;padding:12px}}dt{{color:#b59a49;font-size:12px}}dd{{margin:4px 0 0}}.path{{display:flex;gap:26px;overflow:auto;padding:14px 2px}}.path span{{position:relative;white-space:nowrap;border:1px solid #574b25;border-radius:9px;padding:10px}}.path span:not(:last-child):after{{content:'→';position:absolute;right:-20px;color:#b99738}}.table{{overflow:auto;border:1px solid #30352e;border-radius:11px}}table{{width:100%;min-width:720px;border-collapse:collapse}}th,td{{text-align:left;padding:11px;border-top:1px solid #292d27}}th{{color:#d4af43;background:#17180f}}.cite{{display:inline-block;color:#d8bd69;border:1px solid #5e512a;border-radius:99px;padding:2px 8px;margin:4px;text-decoration:none;font-size:11px}}.conflicts{{display:grid;grid-template-columns:1fr 1fr;gap:9px}}.conflict{{border:1px solid #504526;border-radius:11px;padding:12px}}.conflict strong{{color:#b9bdb5}}.score{{display:flex;align-items:center;gap:22px;margin:16px 0}}.score strong{{font-size:55px;color:#d4af43}}.ranking{{margin:14px 0}}ol{{padding:0;list-style:none}}.ranking li{{display:grid;grid-template-columns:34px 1fr auto;gap:10px;padding:13px;border-top:1px solid #2a2e28}}.ranking li>b{{color:#d4af43;font-size:20px}}.ranking li div{{display:grid}}.ranking li span{{color:#969c95}}.evidence{{display:grid;gap:8px}}.evidence>a{{display:grid;grid-template-columns:90px 1fr auto;color:#eee;text-decoration:none;border:1px solid #2c302a;border-radius:10px;padding:12px}}.evidence a b{{color:#d4af43}}.evidence em{{color:#888;font-style:normal}}@media(max-width:650px){{.dashboard,.facts,.conflicts{{grid-template-columns:1fr}}.dashboard article:last-child{{grid-column:auto}}h1{{font-size:32px}}.ranking li{{grid-template-columns:28px 1fr}}.ranking .cite{{grid-column:2}}.evidence>a{{grid-template-columns:1fr}}}}</style>
+    <main><header class='hero'><span>SIX-ROLE REVERSE RESEARCH</span><h1>{esc(subject.get('name'))} · {esc(subject.get('code'))}</h1><p>{esc(report.get('headline'))}</p><div class='meta'>引擎 {esc(meta.get('provider'))} · Skill {esc(str(meta.get('skill_version') or '')[:10])} · {len(evidence_map)} 条证据 · 成本 ¥{float(meta.get('cost_cny') or 0):.2f}</div></header>
+    <div class='dashboard'><article><small>资金为什么炒</small><p>{esc(capital.get('summary'))}</p></article><article><small>利润真正流向</small><p>{esc(profit.get('summary'))}</p></article><article><small>当前产业瓶颈</small><p>{esc(bottleneck.get('summary'))}</p></article><article><small>输入对象定位</small><p>{esc((report.get('positioning') or {}).get('summary'))}</p></article><article><small>最重要证伪信号</small><p>{esc('；'.join(judge.get('disconfirming_signals') or []))}</p></article></div>
+    <section class='score'><div><h2>输入股票三高评分</h2><strong>{esc(score.get('core_score'))}</strong><p>壁垒 {esc(score.get('barrier'))} · 利润 {esc(score.get('profit'))} · 成长 {esc(score.get('growth'))}</p></div><small>不是上涨概率或买入评级</small></section>
+    {ranking('同产业链核心资产', report.get('same_chain_core_asset_ranking') or [])}{ranking('瓶颈环节榜', report.get('bottleneck_ranking') or [])}{ranking('利润捕获榜', report.get('profit_capture_ranking') or [])}
+    <div class='roles'>{role('01','资金逻辑分析',capital,facts([('事件',speculation.get('event')),('交易逻辑',speculation.get('logic')),('行业趋势',speculation.get('industry_trend')),('证据可信度',speculation.get('evidence_confidence'))]))}{role('02','产品路径映射',product,path)}{role('03','产业 BOM 拆解',bom,bom_table)}{role('04','瓶颈分析',bottleneck,facts([('当前瓶颈',bottleneck.get('current')),('瓶颈类型',bottleneck.get('type')),('谁先涨价',bottleneck.get('first_price_response')),('扩产难度',bottleneck.get('expansion_difficulty')),('利润兑现',bottleneck.get('profit_realization')),('下一瓶颈',bottleneck.get('next_bottleneck'))]))}{role('05','利润流向分析',profit,profit_table)}{role('06','基金经理裁决',judge,judge_body)}</div>
+    <section class='evidence-section'><h2>完整证据</h2><div class='evidence'>{evidence}</div></section></main></html>"""
 
 
 def replay_debug_directory(debug_dir: Path) -> int:

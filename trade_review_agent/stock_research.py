@@ -49,6 +49,17 @@ FORBIDDEN_PATTERNS = (
     r"(?:保证收益|承诺收益|收益承诺|稳赚|必涨|确定上涨|收益率可达)",
 )
 SOURCE_TIERS = {"A", "B", "C", "D"}
+SKILL_ROOT = Path(__file__).resolve().parent / "prompts" / "stock_reverse_engineering"
+SKILL_PATH = SKILL_ROOT / "SKILL.md"
+SKILL_PROTOCOL_PATH = SKILL_ROOT / "references" / "multi-agent-protocol.md"
+ROLE_PROTOCOL_NAMES = {
+    "capital_logic": "Capital Logic Analyst",
+    "product_path": "Product Path Mapper",
+    "bom": "BOM Chain Analyst",
+    "bottleneck": "Bottleneck Analyst",
+    "profit_flow": "Profit Flow Analyst",
+    "fund_manager": "Core Asset Judge / Fund Manager",
+}
 
 # These contracts intentionally mirror the local stock-reverse-engineering skill.
 # Keep role separation explicit: a generic "summary/claims" contract is not enough
@@ -88,6 +99,12 @@ ROLE_CHALLENGE_TARGETS = {
     "bottleneck": "BOM把可替代节点误判为稀缺瓶颈",
     "profit_flow": "稀缺没有转化为定价权和利润留存",
 }
+CHALLENGE_ROLE_TARGET = {
+    "product_path": "capital_logic",
+    "bom": "product_path",
+    "bottleneck": "bom",
+    "profit_flow": "bottleneck",
+}
 
 
 class StockResearchError(RuntimeError):
@@ -100,6 +117,42 @@ class CostLimitError(StockResearchError):
     pass
 
 
+@dataclass(frozen=True)
+class StockResearchSkillBundle:
+    skill_markdown: str
+    protocol_markdown: str
+    version: str
+
+    @property
+    def prompt(self) -> str:
+        return (
+            "以下两个文件是本次研究的唯一行为协议。必须逐条执行，不得用常识摘要、旧提示词或简化流程替代。\n"
+            "<SKILL.md>\n" + self.skill_markdown + "\n</SKILL.md>\n"
+            "<multi-agent-protocol.md>\n" + self.protocol_markdown + "\n</multi-agent-protocol.md>"
+        )
+
+
+def load_stock_research_skill() -> StockResearchSkillBundle:
+    """Load the canonical skill from disk for each job so prompts cannot drift."""
+    try:
+        skill = SKILL_PATH.read_text(encoding="utf-8")
+        protocol = SKILL_PROTOCOL_PATH.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise StockResearchError("产业链逆向研究协议文件缺失", code="skill_protocol_missing") from exc
+    required = (
+        "# Stock Reverse Engineering",
+        "## Mandatory Protocol",
+        "# Multi-Agent Protocol",
+        "## Shared Research Board",
+        "## Core Asset Judge / Fund Manager",
+    )
+    combined = skill + "\n" + protocol
+    if any(marker not in combined for marker in required):
+        raise StockResearchError("产业链逆向研究协议文件不完整", code="skill_protocol_invalid")
+    version = hashlib.sha256(combined.encode("utf-8")).hexdigest()
+    return StockResearchSkillBundle(skill, protocol, version)
+
+
 class Provider(Protocol):
     name: str
     usage: dict[str, Any]
@@ -107,7 +160,9 @@ class Provider(Protocol):
     def evidence(self, subject: dict[str, str]) -> dict[str, Any]: ...
     def supplement(self, subject: dict[str, str], gaps: list[str]) -> dict[str, Any]: ...
     def role(self, role: str, prompt: str) -> dict[str, Any]: ...
+    def review_roles(self, prompt: str) -> dict[str, Any]: ...
     def judge(self, prompt: str) -> dict[str, Any]: ...
+    def single_agent(self, subject: dict[str, str]) -> dict[str, Any]: ...
 
 
 @dataclass(frozen=True)
@@ -439,6 +494,7 @@ def run_job(
     allow_provider_retry: bool = True,
 ) -> None:
     started = time.monotonic()
+    provider: Provider | None = None
     try:
         with _connect(db_path) as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -455,7 +511,18 @@ def run_job(
             user_id = int(row["user_id"])
             request_ip = str(row["request_ip"])
 
+        skill_bundle = load_stock_research_skill()
         provider = (provider_factory or build_provider)(provider_name)
+        if (
+            provider_name == "luna"
+            and callable(getattr(provider, "single_agent", None))
+            and os.getenv("STOCK_RESEARCH_LUNA_SINGLE_AGENT", "1").strip().lower() not in {"0", "false", "no"}
+        ):
+            _run_single_agent_pipeline(
+                db_path, job_id=job_id, user_id=user_id, subject=subject, provider=provider,
+                billing_mode=billing_mode, request_ip=request_ip, started=started,
+            )
+            return
         evidence_pack = provider.evidence(subject.payload())
         _enforce_cost(provider.usage)
         sources = normalize_sources(evidence_pack.get("evidence"))
@@ -471,6 +538,7 @@ def run_job(
             "conflicts": [],
             "evidence_confidence": {},
             "evidence_gaps": evidence_pack.get("evidence_gaps") or [],
+            "skill_version": skill_bundle.version,
         }
         _persist_progress(db_path, job_id, "collecting_evidence", 8, board, {}, sources, provider.usage)
         if not sources:
@@ -482,7 +550,7 @@ def run_job(
 
         def execute_role(role: str) -> dict[str, Any]:
             _enforce_timeout(started)
-            prompt = build_role_prompt(role, subject.payload(), board, role_outputs, sources)
+            prompt = build_role_prompt(role, subject.payload(), board, role_outputs, sources, skill_bundle=skill_bundle)
             result = provider.role(role, prompt)
             result = normalize_role_output_for_contract(result, sources)
             try:
@@ -491,10 +559,62 @@ def run_job(
                 if exc.code not in {"citation_error", "role_contract_error", "role_challenge_missing"}:
                     raise
                 board.setdefault("contract_repairs", []).append({"role": role, "reason": exc.code})
-                result = provider.role(role, build_role_repair_prompt(role, result, sources, exc))
+                result = provider.role(role, build_role_repair_prompt(role, result, sources, exc, skill_bundle=skill_bundle))
                 result = normalize_role_output_for_contract(result, sources)
                 validate_role_output(role, result, sources)
             return result
+
+        def consolidated_review(stage: str) -> bool:
+            if os.getenv("STOCK_RESEARCH_CROSS_EXAMINATION", "1").strip().lower() in {"0", "false", "no"}:
+                return False
+            reviewer = getattr(provider, "review_roles", None)
+            if not callable(reviewer):
+                return False
+            reviewed = reviewer(build_cross_examination_prompt(
+                subject.payload(),
+                board,
+                role_outputs,
+                sources,
+                skill_bundle=skill_bundle,
+                stage=stage,
+            ))
+            def validate_review(payload: Any) -> dict[str, dict[str, Any]]:
+                revised_roles = payload.get("revised_roles") if isinstance(payload, dict) else None
+                if not isinstance(revised_roles, dict):
+                    raise StockResearchError("交叉质询没有返回完整角色修订", code="role_contract_error")
+                missing = [role for role in ROLE_ORDER[:-1] if not isinstance(revised_roles.get(role), dict)]
+                if missing:
+                    raise StockResearchError("交叉质询缺少角色修订: " + ",".join(missing), code="role_contract_error")
+                normalized: dict[str, dict[str, Any]] = {}
+                for role in ROLE_ORDER[:-1]:
+                    revised = normalize_role_output_for_contract(revised_roles[role], sources)
+                    validate_role_output(role, revised, sources)
+                    normalized[role] = revised
+                return normalized
+
+            try:
+                normalized_roles = validate_review(reviewed)
+            except StockResearchError as exc:
+                if exc.code not in {"citation_error", "role_contract_error", "role_challenge_missing"}:
+                    raise
+                board.setdefault("contract_repairs", []).append({"role": "cross_examination", "stage": stage, "reason": exc.code})
+                reviewed = reviewer(build_cross_examination_repair_prompt(
+                    reviewed, sources, exc, skill_bundle=skill_bundle
+                ))
+                normalized_roles = validate_review(reviewed)
+            for role, revised in normalized_roles.items():
+                role_outputs[role] = revised
+                merge_role_into_board(board, role, revised)
+            conflicts = reviewed.get("conflicts") or []
+            board.setdefault("revision_log", []).append({
+                "stage": stage,
+                "reviewed_roles": list(ROLE_ORDER[:-1]),
+                "conflict_count": len(conflicts) if isinstance(conflicts, list) else 0,
+            })
+            if isinstance(conflicts, list):
+                board["conflicts"] = conflicts
+            _enforce_cost(provider.usage)
+            return True
 
         # The skill protocol starts these two independent research roles in
         # parallel. They share the same evidence pack but cannot see each
@@ -518,6 +638,10 @@ def run_job(
             _persist_progress(db_path, job_id, role, progress, board, role_outputs, sources, provider.usage)
             _enforce_cost(provider.usage)
 
+        # One shared-board hearing preserves the skill's cross-role challenge
+        # semantics without paying for a separate model round-trip per edge.
+        consolidated_review("initial_cross_examination")
+
         # The skill permits one evidence-gap round. Search material gaps raised by
         # any role, then expose the additions to the judge rather than inventing
         # conclusions to fill an incomplete chain.
@@ -535,12 +659,16 @@ def run_job(
             sources = merge_supplement_sources(sources, additions)
             board["supplemental_facts"] = supplement.get("facts") or []
             board["supplement_search_completed"] = True
+            refreshed_roles: list[str] = []
+            if additions and consolidated_review("post_supplement_cross_examination"):
+                refreshed_roles = list(ROLE_ORDER[:-1])
+            board["supplement_refreshed_roles"] = refreshed_roles
             _persist_progress(db_path, job_id, "evidence_gap_search", 82, board, role_outputs, sources, provider.usage)
             _enforce_cost(provider.usage)
 
         _enforce_timeout(started)
         _persist_progress(db_path, job_id, "fund_manager", 86, board, role_outputs, sources, provider.usage)
-        judge_prompt = build_judge_prompt(subject.payload(), board, role_outputs, sources)
+        judge_prompt = build_judge_prompt(subject.payload(), board, role_outputs, sources, skill_bundle=skill_bundle)
         report = provider.judge(judge_prompt)
         report = finalize_report(report, subject, board, role_outputs, sources, provider.name, provider.usage)
         validate_report(report)
@@ -559,10 +687,112 @@ def run_job(
         _mark_failed(db_path, job_id, "payment_required" if exc.status == 402 else "failed", "credit_error", exc.message)
     except Exception as exc:
         code = exc.code if isinstance(exc, StockResearchError) else "unexpected_error"
-        if allow_provider_retry and code in {"unexpected_error", "provider_json_error", "provider_error"} and _queue_single_provider_retry(db_path, job_id, str(exc)):
+        usage = provider.usage if provider is not None else {}
+        _persist_usage_only(db_path, job_id, usage)
+        spent_tokens = int(usage.get("input_tokens", 0)) + int(usage.get("output_tokens", 0))
+        # Retry only failures that did not consume a substantive model response.
+        # Repeating a long malformed response can double the real provider bill.
+        if (
+            allow_provider_retry
+            and spent_tokens == 0
+            and code in {"unexpected_error", "provider_json_error", "provider_error"}
+            and _queue_single_provider_retry(db_path, job_id, str(exc))
+        ):
             start_job(db_path, job_id, provider_factory=provider_factory)
             return
         _mark_failed(db_path, job_id, "timed_out" if code == "timeout" else "failed", code, str(exc))
+
+
+def _run_single_agent_pipeline(
+    db_path: Path, *, job_id: str, user_id: int, subject: NormalizedSubject,
+    provider: Provider, billing_mode: str, request_ip: str, started: float,
+) -> None:
+    """Run the approved one-call Luna research protocol and keep billing atomic."""
+    from scripts.run_stock_research_single_agent import (
+        remove_redundant_dangling_evidence_ids,
+        validate_report as validate_single_agent_report,
+    )
+
+    initial_board = {"subject": subject.payload(), "execution_mode": "luna_single_agent"}
+    _persist_progress(db_path, job_id, "single_agent_research", 12, initial_board, {}, [], provider.usage)
+    report = provider.single_agent(subject.payload())
+    _enforce_timeout(started)
+    _enforce_cost(provider.usage)
+    if not isinstance(report, dict):
+        raise StockResearchError("单 Agent 没有返回结构化报告", code="provider_json_error")
+    if subject.type == "industry_chain" and report.get("input_stock_score") is None:
+        report.pop("input_stock_score", None)
+    removed_ids = remove_redundant_dangling_evidence_ids(report)
+    report["schema_version"] = 2
+    report["subject"] = subject.payload()
+    sources = report.get("evidence") if isinstance(report.get("evidence"), list) else []
+    validation_board = {
+        **initial_board,
+        "source_count": len(sources),
+        "provider_response_received": True,
+    }
+    _persist_progress(
+        db_path, job_id, "single_agent_validation", 88,
+        validation_board, {}, sources, provider.usage,
+    )
+    if not sources:
+        raise StockResearchError("未找到可验证的一手或权威证据", code="evidence_missing")
+    if not any(isinstance(item, dict) and item.get("source_tier") in {"A", "B"} for item in sources):
+        raise StockResearchError("证据仅有概念标签或低等级来源", code="evidence_quality_low")
+
+    single_validation = validate_single_agent_report(report)
+    if not single_validation["all_evidence_ids_exist"]:
+        raise StockResearchError("报告仍包含无效证据编号", code="citation_error")
+    if single_validation["self_audited_decision_pass_rate"] < 0.95:
+        raise StockResearchError("关键结论的证据语义自审未达到95%", code="citation_semantic_error")
+    if not single_validation["score_formula_valid"] or not single_validation["ranking_descending"]:
+        raise StockResearchError("三高评分或同链排名未通过校验", code="score_error")
+
+    prompt_version = hashlib.sha256(
+        (SKILL_ROOT / "SINGLE_AGENT_PROMPT.md").read_bytes()
+    ).hexdigest()
+    duration_seconds = round(float(getattr(provider, "last_duration_seconds", 0.0)) or (time.monotonic() - started), 3)
+    report["meta"] = {
+        **(report.get("meta") if isinstance(report.get("meta"), dict) else {}),
+        "provider": provider.name,
+        "execution_mode": "single_agent",
+        "prompt_version": prompt_version,
+        "input_tokens": int(provider.usage.get("input_tokens", 0)),
+        "output_tokens": int(provider.usage.get("output_tokens", 0)),
+        "search_count": int(provider.usage.get("search_count", 0)),
+        "cost_cny": round(float(provider.usage.get("cost_cny", 0)), 4),
+        "duration_seconds": duration_seconds,
+        "removed_redundant_dangling_evidence_ids": removed_ids,
+        "validation": single_validation,
+    }
+    report["core_asset_ranking"] = report.get("same_chain_core_asset_ranking") or []
+    role_outputs = {
+        key: report.get(key) for key in ("capital_logic", "product_path", "bom", "bottleneck", "profit_flow", "judge")
+    }
+    board = {
+        "subject": subject.payload(),
+        "input_stocks": [subject.payload()] if subject.type == "stock" else [],
+        "current_catalysts": (report.get("capital_logic") or {}).get("current_catalysts") or [],
+        "product_paths": [(report.get("product_path") or {}).get("path") or []],
+        "bom_tree": (report.get("bom") or {}).get("tree") or {},
+        "bottlenecks": [report.get("bottleneck") or {}],
+        "profit_flow": (report.get("profit_flow") or {}).get("ranked_nodes") or [],
+        "conflicts": (report.get("judge") or {}).get("role_conflicts") or [],
+        "evidence_confidence": report.get("audit") or {},
+        "execution_mode": "luna_single_agent",
+        "prompt_version": prompt_version,
+    }
+    report["role_outputs"] = role_outputs
+    report["research_board"] = board
+    _persist_progress(db_path, job_id, "fund_manager", 92, board, role_outputs, sources, provider.usage)
+    validate_report(report)
+    now = _now()
+    _store_report_charge_and_complete(
+        db_path, job_id=job_id, report_id=f"report-{job_id[3:]}", user_id=user_id,
+        subject=subject, report=report, provider=provider.name, usage=provider.usage,
+        duration=duration_seconds, sources=sources, board=board,
+        role_outputs=role_outputs, request_ip=request_ip, now=now, billing_mode=billing_mode,
+    )
 
 
 def _queue_single_provider_retry(db_path: Path, job_id: str, message: str) -> bool:
@@ -590,6 +820,22 @@ def _persist_progress(
             (stage, progress, json.dumps(board, ensure_ascii=False), json.dumps(roles, ensure_ascii=False),
              json.dumps(sources, ensure_ascii=False), int(usage.get("input_tokens", 0)), int(usage.get("output_tokens", 0)),
              int(usage.get("search_count", 0)), float(usage.get("cost_cny", 0)), _now(), job_id),
+        )
+
+
+def _persist_usage_only(db_path: Path, job_id: str, usage: dict[str, Any]) -> None:
+    """Keep actual provider spend visible when report validation rejects output."""
+    if not usage:
+        return
+    with _connect(db_path) as conn:
+        conn.execute(
+            """UPDATE stock_research_jobs SET input_tokens=?,output_tokens=?,search_count=?,cost_cny=?,updated_at=?
+               WHERE id=?""",
+            (
+                int(usage.get("input_tokens", 0)), int(usage.get("output_tokens", 0)),
+                int(usage.get("search_count", 0)), float(usage.get("cost_cny", 0)),
+                _now(), job_id,
+            ),
         )
 
 
@@ -635,7 +881,7 @@ def _store_report_charge_and_complete(
                 input_tokens,output_tokens,search_count,cost_cny,duration_seconds,source_count,created_at)
                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
-                report_id, job_id, user_id, subject.type, subject.name, subject.code, 1,
+                report_id, job_id, user_id, subject.type, subject.name, subject.code, int(report.get("schema_version") or 1),
                 json.dumps(report, ensure_ascii=False), provider, _configured_model_names(provider), int(usage.get("input_tokens", 0)),
                 int(usage.get("output_tokens", 0)), int(usage.get("search_count", 0)),
                 float(usage.get("cost_cny", 0)), duration, len(sources), now,
@@ -914,33 +1160,16 @@ def _normalize_source_tier(item: dict[str, Any]) -> str:
     return "D"
 
 
-def build_role_prompt(role: str, subject: dict[str, str], board: dict[str, Any], roles: dict[str, Any], sources: list[dict[str, Any]]) -> str:
-    instructions = {
-        "capital_logic": (
-            "你是资金逻辑分析师。识别资金现在交易该对象的原因，严格区分事件驱动、趋势驱动、价格驱动、"
-            "国产替代和情绪驱动。不得把概念标签当证据，也不得直接跳到产业链赢家。必须主动挑战"
-            "市场情绪标签与已验证产品暴露不匹配的情况。"
-        ),
-        "product_path": (
-            "你是产品路径映射师。把对象逆向映射到最窄的真实产品线，再到部件/系统和最终需求；"
-            "明确它是核心暴露、边缘暴露、相邻暴露还是待验证。必须主动挑战输入对象只有间接或弱暴露的情况。"
-        ),
-        "bom": (
-            "你是BOM产业链分析师。以最终产品为根节点，逐层拆解材料、设备、精密加工、封装、测试、连接器、"
-            "耗材、供电、冷却和配套基础设施（不适用项明确标注），直到能映射A股公司。必须挑战产品路径中的跳跃，"
-            "并在路径变化时以最新路径重建BOM。"
-        ),
-        "bottleneck": (
-            "你是瓶颈分析师。必须逐项回答：当前最紧节点；技术/认证/设备交期/产能/原料/客户资格/专利/良率/政策"
-            "中的瓶颈类型；需求增加时谁最先涨价；谁扩产最慢及原因；瓶颈带来利润率扩张还是只有量增；当前缓解后"
-            "瓶颈迁往哪里；每个节点对应哪些A股。必须挑战BOM中缺失的稀缺节点和没有定价权的伪瓶颈。"
-        ),
-        "profit_flow": (
-            "你是利润流向分析师。判断谁先变紧、谁先涨价、谁有定价权、谁利润弹性最高、谁只增收不增利。"
-            "每个节点必须归入五档之一：5星核心瓶颈、4星强受益、3星量增、2星主题跟随、1星伪核心。"
-            "必须挑战‘稀缺就一定能留下利润’以及高交易热度但低利润/易替代的节点。"
-        ),
-    }
+def build_role_prompt(
+    role: str,
+    subject: dict[str, str],
+    board: dict[str, Any],
+    roles: dict[str, Any],
+    sources: list[dict[str, Any]],
+    *,
+    skill_bundle: StockResearchSkillBundle | None = None,
+) -> str:
+    bundle = skill_bundle or load_stock_research_skill()
     schemas = {
         "capital_logic": (
             '{stock:string,speculation_logic:string,trigger_event:string,core_driver:string,'
@@ -981,7 +1210,9 @@ def build_role_prompt(role: str, subject: dict[str, str], board: dict[str, Any],
         ),
     }
     return _json_prompt(
-        instructions[role] + f"\n你在固定挑战链中的目标是：{ROLE_CHALLENGE_TARGETS[role]}。",
+        bundle.prompt
+        + f"\n\n当前只执行协议中的角色：{ROLE_PROTOCOL_NAMES[role]}。"
+        + f"\n固定挑战目标：{ROLE_CHALLENGE_TARGETS[role]}。不得跳过协议中的必答项。",
         subject, board, roles, sources,
         "只输出严格JSON，契约=" + schemas[role] + "。每项重要事实、路径节点、表格行和挑战必须引用证据ID；证据不足写pending/待验证，不得补造。"
     )
@@ -992,10 +1223,14 @@ def build_role_repair_prompt(
     previous: Any,
     sources: list[dict[str, Any]],
     error: StockResearchError,
+    *,
+    skill_bundle: StockResearchSkillBundle | None = None,
 ) -> str:
+    bundle = skill_bundle or load_stock_research_skill()
     known_ids = [str(item.get("id")) for item in sources if item.get("id")]
     return (
-        f"你正在修复 {role} 角色的JSON契约错误：{error}。"
+        bundle.prompt
+        + f"\n你正在修复 {ROLE_PROTOCOL_NAMES[role]} 角色的JSON契约错误：{error}。"
         "只能修正JSON结构、evidence_ids和必需的挑战字段，不得新增事实、来源或投资建议。"
         "必须保留并补齐该角色专属字段："
         + json.dumps(ROLE_REQUIRED_FIELDS[role], ensure_ascii=False)
@@ -1008,7 +1243,93 @@ def build_role_repair_prompt(
     )
 
 
-def build_judge_prompt(subject: dict[str, str], board: dict[str, Any], roles: dict[str, Any], sources: list[dict[str, Any]]) -> str:
+def build_role_revision_prompt(
+    target_role: str,
+    challenger_role: str,
+    challenge: list[dict[str, Any]],
+    original: dict[str, Any],
+    subject: dict[str, str],
+    board: dict[str, Any],
+    roles: dict[str, Any],
+    sources: list[dict[str, Any]],
+    *,
+    skill_bundle: StockResearchSkillBundle | None = None,
+) -> str:
+    bundle = skill_bundle or load_stock_research_skill()
+    base = build_role_prompt(
+        target_role, subject, board, roles, sources, skill_bundle=bundle
+    )
+    return (
+        base
+        + "\n\n这是协议规定的交叉质询修订轮。"
+        + f"{ROLE_PROTOCOL_NAMES[challenger_role]} 对你的产物提出了以下挑战："
+        + json.dumps(challenge, ensure_ascii=False)
+        + "\n你的原始产物="
+        + json.dumps(original, ensure_ascii=False)
+        + "\n必须逐项回应挑战：证据支持则修订；证据不支持则保留原判断并在challenges.resolution说明理由。"
+        + "不得删除原有有效证据，不得补造事实。只输出完整的修订后角色JSON。"
+    )
+
+
+def build_cross_examination_prompt(
+    subject: dict[str, str],
+    board: dict[str, Any],
+    roles: dict[str, Any],
+    sources: list[dict[str, Any]],
+    *,
+    skill_bundle: StockResearchSkillBundle | None = None,
+    stage: str = "initial_cross_examination",
+) -> str:
+    bundle = skill_bundle or load_stock_research_skill()
+    role_contracts = {role: list(ROLE_REQUIRED_FIELDS[role]) for role in ROLE_ORDER[:-1]}
+    return _json_prompt(
+        bundle.prompt
+        + "\n\n现在执行共享研究板的统一交叉质询轮。五个研究角色必须逐项阅读其他角色产物，"
+        "完成协议规定的挑战：资金标签与真实产品暴露、产品路径跳跃、BOM遗漏稀缺节点、"
+        "瓶颈是否真正转化为定价权和利润。不能只写泛泛的‘同意’。"
+        + f"\n审议阶段={stage}。若证据支持挑战则修订；若不支持则保留判断并在 challenges.resolution 说明。",
+        subject,
+        board,
+        roles,
+        sources,
+        "只输出严格JSON：{revised_roles:{capital_logic:完整角色JSON,product_path:完整角色JSON,"
+        "bom:完整角色JSON,bottleneck:完整角色JSON,profit_flow:完整角色JSON},"
+        "conflicts:[{issue,roles:[角色名],resolution,evidence_ids:[E001]}]}。"
+        "revised_roles 必须包含全部五个角色，即使某角色结论无需变化也要原样返回；每个角色必填字段="
+        + json.dumps(role_contracts, ensure_ascii=False)
+        + "。不得新增证据ID，不得补造事实。",
+    )
+
+
+def build_cross_examination_repair_prompt(
+    previous: Any,
+    sources: list[dict[str, Any]],
+    error: StockResearchError,
+    *,
+    skill_bundle: StockResearchSkillBundle | None = None,
+) -> str:
+    bundle = skill_bundle or load_stock_research_skill()
+    known_ids = [str(item.get("id")) for item in sources if item.get("id")]
+    return (
+        bundle.prompt
+        + "\n\n统一交叉质询的JSON未通过后端契约校验：" + str(error)
+        + "。只修复 revised_roles 的结构、缺失字段、空 evidence_ids 或无效证据ID；"
+        "不得改变事实判断、不得增加新来源、不得删除任何角色。"
+        + "\n允许使用的证据ID=" + json.dumps(known_ids, ensure_ascii=False)
+        + "\n上一次输出=" + json.dumps(previous, ensure_ascii=False)
+        + "\n只输出完整严格JSON {revised_roles:{capital_logic,product_path,bom,bottleneck,profit_flow},conflicts:[...]}。"
+    )
+
+
+def build_judge_prompt(
+    subject: dict[str, str],
+    board: dict[str, Any],
+    roles: dict[str, Any],
+    sources: list[dict[str, Any]],
+    *,
+    skill_bundle: StockResearchSkillBundle | None = None,
+) -> str:
+    bundle = skill_bundle or load_stock_research_skill()
     stock_extra = (
         "股票输入必须生成input_stock_score和same_chain_core_asset_ranking两张三高表。三高均为1-10分、一位小数，"
         "core_score=0.4*barrier+0.3*profit+0.3*growth。same_chain_core_asset_ranking必须列出BOM/瓶颈/利润角色发现的"
@@ -1043,7 +1364,8 @@ judge:{conclusion,classifications:{emotion_leader,industry_leader,capacity_core,
         "excerpt": str(item.get("excerpt") or "")[:280],
     } for item in sources]
     return _json_prompt(
-        "你是第六角色基金经理与核心资产裁决者。必须阅读并裁决前五角色全部产物，明确区分资金炒作逻辑和产业利润逻辑；"
+        bundle.prompt
+        + "\n\n当前只执行协议中的第六角色 Core Asset Judge / Fund Manager。必须阅读并裁决前五角色全部产物，明确区分资金炒作逻辑和产业利润逻辑；"
         "判断输入对象赚产业利润还是主要赚情绪溢价；完成情绪龙头/产业龙头/容量核心/卖铲子/高弹性/补涨/伪核心等定位。"
         "所有实质冲突必须写明参与角色、裁决和证据；证据不足必须降级或标记待验证，不得补造。" + stock_extra,
         subject, judge_board, roles, judge_sources, schema
@@ -1195,6 +1517,8 @@ def finalize_report(report: Any, subject: NormalizedSubject, board: dict[str, An
     report["role_outputs"] = roles
     report["meta"] = {
         "provider": provider,
+        "skill_name": "stock-reverse-engineering",
+        "skill_version": str(board.get("skill_version") or ""),
         "input_tokens": int(usage.get("input_tokens", 0)),
         "output_tokens": int(usage.get("output_tokens", 0)),
         "search_count": int(usage.get("search_count", 0)),
@@ -1336,6 +1660,7 @@ class BaseProvider:
 
     def __init__(self) -> None:
         self.usage: dict[str, Any] = {"input_tokens": 0, "output_tokens": 0, "search_count": 0, "cost_cny": 0.0}
+        self.last_duration_seconds = 0.0
         self._state_lock = threading.Lock()
         try:
             timeout = int(os.getenv("STOCK_RESEARCH_TIMEOUT_SECONDS", str(DEFAULT_TIMEOUT_SECONDS)))
@@ -1354,7 +1679,7 @@ class BaseProvider:
         remaining = self.deadline - time.monotonic()
         if remaining <= 0:
             raise StockResearchError("研究任务超过5分钟", code="timeout")
-        return max(1.0, min(180.0, remaining))
+        return max(1.0, min(300.0, remaining))
 
 
 class LunaProvider(BaseProvider):
@@ -1368,8 +1693,10 @@ class LunaProvider(BaseProvider):
             raise StockResearchError("服务器未配置 OPENAI_API_KEY", code="provider_not_configured")
 
     def evidence(self, subject: dict[str, str]) -> dict[str, Any]:
+        bundle = load_stock_research_skill()
         prompt = (
-            "你是产业链逆向研究的证据编辑。最多使用8次Web Search，收集10-15条可验证证据，并平衡覆盖："
+            bundle.prompt
+            + "\n\n你是六角色开始前的证据编辑。最多使用8次Web Search，收集10-15条可验证证据，并平衡覆盖："
             "①输入对象近期资金交易催化、价格或公告；②真实产品暴露、财务和产能；③从最终产品/BOM/瓶颈/利润池反推的"
             "至少3家同链A股候选公司及其主营、壁垒、盈利和成长证据。不能把同花顺、东方财富或券商概念标签当证明。"
             "优先公司公告、财报、交易所、政府和行业机构；"
@@ -1380,12 +1707,65 @@ class LunaProvider(BaseProvider):
         )
         return self._call(prompt, web=True)
 
+    def single_agent(self, subject: dict[str, str]) -> dict[str, Any]:
+        from scripts.run_stock_research_single_agent import load_prompt, report_schema
+
+        subject_type = str(subject.get("type") or "stock")
+        prompt = load_prompt(str(subject.get("name") or ""), str(subject.get("code") or ""), subject_type)
+        body: dict[str, Any] = {
+            "model": self.model,
+            "input": prompt,
+            "reasoning": {"effort": os.getenv("STOCK_RESEARCH_LUNA_REASONING", "high")},
+            "tools": [{"type": "web_search"}],
+            "text": {
+                "format": {
+                    "type": "json_schema",
+                    "name": "stock_research_single_agent",
+                    "strict": True,
+                    "schema": report_schema(subject_type),
+                }
+            },
+            "max_output_tokens": int(os.getenv("STOCK_RESEARCH_LUNA_MAX_OUTPUT_TOKENS", "30000")),
+        }
+        request = urllib.request.Request(
+            os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/") + "/responses",
+            data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+            headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}, method="POST",
+        )
+        request_started = time.monotonic()
+        try:
+            with _provider_urlopen(
+                request, timeout=self._request_timeout(), proxy_url=os.getenv("OPENAI_PROXY_URL", "").strip()
+            ) as response:
+                data = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")[:2000]
+            raise StockResearchError(f"Luna HTTP {exc.code}: {detail}", code="provider_error") from exc
+        self.last_duration_seconds = round(time.monotonic() - request_started, 3)
+        self._write_debug_response(data)
+        usage = data.get("usage") or {}
+        input_tokens = int(usage.get("input_tokens") or 0)
+        output_tokens = int(usage.get("output_tokens") or 0)
+        searches = sum(1 for item in data.get("output", []) if isinstance(item, dict) and item.get("type") == "web_search_call")
+        usd = input_tokens * 0.20 / 1_000_000 + output_tokens * 1.20 / 1_000_000 + searches * 0.01
+        self._add_usage(input_tokens, output_tokens, usd * float(os.getenv("STOCK_RESEARCH_USD_CNY", "7.2")), searches)
+        response_text = extract_responses_text(data)
+        if not response_text.strip():
+            reason = str((data.get("incomplete_details") or {}).get("reason") or data.get("status") or "empty_output")
+            raise StockResearchError(f"Luna 未返回完整结构化 JSON（{reason}）", code="provider_json_error")
+        return _parse_json(response_text)
+
     def role(self, role: str, prompt: str) -> dict[str, Any]:
         return self._call(prompt, web=False)
 
+    def review_roles(self, prompt: str) -> dict[str, Any]:
+        return self._call(prompt, web=False)
+
     def supplement(self, subject: dict[str, str], gaps: list[str]) -> dict[str, Any]:
+        bundle = load_stock_research_skill()
         return self._call(
-            "这是唯一一轮证据缺口补搜，最多使用5次Web Search。优先补齐同产业链A股比较：从产品路径、BOM、当前/下一瓶颈和"
+            bundle.prompt
+            + "\n\n这是协议允许的证据缺口补搜。最多使用5次Web Search。优先补齐同产业链A股比较：从产品路径、BOM、当前/下一瓶颈和"
             "利润池寻找比输入对象更纯粹或更核心的A股表达，并用公告、财报、交易所或行业机构证据验证主营、壁垒、利润和成长；"
             "同时补齐下列角色提出的实质缺口，不重复已有搜索。只能输出严格JSON "
             "{facts:[{topic,fact,evidence_ids:[E001]}],evidence:[{id,title,url,publisher,published_at,source_tier,excerpt}]}，"
@@ -1475,8 +1855,10 @@ class DoubaoDeepSeekProvider(BaseProvider):
             raise StockResearchError("服务器未配置 ARK_API_KEY 或 DEEPSEEK_API_KEY", code="provider_not_configured")
 
     def evidence(self, subject: dict[str, str]) -> dict[str, Any]:
+        bundle = load_stock_research_skill()
         response = self._doubao_search(
-            "收集8-15条A股产业链证据，优先公告财报交易所政府行业机构，输出严格JSON，字段facts/evidence_gaps/evidence。对象="
+            bundle.prompt
+            + "\n\n收集8-15条A股产业链证据，优先公告财报交易所政府行业机构，输出严格JSON，字段facts/evidence_gaps/evidence。对象="
             + json.dumps(subject, ensure_ascii=False),
         )
         usage = response.get("usage") or {}
@@ -1487,9 +1869,14 @@ class DoubaoDeepSeekProvider(BaseProvider):
     def role(self, role: str, prompt: str) -> dict[str, Any]:
         return self._deepseek(prompt, self.flash_model)
 
+    def review_roles(self, prompt: str) -> dict[str, Any]:
+        return self._deepseek(prompt, self.flash_model)
+
     def supplement(self, subject: dict[str, str], gaps: list[str]) -> dict[str, Any]:
+        bundle = load_stock_research_skill()
         response = self._doubao_search(
-            "只补齐以下产业链研究证据缺口，输出严格JSON facts/evidence。对象="
+            bundle.prompt
+            + "\n\n只补齐以下产业链研究证据缺口，输出严格JSON facts/evidence。对象="
             + json.dumps(subject, ensure_ascii=False) + "\n缺口=" + json.dumps(gaps, ensure_ascii=False),
         )
         usage = response.get("usage") or {}
