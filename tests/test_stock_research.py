@@ -13,6 +13,8 @@ from unittest.mock import patch
 
 from trade_review_agent.auth_system import AuthError, init_auth_db
 from trade_review_agent.stock_research import (
+    build_judge_prompt,
+    build_role_prompt,
     create_job,
     _provider_urlopen,
     finalize_report,
@@ -20,6 +22,9 @@ from trade_review_agent.stock_research import (
     get_report,
     init_schema,
     list_reports,
+    merge_supplement_sources,
+    normalize_sources,
+    normalize_role_output_for_contract,
     normalize_subject,
     quota_status,
     recover_jobs,
@@ -54,28 +59,64 @@ class FakeProvider:
         return {"facts": ["事实"], "evidence_gaps": [], "evidence": EVIDENCE}
 
     def role(self, role, prompt):
-        return {"summary": f"{role}结论", "claims": [{"claim": "可验证结论", "evidence_ids": ["E001"], "confidence": "high"}], "challenges": ["检查上一角色假设"], "evidence_gaps": []}
+        common = {
+            "claims": [{"claim": "可验证结论", "evidence_ids": ["E001"], "confidence": "high"}],
+            "challenges": [{"target": "previous_role", "issue": "检查上一角色假设", "resolution": "保留并降级未验证部分", "evidence_ids": ["E001"]}],
+            "evidence_gaps": [],
+        }
+        if role == "capital_logic":
+            return {**common, "stock": self.subject.get("name", "华正新材"), "speculation_logic": "需求催化",
+                    "trigger_event": "行业需求改善", "core_driver": "国产替代", "emotion_strength": "medium",
+                    "evidence_confidence": "high", "current_catalysts": [{"event": "需求改善", "type": "trend", "evidence_ids": ["E001"]}]}
+        if role == "product_path":
+            return {**common, "stock": self.subject.get("name", "华正新材"), "real_product_line": "覆铜板",
+                    "final_product": "AI服务器", "product_path": [
+                        {"node": "华正新材", "node_type": "stock", "evidence_ids": ["E001"]},
+                        {"node": "覆铜板", "node_type": "material", "evidence_ids": ["E001"]},
+                        {"node": "PCB", "node_type": "component", "evidence_ids": ["E001"]},
+                        {"node": "AI服务器", "node_type": "final_demand", "evidence_ids": ["E002"]},
+                    ], "exposure_judgment": "core", "evidence_confidence": "medium"}
+        if role == "bom":
+            return {**common, "final_product": "AI服务器",
+                    "bom_tree": {"name": "AI服务器", "children": [{"name": "PCB", "node_type": "component", "evidence_ids": ["E001"]}]},
+                    "bom_table": [{"node": "覆铜板", "chain_position": "upstream", "a_share_companies": [{"name": "生益科技", "code": "600183"}],
+                                   "value_trend": "需求改善", "evidence_confidence": "medium", "evidence_ids": ["E001"]}]}
+        if role == "bottleneck":
+            return {**common, "current_bottleneck": "高端材料认证", "bottleneck_type": "structural",
+                    "first_price_response": "认证材料", "expansion_difficulty": "客户认证周期长",
+                    "profit_realization": "验证后可能扩张", "next_bottleneck": "良率",
+                    "a_share_mapping": [{"node": "高端覆铜板", "companies": [{"name": "生益科技", "code": "600183"}],
+                                         "reason": "认证积累", "evidence_ids": ["E001"]}], "evidence_confidence": "medium"}
+        return {**common, "ranked_nodes": [{"node": "高端覆铜板", "stars": 4, "classification": "strong_beneficiary",
+                                            "first_price_increase": "认证产品", "supply_tightness": "中等", "pricing_power": "较强",
+                                            "profit_elasticity": "较高", "a_share_companies": [{"name": "生益科技", "code": "600183"}],
+                                            "evidence_ids": ["E001"]}], "first_tightening": "认证材料",
+                "first_price_increase": "高端覆铜板", "pricing_power": "头部供应商",
+                "highest_earnings_elasticity": "高端材料", "margin_squeezed_nodes": ["通用加工"]}
 
     def judge(self, prompt):
         section = lambda summary: {"summary": summary, "evidence_ids": ["E001"]}
         report = {
             "headline": "产业需求存在，但利润只集中在高壁垒环节",
             "capital_logic": section("资金围绕需求催化交易"),
-            "product_path": section("产品进入关键部件"),
-            "bom": {**section("材料、设备、封装与测试"), "items": ["材料"]},
-            "bottleneck": section("认证周期是当前瓶颈"),
-            "profit_flow": section("利润集中在有认证壁垒的供应商"),
+            "product_path": {**section("产品进入关键部件"), "path": ["华正新材", "覆铜板", "PCB", "AI服务器"], "exposure_judgment": "core"},
+            "bom": {**section("材料、设备、封装与测试"), "tree": {"name": "AI服务器"}, "items": [{"node": "覆铜板", "evidence_ids": ["E001"]}]},
+            "bottleneck": {**section("认证周期是当前瓶颈"), "current": "认证", "type": "structural"},
+            "profit_flow": {**section("利润集中在有认证壁垒的供应商"), "ranked_nodes": [{"node": "覆铜板", "stars": 4, "evidence_ids": ["E001"]}]},
             "positioning": {**section("具备产品卡位"), "label": "产业龙头"},
-            "input_stock_score": {"barrier": 80, "profit": 70, "growth": 60, "core_score": 71.0, "evidence_ids": ["E001"]},
-            "core_asset_ranking": [{"name": "样本公司", "position": "产业龙头", "reason": "壁垒较高", "evidence_ids": ["E001"]}],
-            "judge": {**section("证据支持产业定位"), "conclusion": "核心但仍需验证", "role_conflicts": ["需求与利润不同步"], "disconfirming_signals": ["订单未兑现"]},
+            "input_stock_score": {"barrier": 8, "profit": 7, "growth": 6, "core_score": 7.1, "evidence_ids": ["E001"]},
+            "same_chain_core_asset_ranking": [{"name": "生益科技", "code": "600183", "position": "产业龙头", "reason": "壁垒较高",
+                                                "barrier": 9, "profit": 8, "growth": 7, "core_score": 8.1, "evidence_ids": ["E001"]}],
+            "bottleneck_ranking": [{"name": "认证环节", "reason": "扩产周期长", "evidence_ids": ["E001"]}],
+            "profit_capture_ranking": [{"name": "关键材料", "reason": "定价权较强", "evidence_ids": ["E001"]}],
+            "judge": {**section("证据支持产业定位"), "conclusion": "核心但仍需验证",
+                      "role_conflicts": [{"issue": "需求与利润不同步", "roles": ["capital_logic", "profit_flow"], "resolution": "等待验证", "evidence_ids": ["E001"]}],
+                      "disconfirming_signals": ["订单未兑现"]},
         }
         if self.invalid:
             report["judge"]["evidence_ids"] = ["E999"]
         if self.subject.get("type") == "industry_chain":
             report.pop("input_stock_score", None)
-            report["bottleneck_ranking"] = [{"name": "认证环节", "reason": "扩产周期长", "evidence_ids": ["E001"]}]
-            report["profit_capture_ranking"] = [{"name": "关键材料", "reason": "定价权较强", "evidence_ids": ["E001"]}]
         return report
 
 
@@ -151,6 +192,29 @@ class StockResearchTest(unittest.TestCase):
         self.assertEqual(proxy_handler.proxies["https"], "http://172.19.0.1:7890")
         build.return_value.open.assert_called_once_with(request, timeout=12)
 
+    def test_supplement_evidence_accepts_provider_variant_and_reassigns_recycled_ids(self):
+        variant = normalize_sources([{
+            "id": "E001", "date": "2026-08-01", "item": "同链公司主营已验证",
+            "source": "([cninfo](https://www.cninfo.com.cn/new/disclosure/detail))",
+        }])
+        self.assertEqual(len(variant), 1)
+        merged = merge_supplement_sources(EVIDENCE, variant)
+        self.assertEqual(len(merged), 3)
+        self.assertEqual(merged[-1]["id"], "E003")
+        self.assertEqual(merged[-1]["title"], "同链公司主营已验证")
+
+    def test_unsupported_challenge_is_downgraded_to_evidence_gap(self):
+        result = {
+            "challenges": [
+                {"target": "market", "issue": "已验证冲突", "resolution": "降级", "evidence_ids": ["E001"]},
+                {"target": "market", "issue": "缺少价格数据", "resolution": "待验证", "evidence_ids": []},
+            ],
+            "evidence_gaps": [],
+        }
+        normalized = normalize_role_output_for_contract(result, EVIDENCE)
+        self.assertEqual(len(normalized["challenges"]), 1)
+        self.assertEqual(normalized["evidence_gaps"], ["缺少价格数据"])
+
     def test_backend_freezes_weighted_core_score_instead_of_trusting_model_arithmetic(self):
         provider = FakeProvider()
         raw = provider.judge("")
@@ -164,8 +228,29 @@ class StockResearchTest(unittest.TestCase):
             "luna",
             provider.usage,
         )
-        self.assertEqual(report["input_stock_score"]["core_score"], 71.0)
+        self.assertEqual(report["input_stock_score"]["core_score"], 7.1)
         validate_report(report)
+
+    def test_role_prompts_preserve_skill_specific_contracts_and_challenge_chain(self):
+        subject = {"type": "stock", "name": "华正新材", "code": "603186"}
+        board = {"product_paths": [], "bom_tree": {}, "bottlenecks": [], "profit_flow": []}
+        expected = {
+            "capital_logic": ("current_catalysts", "市场情绪标签"),
+            "product_path": ("real_product_line", "间接或弱暴露"),
+            "bom": ("bom_table", "连接器"),
+            "bottleneck": ("next_bottleneck", "谁最先涨价"),
+            "profit_flow": ("ranked_nodes", "1星伪核心"),
+        }
+        prompts = {role: build_role_prompt(role, subject, board, {}, EVIDENCE) for role in expected}
+        for role, markers in expected.items():
+            for marker in markers:
+                self.assertIn(marker, prompts[role])
+        self.assertNotEqual(prompts["bom"], prompts["profit_flow"])
+        judge = build_judge_prompt(subject, board, {}, EVIDENCE)
+        self.assertIn("same_chain_core_asset_ranking", judge)
+        self.assertIn("bottleneck_ranking", judge)
+        self.assertIn("profit_capture_ranking", judge)
+        self.assertIn("不得再次放入同链排名", judge)
 
     @patch.dict(os.environ, {"STOCK_RESEARCH_ACCESS": "all"})
     def test_complete_six_role_report_charges_three_once(self):
@@ -176,10 +261,40 @@ class StockResearchTest(unittest.TestCase):
         self.assertEqual(self.balance(), 2)
         report = get_report(self.db, done["report_id"], user_id=self.user_id)["report"]
         self.assertEqual(set(report["role_outputs"]), {"capital_logic", "product_path", "bom", "bottleneck", "profit_flow"})
-        self.assertEqual(report["input_stock_score"]["core_score"], 71.0)
+        self.assertEqual(report["input_stock_score"]["core_score"], 7.1)
+        self.assertEqual(report["schema_version"], 2)
+        self.assertTrue(report["research_board"]["product_paths"])
+        self.assertTrue(report["research_board"]["bom_tree"])
+        self.assertTrue(report["research_board"]["bottlenecks"])
+        self.assertTrue(report["research_board"]["profit_flow"])
         run_job(self.db, job["id"], provider_factory=lambda _: FakeProvider())
         self.assertEqual(self.balance(), 2)
         self.assertEqual(len(list_reports(self.db, user_id=self.user_id)), 1)
+
+    @patch.dict(os.environ, {"STOCK_RESEARCH_ACCESS": "all"})
+    def test_capital_logic_and_product_path_start_in_parallel(self):
+        class ParallelProvider(FakeProvider):
+            def __init__(inner_self):
+                super().__init__()
+                inner_self.started = set()
+                inner_self.lock = threading.Lock()
+                inner_self.both_started = threading.Event()
+
+            def role(inner_self, role, prompt):
+                if role in {"capital_logic", "product_path"}:
+                    with inner_self.lock:
+                        inner_self.started.add(role)
+                        if len(inner_self.started) == 2:
+                            inner_self.both_started.set()
+                    if not inner_self.both_started.wait(1):
+                        raise RuntimeError("initial roles were serialized")
+                return super().role(role, prompt)
+
+        provider = ParallelProvider()
+        job = create_job(self.db, user=self.user, payload={"type": "stock", "value": "华正新材"}, start=False)
+        run_job(self.db, job["id"], provider_factory=lambda _: provider)
+        self.assertEqual(get_job(self.db, job["id"], user_id=self.user_id)["status"], "completed")
+        self.assertEqual(provider.started, {"capital_logic", "product_path"})
 
     @patch.dict(os.environ, {"STOCK_RESEARCH_ACCESS": "all"})
     def test_invalid_role_citation_gets_one_same_provider_contract_repair(self):
@@ -192,12 +307,9 @@ class StockResearchTest(unittest.TestCase):
                 if role == "capital_logic":
                     inner_self.capital_calls += 1
                     if inner_self.capital_calls == 1:
-                        return {
-                            "summary": "待修复",
-                            "claims": [{"claim": "引用错误", "evidence_ids": ["E999"], "confidence": "low"}],
-                            "challenges": [],
-                            "evidence_gaps": [],
-                        }
+                        result = super().role(role, prompt)
+                        result["claims"][0]["evidence_ids"] = ["E999"]
+                        return result
                 return super().role(role, prompt)
 
         provider = RepairProvider()
@@ -377,6 +489,26 @@ class StockResearchTest(unittest.TestCase):
         report.update({"schema_version": 1, "subject": {"type": "stock", "name": "华正新材", "code": "603186"}, "evidence": EVIDENCE})
         report["headline"] = "建议立即买入"
         with self.assertRaisesRegex(Exception, "禁止"):
+            validate_report(report)
+
+    def test_stock_report_rejects_self_only_same_chain_ranking_or_missing_chain_tables(self):
+        provider = FakeProvider()
+        report = finalize_report(
+            provider.judge(""), normalize_subject({"type": "stock", "value": "华正新材"}, allow_fetch=False),
+            {}, {}, EVIDENCE, "luna", provider.usage,
+        )
+        report["same_chain_core_asset_ranking"] = [{
+            "name": "华正新材", "code": "603186", "barrier": 7, "profit": 6, "growth": 6,
+            "core_score": 6.4, "reason": "仅输入对象", "evidence_ids": ["E001"],
+        }]
+        with self.assertRaisesRegex(Exception, "不得重复输入股票"):
+            validate_report(report)
+        report = finalize_report(
+            provider.judge(""), normalize_subject({"type": "stock", "value": "华正新材"}, allow_fetch=False),
+            {}, {}, EVIDENCE, "luna", provider.usage,
+        )
+        report["bottleneck_ranking"] = []
+        with self.assertRaisesRegex(Exception, "瓶颈榜"):
             validate_report(report)
 
     def test_luna_becomes_primary_only_after_all_benchmark_gates(self):

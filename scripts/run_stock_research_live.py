@@ -19,8 +19,11 @@ from trade_review_agent.stock_research import (
     get_report,
     init_schema,
     merge_role_into_board,
+    merge_supplement_sources,
     normalize_sources,
+    normalize_role_output_for_contract,
     run_job,
+    validate_role_output,
     validate_report,
 )
 
@@ -128,23 +131,43 @@ def replay_debug_directory(debug_dir: Path) -> int:
     outputs = [json.loads(extract_responses_text(item)) for item in responses]
     sources = normalize_sources(outputs[0].get("evidence"))
     board = {
+        "input_stocks": [{"type": "stock", "name": "华正新材", "code": "603186"}],
         "subject": {"type": "stock", "name": "华正新材", "code": "603186"},
-        "facts": outputs[0].get("facts") or [], "hypotheses": [], "conflicts": [],
+        "facts": outputs[0].get("facts") or [], "current_catalysts": [], "product_paths": [],
+        "bom_tree": {}, "bottlenecks": [], "profit_flow": [], "conflicts": [],
+        "evidence_confidence": {},
         "evidence_gaps": outputs[0].get("evidence_gaps") or [],
     }
-    role_names = ("capital_logic", "product_path", "bom", "bottleneck", "profit_flow")
-    roles = {}
-    for role, output in zip(role_names, outputs[1:6]):
+    role_markers = {
+        "capital_logic": "speculation_logic",
+        "product_path": "real_product_line",
+        "bom": "bom_tree",
+        "bottleneck": "current_bottleneck",
+        "profit_flow": "ranked_nodes",
+    }
+    roles: dict[str, dict] = {}
+    supplements: list[dict] = []
+    judge: dict | None = None
+    for output in outputs[1:]:
+        matched = next((role for role, marker in role_markers.items() if marker in output), None)
+        if matched:
+            roles[matched] = output  # a later same-role response is its contract repair
+        elif "headline" in output and "judge" in output:
+            judge = output
+        elif "evidence" in output and "facts" in output:
+            supplements.append(output)
+    missing_roles = [role for role in role_markers if role not in roles]
+    if missing_roles or judge is None:
+        raise SystemExit(f"原始响应不完整，缺少角色={missing_roles} judge={judge is not None}")
+    for supplement in supplements:
+        sources = merge_supplement_sources(sources, normalize_sources(supplement.get("evidence")))
+        board.setdefault("supplemental_facts", []).extend(supplement.get("facts") or [])
+        board["supplement_search_completed"] = True
+    for role in role_markers:
+        output = normalize_role_output_for_contract(roles[role], sources)
+        validate_role_output(role, output, sources)
         roles[role] = output
         merge_role_into_board(board, role, output)
-    judge_index = 6
-    if len(outputs) >= 8:
-        supplement = outputs[6]
-        known = {item["id"] for item in sources}
-        sources.extend(item for item in normalize_sources(supplement.get("evidence")) if item["id"] not in known)
-        board["supplemental_facts"] = supplement.get("facts") or []
-        board["supplement_search_completed"] = True
-        judge_index = 7
     usage = {"input_tokens": 0, "output_tokens": 0, "search_count": 0, "cost_cny": 0.0}
     for response in responses:
         item_usage = response.get("usage") or {}
@@ -156,7 +179,7 @@ def replay_debug_directory(debug_dir: Path) -> int:
         usage["search_count"] += searches
         usage["cost_cny"] += (input_tokens * 0.20 / 1_000_000 + output_tokens * 1.20 / 1_000_000 + searches * 0.01) * 7.2
     report = finalize_report(
-        outputs[judge_index], NormalizedSubject("stock", "华正新材", "603186"),
+        judge, NormalizedSubject("stock", "华正新材", "603186"),
         board, roles, sources, "luna", usage,
     )
     validate_report(report)
