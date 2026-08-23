@@ -874,6 +874,15 @@ def merge_role_into_board(board: dict[str, Any], role: str, result: dict[str, An
 def finalize_report(report: Any, subject: NormalizedSubject, board: dict[str, Any], roles: dict[str, Any], sources: list[dict[str, Any]], provider: str, usage: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(report, dict):
         raise StockResearchError("裁决模型未返回结构化报告", code="report_contract_error")
+    if subject.type == "stock" and isinstance(report.get("input_stock_score"), dict):
+        score = report["input_stock_score"]
+        try:
+            barrier, profit, growth = (float(score.get(key, -1)) for key in ("barrier", "profit", "growth"))
+        except (TypeError, ValueError):
+            pass
+        else:
+            if all(0 <= value <= 100 for value in (barrier, profit, growth)):
+                score["core_score"] = round(barrier * 0.4 + profit * 0.3 + growth * 0.3, 1)
     report["schema_version"] = 1
     report["subject"] = subject.payload()
     report["evidence"] = sources
