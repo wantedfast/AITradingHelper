@@ -440,7 +440,10 @@ def _find_recent_report(
     if ttl_hours <= 0:
         return None
     cutoff = (datetime.now(CN_TZ) - timedelta(hours=ttl_hours)).isoformat(timespec="seconds")
-    conditions = ["schema_version>=2", "cache_hit=0", "created_at>=?", "subject_type=?"]
+    # A report row only exists after the full research pipeline succeeds. Older
+    # production reports use schema_version=1 even though their JSON is valid
+    # for the current renderer, so do not exclude them from reuse.
+    conditions = ["cache_hit=0", "created_at>=?", "subject_type=?"]
     params: list[Any] = [cutoff, subject.type]
     if subject.type == "stock":
         conditions.append("stock_code=?")

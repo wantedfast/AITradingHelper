@@ -348,6 +348,32 @@ class StockResearchTest(unittest.TestCase):
         self.assertEqual(len(list_reports(self.db, user_id=self.user_id)), 1)
 
     @patch.dict(os.environ, {"STOCK_RESEARCH_ACCESS": "all", "STOCK_RESEARCH_CACHE_TTL_HOURS": "24"})
+    def test_legacy_v1_report_is_reused_without_starting_a_new_job(self):
+        first = create_job(
+            self.db, user=self.user,
+            payload={"type": "stock", "value": "华正新材"}, start=False,
+        )
+        run_job(self.db, first["id"], provider_factory=lambda _: FakeProvider())
+        with sqlite3.connect(self.db) as conn:
+            conn.execute(
+                "UPDATE stock_research_reports SET schema_version=1 WHERE job_id=?",
+                (first["id"],),
+            )
+            jobs_before = int(conn.execute("SELECT COUNT(*) FROM stock_research_jobs").fetchone()[0])
+
+        reused = create_job(
+            self.db, user=self.user,
+            payload={"type": "stock", "value": "603186"}, start=False,
+        )
+
+        with sqlite3.connect(self.db) as conn:
+            jobs_after = int(conn.execute("SELECT COUNT(*) FROM stock_research_jobs").fetchone()[0])
+        self.assertTrue(reused["cache_hit"])
+        self.assertEqual(reused["id"], first["id"])
+        self.assertEqual(jobs_after, jobs_before)
+        self.assertEqual(self.balance(), 2)
+
+    @patch.dict(os.environ, {"STOCK_RESEARCH_ACCESS": "all", "STOCK_RESEARCH_CACHE_TTL_HOURS": "24"})
     def test_recent_report_cache_is_reusable_by_another_user_without_credits_or_data_leak(self):
         first = create_job(
             self.db, user=self.user,
