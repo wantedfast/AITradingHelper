@@ -6,6 +6,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
@@ -13,6 +14,7 @@ from unittest.mock import patch
 from trade_review_agent.auth_system import AuthError, init_auth_db
 from trade_review_agent.stock_research import (
     create_job,
+    _provider_urlopen,
     get_job,
     get_report,
     init_schema,
@@ -136,6 +138,17 @@ class StockResearchTest(unittest.TestCase):
         self.assertEqual(normalize_subject({"type": "industry_chain", "value": "算力租赁产业链"}).name, "算力租赁产业链")
         with self.assertRaises(AuthError):
             normalize_subject({"type": "industry_chain", "value": "算力租赁、PCB"})
+
+    def test_luna_provider_uses_dedicated_proxy_without_global_proxy_state(self):
+        request = urllib.request.Request("https://api.openai.com/v1/responses")
+        sentinel = object()
+        with patch("trade_review_agent.stock_research.urllib.request.build_opener") as build:
+            build.return_value.open.return_value = sentinel
+            result = _provider_urlopen(request, timeout=12, proxy_url="http://172.19.0.1:7890")
+        self.assertIs(result, sentinel)
+        proxy_handler = build.call_args.args[0]
+        self.assertEqual(proxy_handler.proxies["https"], "http://172.19.0.1:7890")
+        build.return_value.open.assert_called_once_with(request, timeout=12)
 
     @patch.dict(os.environ, {"STOCK_RESEARCH_ACCESS": "all"})
     def test_complete_six_role_report_charges_three_once(self):

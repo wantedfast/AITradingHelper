@@ -1030,7 +1030,11 @@ class LunaProvider(BaseProvider):
             headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}, method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=self._request_timeout()) as response:
+            with _provider_urlopen(
+                request,
+                timeout=self._request_timeout(),
+                proxy_url=os.getenv("OPENAI_PROXY_URL", "").strip(),
+            ) as response:
                 data = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")[:2000]
@@ -1056,6 +1060,18 @@ class LunaProvider(BaseProvider):
         (path / f"luna_response_{index:02d}.json").write_text(
             json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
         )
+
+
+def _provider_urlopen(
+    request: urllib.request.Request, *, timeout: int, proxy_url: str = ""
+):
+    """Open a provider request through its dedicated proxy without affecting other integrations."""
+    if proxy_url:
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url})
+        )
+        return opener.open(request, timeout=timeout)
+    return urllib.request.urlopen(request, timeout=timeout)
 
 
 class DoubaoDeepSeekProvider(BaseProvider):
