@@ -15,14 +15,17 @@ type ResearchJob = {
 };
 type Evidence = { id: string; title: string; url: string; publisher?: string; published_at?: string; source_tier: string; excerpt?: string };
 type CitationSection = { summary?: string; evidence_ids?: string[] };
-type Ranking = { name: string; code?: string; position?: string; reason: string; evidence_ids?: string[] };
+type Ranking = { name: string; code?: string; position?: string; reason: string; barrier?: number; profit?: number; growth?: number; core_score?: number; evidence_ids?: string[] };
+type RoleConflict = string | { issue?: string; roles?: string[]; resolution?: string; evidence_ids?: string[] };
 type ResearchDocument = {
   schema_version: number; subject: { type: "stock" | "industry_chain"; name: string; code?: string }; headline: string;
   capital_logic: CitationSection; product_path: CitationSection; bom: CitationSection & { items?: unknown[] };
   bottleneck: CitationSection; profit_flow: CitationSection; positioning: CitationSection & { label?: string };
   input_stock_score?: { barrier: number; profit: number; growth: number; core_score: number; evidence_ids?: string[] };
-  core_asset_ranking: Ranking[]; bottleneck_ranking?: Ranking[]; profit_capture_ranking?: Ranking[];
-  judge: CitationSection & { conclusion?: string; role_conflicts?: string[]; disconfirming_signals?: string[] };
+  core_asset_ranking: Ranking[]; same_chain_core_asset_ranking?: Ranking[];
+  same_chain_core_asset_status?: { status: "ranked" | "none"; reason?: string; evidence_ids?: string[] };
+  bottleneck_ranking?: Ranking[]; profit_capture_ranking?: Ranking[];
+  judge: CitationSection & { conclusion?: string; role_conflicts?: RoleConflict[]; disconfirming_signals?: string[]; classifications?: Record<string, unknown> };
   evidence: Evidence[]; role_outputs?: Record<string, unknown>; research_board?: Record<string, unknown>;
   meta: { provider: string; input_tokens: number; output_tokens: number; search_count: number; cost_cny: number };
 };
@@ -36,7 +39,8 @@ type ResearchQuota = {
 const STAGE_LABELS: Record<string, string> = {
   queued: "进入研究队列", recovering: "恢复未完成任务", collecting_evidence: "联网收集证据",
   capital_logic: "分析资金逻辑", product_path: "映射产品路径", bom: "拆解 BOM",
-  bottleneck: "识别产业瓶颈", profit_flow: "判断利润流向", fund_manager: "基金经理裁决", completed: "报告完成",
+  bottleneck: "识别产业瓶颈", profit_flow: "判断利润流向", evidence_gap_search: "补齐证据缺口",
+  fund_manager: "基金经理裁决", completed: "报告完成",
 };
 
 export default function StockResearchPage() {
@@ -173,6 +177,7 @@ function History({ reports, onOpen, busy }: { reports: ReportRecord[]; onOpen: (
 }
 
 function ReportView({ report, evidenceMap }: { report: ResearchDocument; evidenceMap: Map<string, Evidence> }) {
+  const sameChain = report.same_chain_core_asset_ranking || report.core_asset_ranking || [];
   return <article className="stock-research-report">
     <header><span>{report.subject.type === "stock" ? "股票逆向研究" : "产业链逆向研究"}</span><h2>{report.subject.name}{report.subject.code ? ` · ${report.subject.code}` : ""}</h2><p>{report.headline}</p><small>引擎 {report.meta.provider} · {report.evidence.length} 条证据 · 成本 ¥{Number(report.meta.cost_cny || 0).toFixed(2)}</small></header>
     <section className="stock-research-dashboard">
@@ -182,14 +187,17 @@ function ReportView({ report, evidenceMap }: { report: ResearchDocument; evidenc
       <InsightCard title="输入对象定位" section={{ ...report.positioning, summary: report.positioning.label ? `${report.positioning.label}：${report.positioning.summary || ""}` : report.positioning.summary }} evidenceMap={evidenceMap} />
       <InsightCard danger title="最重要证伪信号" section={{ summary: (report.judge.disconfirming_signals || []).join("；"), evidence_ids: report.judge.evidence_ids }} evidenceMap={evidenceMap} />
     </section>
-    {report.input_stock_score ? <ScoreCard score={report.input_stock_score} /> : null}
-    <RankingCard title="同产业链核心资产" rows={report.core_asset_ranking} evidenceMap={evidenceMap} />
+    {report.input_stock_score ? <ScoreCard score={report.input_stock_score} schemaVersion={report.schema_version} /> : null}
+    <RankingCard emptyText={report.same_chain_core_asset_status?.reason || "未识别到中等置信度的同链核心资产"} title="同产业链核心资产" rows={sameChain} evidenceMap={evidenceMap} />
     {report.bottleneck_ranking ? <RankingCard title="瓶颈环节榜" rows={report.bottleneck_ranking} evidenceMap={evidenceMap} /> : null}
     {report.profit_capture_ranking ? <RankingCard title="利润捕获榜" rows={report.profit_capture_ranking} evidenceMap={evidenceMap} /> : null}
     <details className="stock-research-professional"><summary>展开专业研究、BOM、角色争议与完整证据</summary>
       <div className="stock-research-professional-grid"><InsightCard title="产品路径" section={report.product_path} evidenceMap={evidenceMap} /><InsightCard title="BOM 拆解" section={report.bom} evidenceMap={evidenceMap} /></div>
       {report.bom.items?.length ? <section><h3>BOM 明细</h3><pre className="stock-research-json">{JSON.stringify(report.bom.items, null, 2)}</pre></section> : null}
-      {report.judge.role_conflicts?.length ? <section><h3>角色争议</h3><ul>{report.judge.role_conflicts.map((item) => <li key={item}>{item}</li>)}</ul></section> : null}
+      {report.judge.conclusion ? <section><h3>基金经理裁决</h3><p>{report.judge.conclusion}</p></section> : null}
+      {report.judge.role_conflicts?.length ? <section><h3>角色争议与裁决</h3><ul>{report.judge.role_conflicts.map((item, index) => <li key={index}>{formatConflict(item)}</li>)}</ul></section> : null}
+      {report.role_outputs ? <section><h3>六角色完整研究底稿</h3><pre className="stock-research-json">{JSON.stringify(report.role_outputs, null, 2)}</pre></section> : null}
+      {report.research_board ? <section><h3>共享研究板</h3><pre className="stock-research-json">{JSON.stringify(report.research_board, null, 2)}</pre></section> : null}
       <section><h3>完整证据</h3><div className="stock-research-evidence-list">{report.evidence.map((item) => <a href={item.url} key={item.id} rel="noreferrer" target="_blank"><b>{item.id} · {item.source_tier}级</b><span>{item.title}</span><small>{item.publisher} {item.published_at}</small><ExternalLink /></a>)}</div></section>
     </details>
   </article>;
@@ -201,10 +209,15 @@ function InsightCard({ title, section, evidenceMap, danger = false }: { title: s
 function Citations({ ids, evidenceMap }: { ids?: string[]; evidenceMap: Map<string, Evidence> }) {
   return <div className="stock-research-citations">{(ids || []).map((id) => { const item = evidenceMap.get(id); return item ? <a href={item.url} key={id} rel="noreferrer" target="_blank">{id}</a> : <span key={id}>{id}</span>; })}</div>;
 }
-function ScoreCard({ score }: { score: NonNullable<ResearchDocument["input_stock_score"]> }) {
-  return <section className="stock-research-score"><div><span>三高综合评分</span><strong>{score.core_score.toFixed(1)}</strong><small>不是上涨概率或买入评级</small></div>{[["壁垒高度", score.barrier], ["利润质量", score.profit], ["成长确定性", score.growth]].map(([label, value]) => <label key={String(label)}><span>{label}</span><i><b style={{ width: `${value}%` }} /></i><strong>{value}</strong></label>)}</section>;
+function ScoreCard({ score, schemaVersion }: { score: NonNullable<ResearchDocument["input_stock_score"]>; schemaVersion: number }) {
+  const scale = schemaVersion >= 2 ? 10 : 100;
+  return <section className="stock-research-score"><div><span>三高综合评分</span><strong>{score.core_score.toFixed(1)}<small> / {scale}</small></strong><small>不是上涨概率或买入评级</small></div>{[["壁垒高度", score.barrier], ["利润质量", score.profit], ["成长确定性", score.growth]].map(([label, value]) => <label key={String(label)}><span>{label}</span><i><b style={{ width: `${Number(value) / scale * 100}%` }} /></i><strong>{value}</strong></label>)}</section>;
 }
-function RankingCard({ title, rows, evidenceMap }: { title: string; rows: Ranking[]; evidenceMap: Map<string, Evidence> }) {
-  return <section className="stock-research-ranking"><h3>{title}</h3>{rows.map((row, index) => <div key={`${row.name}-${index}`}><b>{index + 1}</b><span><strong>{row.name}{row.code ? ` · ${row.code}` : ""}</strong><small>{row.position || "待核实定位"} · {row.reason}</small></span><Citations ids={row.evidence_ids} evidenceMap={evidenceMap} /></div>)}</section>;
+function RankingCard({ title, rows, evidenceMap, emptyText = "证据不足" }: { title: string; rows: Ranking[]; evidenceMap: Map<string, Evidence>; emptyText?: string }) {
+  return <section className="stock-research-ranking"><h3>{title}</h3>{rows.length ? rows.map((row, index) => <div key={`${row.name}-${index}`}><b>{index + 1}</b><span><strong>{row.name}{row.code ? ` · ${row.code}` : ""}{typeof row.core_score === "number" ? ` · ${row.core_score.toFixed(1)}分` : ""}</strong><small>{row.position || "待核实定位"} · {row.reason}</small></span><Citations ids={row.evidence_ids} evidenceMap={evidenceMap} /></div>) : <p>{emptyText}</p>}</section>;
+}
+function formatConflict(item: RoleConflict) {
+  if (typeof item === "string") return item;
+  return `${item.issue || "存在争议"}${item.roles?.length ? `（${item.roles.join(" / ")}）` : ""}：${item.resolution || "待验证"}`;
 }
 function formatDate(value: string) { return value ? value.slice(0, 16).replace("T", " ") : ""; }
