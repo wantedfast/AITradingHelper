@@ -9,6 +9,7 @@ import threading
 import time
 import urllib.request
 import urllib.error
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse
 from contextlib import contextmanager
 from math import ceil
@@ -48,6 +49,45 @@ FORBIDDEN_PATTERNS = (
     r"(?:保证收益|承诺收益|收益承诺|稳赚|必涨|确定上涨|收益率可达)",
 )
 SOURCE_TIERS = {"A", "B", "C", "D"}
+
+# These contracts intentionally mirror the local stock-reverse-engineering skill.
+# Keep role separation explicit: a generic "summary/claims" contract is not enough
+# to reproduce the skill's product-path, BOM, bottleneck, and profit-flow work.
+ROLE_REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
+    "capital_logic": (
+        "stock", "speculation_logic", "trigger_event", "core_driver",
+        "emotion_strength", "evidence_confidence", "current_catalysts",
+        "claims", "challenges", "evidence_gaps",
+    ),
+    "product_path": (
+        "stock", "real_product_line", "final_product", "product_path",
+        "exposure_judgment", "evidence_confidence", "claims", "challenges",
+        "evidence_gaps",
+    ),
+    "bom": (
+        "final_product", "bom_tree", "bom_table", "claims", "challenges",
+        "evidence_gaps",
+    ),
+    "bottleneck": (
+        "current_bottleneck", "bottleneck_type", "first_price_response",
+        "expansion_difficulty", "profit_realization", "next_bottleneck",
+        "a_share_mapping", "evidence_confidence", "claims", "challenges",
+        "evidence_gaps",
+    ),
+    "profit_flow": (
+        "ranked_nodes", "first_tightening", "first_price_increase",
+        "pricing_power", "highest_earnings_elasticity", "margin_squeezed_nodes",
+        "claims", "challenges", "evidence_gaps",
+    ),
+}
+
+ROLE_CHALLENGE_TARGETS = {
+    "capital_logic": "情绪标签与真实产品暴露不匹配",
+    "product_path": "输入对象只有相邻、间接或弱暴露",
+    "bom": "产品路径存在跳跃或缺少可投资节点",
+    "bottleneck": "BOM把可替代节点误判为稀缺瓶颈",
+    "profit_flow": "稀缺没有转化为定价权和利润留存",
+}
 
 
 class StockResearchError(RuntimeError):
@@ -420,10 +460,16 @@ def run_job(
         _enforce_cost(provider.usage)
         sources = normalize_sources(evidence_pack.get("evidence"))
         board: dict[str, Any] = {
+            "input_stocks": [subject.payload()] if subject.type == "stock" else [],
             "subject": subject.payload(),
             "facts": evidence_pack.get("facts") or [],
-            "hypotheses": [],
+            "current_catalysts": [],
+            "product_paths": [],
+            "bom_tree": {},
+            "bottlenecks": [],
+            "profit_flow": [],
             "conflicts": [],
+            "evidence_confidence": {},
             "evidence_gaps": evidence_pack.get("evidence_gaps") or [],
         }
         _persist_progress(db_path, job_id, "collecting_evidence", 8, board, {}, sources, provider.usage)
@@ -434,10 +480,11 @@ def run_job(
         role_outputs: dict[str, Any] = {}
         _persist_progress(db_path, job_id, "capital_logic", 12, board, role_outputs, sources, provider.usage)
 
-        for index, role in enumerate(ROLE_ORDER[:-1]):
+        def execute_role(role: str) -> dict[str, Any]:
             _enforce_timeout(started)
             prompt = build_role_prompt(role, subject.payload(), board, role_outputs, sources)
             result = provider.role(role, prompt)
+            result = normalize_role_output_for_contract(result, sources)
             try:
                 validate_role_output(role, result, sources)
             except StockResearchError as exc:
@@ -445,26 +492,47 @@ def run_job(
                     raise
                 board.setdefault("contract_repairs", []).append({"role": role, "reason": exc.code})
                 result = provider.role(role, build_role_repair_prompt(role, result, sources, exc))
+                result = normalize_role_output_for_contract(result, sources)
                 validate_role_output(role, result, sources)
+            return result
+
+        # The skill protocol starts these two independent research roles in
+        # parallel. They share the same evidence pack but cannot see each
+        # other's draft, preventing a one-way anchoring handoff.
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="stock-research-role") as executor:
+            futures = {role: executor.submit(execute_role, role) for role in ("capital_logic", "product_path")}
+            initial_results = {role: futures[role].result() for role in ("capital_logic", "product_path")}
+        for index, role in enumerate(("capital_logic", "product_path")):
+            result = initial_results[role]
             role_outputs[role] = result
             merge_role_into_board(board, role, result)
             progress = 18 + (index + 1) * 12
             _persist_progress(db_path, job_id, role, progress, board, role_outputs, sources, provider.usage)
             _enforce_cost(provider.usage)
 
-        # At most one evidence-gap search round, and never after the hard cost cap.
-        gaps = [str(item) for item in board.get("evidence_gaps", []) if str(item).strip()][:5]
+        for index, role in enumerate(("bom", "bottleneck", "profit_flow"), start=2):
+            result = execute_role(role)
+            role_outputs[role] = result
+            merge_role_into_board(board, role, result)
+            progress = 18 + (index + 1) * 12
+            _persist_progress(db_path, job_id, role, progress, board, role_outputs, sources, provider.usage)
+            _enforce_cost(provider.usage)
+
+        # The skill permits one evidence-gap round. Search material gaps raised by
+        # any role, then expose the additions to the judge rather than inventing
+        # conclusions to fill an incomplete chain.
+        gaps = list(dict.fromkeys(
+            str(item).strip() for item in board.get("evidence_gaps", []) if str(item).strip()
+        ))[:8]
         if (
             gaps
-            and len(sources) < 8
-            and int(provider.usage.get("search_count", 0)) < 8
+            and int(provider.usage.get("search_count", 0)) < 15
             and hasattr(provider, "supplement")
             and float(provider.usage.get("cost_cny", 0)) < MAX_COST_CNY * 0.8
         ):
             supplement = provider.supplement(subject.payload(), gaps)
             additions = normalize_sources(supplement.get("evidence"))
-            known_ids = {item["id"] for item in sources}
-            sources.extend(item for item in additions if item["id"] not in known_ids)
+            sources = merge_supplement_sources(sources, additions)
             board["supplemental_facts"] = supplement.get("facts") or []
             board["supplement_search_completed"] = True
             _persist_progress(db_path, job_id, "evidence_gap_search", 82, board, role_outputs, sources, provider.usage)
@@ -784,8 +852,10 @@ def normalize_sources(value: Any) -> list[dict[str, Any]]:
     for index, item in enumerate(rows, 1):
         if not isinstance(item, dict):
             continue
-        url = str(item.get("url") or "").strip()
-        title = str(item.get("title") or "").strip()
+        source_text = str(item.get("source") or "")
+        source_url = re.search(r"https?://[^\s\])]+", source_text)
+        url = str(item.get("url") or (source_url.group(0) if source_url else "")).strip()
+        title = str(item.get("title") or item.get("item") or item.get("fact") or "").strip()
         if not url.startswith(("http://", "https://")) or not title:
             continue
         evidence_id = str(item.get("id") or f"E{index:03d}").strip().upper()
@@ -803,6 +873,23 @@ def normalize_sources(value: Any) -> list[dict[str, Any]]:
         })
         seen.add(evidence_id)
     return result
+
+
+def merge_supplement_sources(existing: list[dict[str, Any]], additions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Merge a later search pack without trusting its recycled E001-style IDs."""
+    merged = [dict(item) for item in existing]
+    seen_urls = {str(item.get("url") or "").rstrip("/") for item in merged}
+    next_id = len(merged) + 1
+    for item in additions:
+        url_key = str(item.get("url") or "").rstrip("/")
+        if not url_key or url_key in seen_urls:
+            continue
+        addition = dict(item)
+        addition["id"] = f"E{next_id:03d}"
+        next_id += 1
+        merged.append(addition)
+        seen_urls.add(url_key)
+    return merged
 
 
 def _normalize_source_tier(item: dict[str, Any]) -> str:
@@ -829,15 +916,74 @@ def _normalize_source_tier(item: dict[str, Any]) -> str:
 
 def build_role_prompt(role: str, subject: dict[str, str], board: dict[str, Any], roles: dict[str, Any], sources: list[dict[str, Any]]) -> str:
     instructions = {
-        "capital_logic": "解释近期资金为什么交易该对象，区分事实、催化与市场叙事。",
-        "product_path": "映射到真实产品、部件、下游需求，不把概念标签当主营证据。",
-        "bom": "拆解材料、设备、工艺、封装、测试、配套设施以及对应A股。必须挑战产品路径中的跳跃。",
-        "bottleneck": "判断紧缺环节、扩产难度、定价权和瓶颈迁移。必须挑战BOM的伪瓶颈。",
-        "profit_flow": "区分利润中心、量增受益、主题跟随、伪核心。必须挑战瓶颈是否真正转化为利润。",
+        "capital_logic": (
+            "你是资金逻辑分析师。识别资金现在交易该对象的原因，严格区分事件驱动、趋势驱动、价格驱动、"
+            "国产替代和情绪驱动。不得把概念标签当证据，也不得直接跳到产业链赢家。必须主动挑战"
+            "市场情绪标签与已验证产品暴露不匹配的情况。"
+        ),
+        "product_path": (
+            "你是产品路径映射师。把对象逆向映射到最窄的真实产品线，再到部件/系统和最终需求；"
+            "明确它是核心暴露、边缘暴露、相邻暴露还是待验证。必须主动挑战输入对象只有间接或弱暴露的情况。"
+        ),
+        "bom": (
+            "你是BOM产业链分析师。以最终产品为根节点，逐层拆解材料、设备、精密加工、封装、测试、连接器、"
+            "耗材、供电、冷却和配套基础设施（不适用项明确标注），直到能映射A股公司。必须挑战产品路径中的跳跃，"
+            "并在路径变化时以最新路径重建BOM。"
+        ),
+        "bottleneck": (
+            "你是瓶颈分析师。必须逐项回答：当前最紧节点；技术/认证/设备交期/产能/原料/客户资格/专利/良率/政策"
+            "中的瓶颈类型；需求增加时谁最先涨价；谁扩产最慢及原因；瓶颈带来利润率扩张还是只有量增；当前缓解后"
+            "瓶颈迁往哪里；每个节点对应哪些A股。必须挑战BOM中缺失的稀缺节点和没有定价权的伪瓶颈。"
+        ),
+        "profit_flow": (
+            "你是利润流向分析师。判断谁先变紧、谁先涨价、谁有定价权、谁利润弹性最高、谁只增收不增利。"
+            "每个节点必须归入五档之一：5星核心瓶颈、4星强受益、3星量增、2星主题跟随、1星伪核心。"
+            "必须挑战‘稀缺就一定能留下利润’以及高交易热度但低利润/易替代的节点。"
+        ),
+    }
+    schemas = {
+        "capital_logic": (
+            '{stock:string,speculation_logic:string,trigger_event:string,core_driver:string,'
+            'emotion_strength:high|medium|low,evidence_confidence:high|medium|low|pending,'
+            'current_catalysts:[{event,type,event_date?,evidence_ids:[E001]}],'
+            'claims:[{claim,evidence_ids:[E001],confidence:high|medium|low}],'
+            'challenges:[{target:"market_narrative",issue,resolution,evidence_ids:[E001]}],evidence_gaps:[string]}'
+        ),
+        "product_path": (
+            '{stock:string,real_product_line:string,final_product:string,'
+            'product_path:[{node,node_type:stock|product|material|component|system|final_demand,evidence_ids:[E001]}],'
+            'exposure_judgment:core|edge|adjacent|pending,evidence_confidence:high|medium|low|pending,'
+            'claims:[{claim,evidence_ids:[E001],confidence:high|medium|low}],'
+            'challenges:[{target:"capital_logic",issue,resolution,evidence_ids:[E001]}],evidence_gaps:[string]}'
+        ),
+        "bom": (
+            '{final_product:string,bom_tree:{name,children:[{name,node_type,children?:[],evidence_ids:[E001]}]},'
+            'bom_table:[{node,chain_position:upstream|midstream|downstream,a_share_companies:[{name,code?}],'
+            'value_trend,evidence_confidence:high|medium|low|pending,evidence_ids:[E001]}],'
+            'claims:[{claim,evidence_ids:[E001],confidence:high|medium|low}],'
+            'challenges:[{target:"product_path",issue,resolution,evidence_ids:[E001]}],evidence_gaps:[string]}'
+        ),
+        "bottleneck": (
+            '{current_bottleneck:string,bottleneck_type:structural|capacity|material|emotional|false_bottleneck,'
+            'first_price_response:string,expansion_difficulty:string,profit_realization:string,next_bottleneck:string,'
+            'a_share_mapping:[{node,companies:[{name,code?}],reason,evidence_ids:[E001]}],'
+            'evidence_confidence:high|medium|low|pending,'
+            'claims:[{claim,evidence_ids:[E001],confidence:high|medium|low}],'
+            'challenges:[{target:"bom",issue,resolution,evidence_ids:[E001]}],evidence_gaps:[string]}'
+        ),
+        "profit_flow": (
+            '{ranked_nodes:[{node,stars:1|2|3|4|5,classification:core_bottleneck|strong_beneficiary|volume_growth|theme_follower|false_core,'
+            'first_price_increase:string,supply_tightness:string,pricing_power:string,profit_elasticity:string,'
+            'a_share_companies:[{name,code?}],evidence_ids:[E001]}],first_tightening:string,first_price_increase:string,'
+            'pricing_power:string,highest_earnings_elasticity:string,margin_squeezed_nodes:[string],'
+            'claims:[{claim,evidence_ids:[E001],confidence:high|medium|low}],'
+            'challenges:[{target:"bottleneck",issue,resolution,evidence_ids:[E001]}],evidence_gaps:[string]}'
+        ),
     }
     return _json_prompt(
-        f"你是六角色产业链逆向研究中的 {role}。{instructions[role]}", subject, board, roles, sources,
-        "仅输出JSON：{summary:string,claims:[{claim,evidence_ids:[E001],confidence:high|medium|low}],challenges:[string],evidence_gaps:[string]}。每个重要claim必须有证据ID。"
+        instructions[role] + f"\n你在固定挑战链中的目标是：{ROLE_CHALLENGE_TARGETS[role]}。",
+        subject, board, roles, sources,
+        "只输出严格JSON，契约=" + schemas[role] + "。每项重要事实、路径节点、表格行和挑战必须引用证据ID；证据不足写pending/待验证，不得补造。"
     )
 
 
@@ -850,7 +996,10 @@ def build_role_repair_prompt(
     known_ids = [str(item.get("id")) for item in sources if item.get("id")]
     return (
         f"你正在修复 {role} 角色的JSON契约错误：{error}。"
-        "只能修正JSON结构、evidence_ids和必需的challenges，不得新增事实、来源或投资建议。"
+        "只能修正JSON结构、evidence_ids和必需的挑战字段，不得新增事实、来源或投资建议。"
+        "必须保留并补齐该角色专属字段："
+        + json.dumps(ROLE_REQUIRED_FIELDS[role], ensure_ascii=False)
+        + "。挑战必须明确target/issue/resolution/evidence_ids。"
         "每条claim必须至少引用一个给定证据ID，且只能使用以下ID："
         + json.dumps(known_ids, ensure_ascii=False)
         + "\n上一次输出="
@@ -860,11 +1009,44 @@ def build_role_repair_prompt(
 
 
 def build_judge_prompt(subject: dict[str, str], board: dict[str, Any], roles: dict[str, Any], sources: list[dict[str, Any]]) -> str:
-    stock_extra = "股票输入必须给input_stock_score（三高各0-100、core_score=0.4*barrier+0.3*profit+0.3*growth）和core_asset_ranking。" if subject["type"] == "stock" else "产业链输入不要input_stock_score，必须给core_asset_ranking、bottleneck_ranking、profit_capture_ranking。"
-    schema = """仅输出JSON：{headline,capital_logic:{summary,evidence_ids},product_path:{summary,evidence_ids},bom:{summary,items,evidence_ids},bottleneck:{summary,evidence_ids},profit_flow:{summary,evidence_ids},positioning:{label,reason,evidence_ids},input_stock_score?:{barrier,profit,growth,core_score,evidence_ids},core_asset_ranking:[{name,code?,position,reason,evidence_ids}],bottleneck_ranking?:[],profit_capture_ranking?:[],judge:{conclusion,role_conflicts:[string],disconfirming_signals:[string],evidence_ids}}。"""
+    stock_extra = (
+        "股票输入必须生成input_stock_score和same_chain_core_asset_ranking两张三高表。三高均为1-10分、一位小数，"
+        "core_score=0.4*barrier+0.3*profit+0.3*growth。same_chain_core_asset_ranking必须列出BOM/瓶颈/利润角色发现的"
+        "同链A股并按core_score降序；输入股票已有独立评分，不得再次放入同链排名。若确无中等置信度对象，数组可为空，但必须用"
+        "same_chain_core_asset_status={status:none,reason,evidence_ids}明确证据缺口。"
+        if subject["type"] == "stock" else
+        "产业链输入不得生成input_stock_score；必须生成产业链核心资产、瓶颈和利润捕获排名。"
+    )
+    schema = """只输出严格JSON：{
+headline:string,
+capital_logic:{summary,speculation_json:{event,logic,industry_trend,evidence_confidence},evidence_ids:[E001]},
+product_path:{summary,path:[string],exposure_judgment,evidence_ids:[E001]},
+bom:{summary,tree:object,items:[{node,chain_position,a_share_companies,value_trend,evidence_confidence,evidence_ids:[E001]}],evidence_ids:[E001]},
+bottleneck:{summary,current,type,first_price_response,expansion_difficulty,profit_realization,next_bottleneck,a_share_mapping,evidence_ids:[E001]},
+profit_flow:{summary,ranked_nodes:[{node,stars,classification,pricing_power,profit_elasticity,a_share_companies,evidence_ids:[E001]}],evidence_ids:[E001]},
+positioning:{label,fund_positioning,is_core_beneficiary,earns_industrial_profit,emotional_premium,cleaner_same_chain_companies:[string],reason,evidence_ids:[E001]},
+input_stock_score?:{barrier,profit,growth,core_score,explanation,evidence_ids:[E001]},
+same_chain_core_asset_ranking:[{name,code?,industry_node,product,industry_position,barrier,profit,growth,core_score,labels:[string],reason,evidence_ids:[E001]}],
+same_chain_core_asset_status?:{status:ranked|none,reason,evidence_ids:[E001]},
+bottleneck_ranking:[{name,position,reason,evidence_ids:[E001]}],
+profit_capture_ranking:[{name,position,reason,evidence_ids:[E001]}],
+judge:{conclusion,classifications:{emotion_leader,industry_leader,capacity_core,shovel_seller,high_elasticity,high_profit,high_growth,long_term_tracking},role_conflicts:[{issue,roles,resolution,evidence_ids:[E001]}],disconfirming_signals:[string],evidence_ids:[E001]}
+}。"""
+    judge_board = {key: board.get(key) for key in (
+        "input_stocks", "current_catalysts", "product_paths", "bom_tree", "bom_table",
+        "bottlenecks", "profit_flow", "conflicts", "evidence_confidence", "evidence_gaps",
+        "supplemental_facts",
+    ) if board.get(key) not in (None, [], {})}
+    judge_sources = [{
+        "id": item.get("id"), "title": item.get("title"), "publisher": item.get("publisher"),
+        "published_at": item.get("published_at"), "source_tier": item.get("source_tier"),
+        "excerpt": str(item.get("excerpt") or "")[:280],
+    } for item in sources]
     return _json_prompt(
-        "你是第六角色基金经理与核心资产裁决者。解决前五角色冲突，证据不足必须降级或标记，不得补造事实。" + stock_extra,
-        subject, board, roles, sources, schema
+        "你是第六角色基金经理与核心资产裁决者。必须阅读并裁决前五角色全部产物，明确区分资金炒作逻辑和产业利润逻辑；"
+        "判断输入对象赚产业利润还是主要赚情绪溢价；完成情绪龙头/产业龙头/容量核心/卖铲子/高弹性/补涨/伪核心等定位。"
+        "所有实质冲突必须写明参与角色、裁决和证据；证据不足必须降级或标记待验证，不得补造。" + stock_extra,
+        subject, judge_board, roles, judge_sources, schema
     )
 
 
@@ -879,21 +1061,89 @@ def _json_prompt(prefix: str, subject: dict[str, str], board: dict[str, Any], ro
 
 
 def validate_role_output(role: str, result: Any, sources: list[dict[str, Any]]) -> None:
-    if not isinstance(result, dict) or not isinstance(result.get("claims"), list):
+    if not isinstance(result, dict):
         raise StockResearchError(f"{role} 角色输出不完整", code="role_contract_error")
+    missing = [field for field in ROLE_REQUIRED_FIELDS[role] if field not in result or result[field] is None]
+    if missing:
+        raise StockResearchError(f"{role} 角色缺少专属字段: {', '.join(missing)}", code="role_contract_error")
+    if not isinstance(result.get("claims"), list) or not result["claims"]:
+        raise StockResearchError(f"{role} 角色缺少可审计结论", code="role_contract_error")
     known = {item["id"] for item in sources}
     for claim in result["claims"]:
         ids = claim.get("evidence_ids") if isinstance(claim, dict) else None
         if not ids or any(str(item) not in known for item in ids):
             raise StockResearchError(f"{role} 存在无效或缺失证据引用", code="citation_error")
-    if role in {"bom", "bottleneck", "profit_flow"} and not result.get("challenges"):
-        raise StockResearchError(f"{role} 必须挑战上一角色结论", code="role_challenge_missing")
+    challenges = result.get("challenges")
+    if not isinstance(challenges, list) or not challenges:
+        raise StockResearchError(f"{role} 必须执行固定挑战关系", code="role_challenge_missing")
+    for challenge in challenges:
+        if not isinstance(challenge, dict) or not all(challenge.get(key) for key in ("target", "issue", "resolution", "evidence_ids")):
+            raise StockResearchError(f"{role} 挑战记录不完整", code="role_challenge_missing")
+        if any(str(item) not in known for item in challenge["evidence_ids"]):
+            raise StockResearchError(f"{role} 挑战引用无效", code="citation_error")
+    if role == "product_path" and len(result.get("product_path") or []) < 4:
+        raise StockResearchError("产品路径必须覆盖对象、产品/材料、部件/系统和最终需求", code="role_contract_error")
+    if role == "bom" and (not result.get("bom_tree") or not result.get("bom_table")):
+        raise StockResearchError("BOM角色必须输出树和A股映射表", code="role_contract_error")
+    if role == "bottleneck" and not result.get("a_share_mapping"):
+        raise StockResearchError("瓶颈角色必须输出A股映射", code="role_contract_error")
+    if role == "profit_flow" and not result.get("ranked_nodes"):
+        raise StockResearchError("利润流向角色必须输出五档节点排名", code="role_contract_error")
+    _validate_nested_evidence_ids(result, known, role)
+
+
+def normalize_role_output_for_contract(result: Any, sources: list[dict[str, Any]]) -> Any:
+    """Downgrade unsupported challenge assertions to evidence gaps.
+
+    A challenge that literally says evidence is missing cannot honestly cite proof
+    of the missing fact. Keep the gap, but do not let it masquerade as an
+    evidence-backed role conflict or trigger another model call.
+    """
+    if not isinstance(result, dict) or not isinstance(result.get("challenges"), list):
+        return result
+    known = {str(item.get("id")) for item in sources if item.get("id")}
+    valid: list[dict[str, Any]] = []
+    gaps = list(result.get("evidence_gaps") or [])
+    for challenge in result["challenges"]:
+        ids = challenge.get("evidence_ids") if isinstance(challenge, dict) else None
+        if (
+            isinstance(challenge, dict)
+            and all(challenge.get(key) for key in ("target", "issue", "resolution"))
+            and isinstance(ids, list) and ids
+            and all(str(item) in known for item in ids)
+        ):
+            valid.append(challenge)
+        elif isinstance(challenge, dict) and str(challenge.get("issue") or "").strip():
+            gap = str(challenge["issue"]).strip()
+            if gap not in gaps:
+                gaps.append(gap)
+    result["challenges"] = valid
+    result["evidence_gaps"] = gaps
+    return result
 
 
 def merge_role_into_board(board: dict[str, Any], role: str, result: dict[str, Any]) -> None:
-    board.setdefault("role_findings", {})[role] = result.get("summary") or ""
+    if role == "capital_logic":
+        board["current_catalysts"] = result.get("current_catalysts") or []
+    elif role == "product_path":
+        board["product_paths"] = [result.get("product_path") or []]
+    elif role == "bom":
+        board["bom_tree"] = result.get("bom_tree") or {}
+        board["bom_table"] = result.get("bom_table") or []
+    elif role == "bottleneck":
+        board["bottlenecks"] = [{key: result.get(key) for key in (
+            "current_bottleneck", "bottleneck_type", "first_price_response",
+            "expansion_difficulty", "profit_realization", "next_bottleneck", "a_share_mapping",
+        )}]
+    elif role == "profit_flow":
+        board["profit_flow"] = result.get("ranked_nodes") or []
+    board.setdefault("evidence_confidence", {})[role] = result.get("evidence_confidence") or _role_confidence(result)
+    board.setdefault("role_findings", {})[role] = _role_summary(role, result)
     board.setdefault("conflicts", []).extend(result.get("challenges") or [])
-    board.setdefault("evidence_gaps", []).extend(result.get("evidence_gaps") or [])
+    gaps = board.setdefault("evidence_gaps", [])
+    for gap in result.get("evidence_gaps") or []:
+        if gap not in gaps:
+            gaps.append(gap)
 
 
 def finalize_report(report: Any, subject: NormalizedSubject, board: dict[str, Any], roles: dict[str, Any], sources: list[dict[str, Any]], provider: str, usage: dict[str, Any]) -> dict[str, Any]:
@@ -906,9 +1156,39 @@ def finalize_report(report: Any, subject: NormalizedSubject, board: dict[str, An
         except (TypeError, ValueError):
             pass
         else:
-            if all(0 <= value <= 100 for value in (barrier, profit, growth)):
-                score["core_score"] = round(barrier * 0.4 + profit * 0.3 + growth * 0.3, 1)
-    report["schema_version"] = 1
+            if all(1 <= value <= 10 for value in (barrier, profit, growth)):
+                expected = round(barrier * 0.4 + profit * 0.3 + growth * 0.3, 1)
+                score["core_score"] = expected
+                score["calculation"] = f"0.4×{barrier:.1f}+0.3×{profit:.1f}+0.3×{growth:.1f}={expected:.1f}"
+                explanation = str(score.get("explanation") or "")
+                if explanation:
+                    score["explanation"] = re.sub(
+                        r"core_score\s*=[^。；\n]*",
+                        f"core_score={score['calculation']}",
+                        explanation,
+                        flags=re.I,
+                    )
+    rankings = report.get("same_chain_core_asset_ranking")
+    if rankings is None and isinstance(report.get("core_asset_ranking"), list):
+        rankings = report["core_asset_ranking"]
+        report["same_chain_core_asset_ranking"] = rankings
+    if subject.type == "stock":
+        rankings = [item for item in rankings or [] if isinstance(item, dict) and not (
+            str(item.get("name") or "").strip() == subject.name
+            or (subject.code and str(item.get("code") or "").strip() == subject.code)
+        )]
+        report["same_chain_core_asset_ranking"] = rankings
+    for item in rankings or []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            barrier, profit, growth = (float(item.get(key, -1)) for key in ("barrier", "profit", "growth"))
+        except (TypeError, ValueError):
+            continue
+        if all(1 <= value <= 10 for value in (barrier, profit, growth)):
+            item["core_score"] = round(barrier * 0.4 + profit * 0.3 + growth * 0.3, 1)
+    report["core_asset_ranking"] = rankings or []  # v1 frontend/API compatibility alias
+    report["schema_version"] = 2
     report["subject"] = subject.payload()
     report["evidence"] = sources
     report["research_board"] = board
@@ -929,9 +1209,12 @@ def validate_report(report: dict[str, Any]) -> None:
         if re.search(pattern, serialized, flags=re.I):
             raise StockResearchError("报告包含禁止的投资指令或收益承诺", code="unsafe_advice")
     subject = report.get("subject") or {}
-    required = ("capital_logic", "product_path", "bom", "bottleneck", "profit_flow", "positioning", "core_asset_ranking", "judge")
+    required = (
+        "capital_logic", "product_path", "bom", "bottleneck", "profit_flow", "positioning",
+        "same_chain_core_asset_ranking", "bottleneck_ranking", "profit_capture_ranking", "judge",
+    )
     for key in required:
-        if key not in report or report[key] in (None, "", []):
+        if key not in report or report[key] in (None, ""):
             raise StockResearchError(f"最终报告缺少 {key}", code="report_contract_error")
     known = {item.get("id") for item in report.get("evidence", []) if isinstance(item, dict)}
     for key in ("capital_logic", "product_path", "bom", "bottleneck", "profit_flow", "positioning", "judge"):
@@ -939,27 +1222,87 @@ def validate_report(report: dict[str, Any]) -> None:
         ids = section.get("evidence_ids") if isinstance(section, dict) else None
         if not ids or any(item not in known for item in ids):
             raise StockResearchError(f"{key} 缺少可验证证据", code="citation_error")
+        _validate_nested_evidence_ids(section, known, f"最终报告/{key}")
     if subject.get("type") == "stock":
         score = report.get("input_stock_score")
         if not isinstance(score, dict):
             raise StockResearchError("股票报告缺少三高评分", code="score_error")
         barrier, profit, growth = (float(score.get(key, -1)) for key in ("barrier", "profit", "growth"))
-        if any(value < 0 or value > 100 for value in (barrier, profit, growth)):
-            raise StockResearchError("三高评分必须在0-100", code="score_error")
+        if any(value < 1 or value > 10 for value in (barrier, profit, growth)):
+            raise StockResearchError("三高评分必须在1-10", code="score_error")
         expected = round(barrier * 0.4 + profit * 0.3 + growth * 0.3, 1)
         if abs(float(score.get("core_score", -1)) - expected) > 0.11:
             raise StockResearchError("三高综合分公式不正确", code="score_error")
+        ranking = report.get("same_chain_core_asset_ranking") or []
+        status = report.get("same_chain_core_asset_status")
+        if not ranking:
+            if not isinstance(status, dict) or status.get("status") != "none" or not status.get("reason"):
+                raise StockResearchError("未识别同链核心资产时必须明确证据缺口", code="report_contract_error")
+            ids = status.get("evidence_ids") or []
+            if not ids or any(item not in known for item in ids):
+                raise StockResearchError("同链资产缺口说明缺少证据", code="citation_error")
+        else:
+            input_name = str(subject.get("name") or "")
+            input_code = str(subject.get("code") or "")
+            if any(str(item.get("name") or "") == input_name or (input_code and str(item.get("code") or "") == input_code) for item in ranking if isinstance(item, dict)):
+                raise StockResearchError("同链核心资产排名不得重复输入股票", code="report_contract_error")
     else:
         if "input_stock_score" in report:
             raise StockResearchError("产业链报告不得生成输入股票评分", code="score_error")
-        for key in ("bottleneck_ranking", "profit_capture_ranking"):
-            if not report.get(key):
-                raise StockResearchError(f"产业链报告缺少 {key}", code="report_contract_error")
-    for key in ("core_asset_ranking", "bottleneck_ranking", "profit_capture_ranking"):
+    if not report.get("bottleneck_ranking") or not report.get("profit_capture_ranking"):
+        raise StockResearchError("最终报告必须包含瓶颈榜和利润捕获榜", code="report_contract_error")
+    core_scores: list[float] = []
+    for key in ("same_chain_core_asset_ranking", "bottleneck_ranking", "profit_capture_ranking"):
         for item in report.get(key) or []:
             ids = item.get("evidence_ids") if isinstance(item, dict) else None
             if not ids or any(evidence_id not in known for evidence_id in ids):
                 raise StockResearchError(f"{key} 存在无效或缺失证据引用", code="citation_error")
+            if key == "same_chain_core_asset_ranking":
+                try:
+                    values = [float(item.get(name, -1)) for name in ("barrier", "profit", "growth", "core_score")]
+                except (TypeError, ValueError):
+                    raise StockResearchError("同链资产三高评分格式错误", code="score_error")
+                if any(value < 1 or value > 10 for value in values):
+                    raise StockResearchError("同链资产三高评分必须在1-10", code="score_error")
+                expected = round(values[0] * 0.4 + values[1] * 0.3 + values[2] * 0.3, 1)
+                if abs(values[3] - expected) > 0.11:
+                    raise StockResearchError("同链资产三高综合分公式不正确", code="score_error")
+                core_scores.append(values[3])
+    if core_scores != sorted(core_scores, reverse=True):
+        raise StockResearchError("同链核心资产必须按综合分降序", code="score_error")
+
+
+def _validate_nested_evidence_ids(value: Any, known: set[str], role: str) -> None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if key == "evidence_ids":
+                if not isinstance(child, list) or not child or any(str(item) not in known for item in child):
+                    raise StockResearchError(f"{role} 存在无效或缺失证据引用", code="citation_error")
+            else:
+                _validate_nested_evidence_ids(child, known, role)
+    elif isinstance(value, list):
+        for child in value:
+            _validate_nested_evidence_ids(child, known, role)
+
+
+def _role_confidence(result: dict[str, Any]) -> str:
+    confidences = [str(item.get("confidence")) for item in result.get("claims") or [] if isinstance(item, dict)]
+    if "low" in confidences:
+        return "low"
+    if "medium" in confidences:
+        return "medium"
+    return "high" if confidences else "pending"
+
+
+def _role_summary(role: str, result: dict[str, Any]) -> str:
+    keys = {
+        "capital_logic": "speculation_logic",
+        "product_path": "real_product_line",
+        "bom": "final_product",
+        "bottleneck": "current_bottleneck",
+        "profit_flow": "pricing_power",
+    }
+    return str(result.get("summary") or result.get(keys[role]) or "")
 
 
 def _enforce_timeout(started: float) -> None:
@@ -993,6 +1336,7 @@ class BaseProvider:
 
     def __init__(self) -> None:
         self.usage: dict[str, Any] = {"input_tokens": 0, "output_tokens": 0, "search_count": 0, "cost_cny": 0.0}
+        self._state_lock = threading.Lock()
         try:
             timeout = int(os.getenv("STOCK_RESEARCH_TIMEOUT_SECONDS", str(DEFAULT_TIMEOUT_SECONDS)))
         except ValueError:
@@ -1000,10 +1344,11 @@ class BaseProvider:
         self.deadline = time.monotonic() + max(30, timeout)
 
     def _add_usage(self, input_tokens: int, output_tokens: int, cost_cny: float, searches: int = 0) -> None:
-        self.usage["input_tokens"] += int(input_tokens)
-        self.usage["output_tokens"] += int(output_tokens)
-        self.usage["search_count"] += int(searches)
-        self.usage["cost_cny"] = round(float(self.usage["cost_cny"]) + float(cost_cny), 6)
+        with self._state_lock:
+            self.usage["input_tokens"] += int(input_tokens)
+            self.usage["output_tokens"] += int(output_tokens)
+            self.usage["search_count"] += int(searches)
+            self.usage["cost_cny"] = round(float(self.usage["cost_cny"]) + float(cost_cny), 6)
 
     def _request_timeout(self) -> float:
         remaining = self.deadline - time.monotonic()
@@ -1024,9 +1369,13 @@ class LunaProvider(BaseProvider):
 
     def evidence(self, subject: dict[str, str]) -> dict[str, Any]:
         prompt = (
-            "为A股产业链逆向研究收集8-15条可验证证据。优先公司公告、财报、交易所、政府和行业机构；"
+            "你是产业链逆向研究的证据编辑。最多使用8次Web Search，收集10-15条可验证证据，并平衡覆盖："
+            "①输入对象近期资金交易催化、价格或公告；②真实产品暴露、财务和产能；③从最终产品/BOM/瓶颈/利润池反推的"
+            "至少3家同链A股候选公司及其主营、壁垒、盈利和成长证据。不能把同花顺、东方财富或券商概念标签当证明。"
+            "优先公司公告、财报、交易所、政府和行业机构；"
             "概念页只作线索。source_tier必须严格为A/B/C/D：A=公告财报交易所政府，B=行业协会或权威研究，C=可靠财经媒体，D=概念标签。"
-            "输出JSON {facts:[],evidence_gaps:[],evidence:[{id,title,url,publisher,published_at,source_tier,excerpt}]}。对象="
+            "输出严格JSON {facts:[{topic,fact,evidence_ids:[E001]}],evidence_gaps:[string],"
+            "evidence:[{id,title,url,publisher,published_at,source_tier,excerpt}]}。每条证据必须有可直接打开的url。对象="
             + json.dumps(subject, ensure_ascii=False)
         )
         return self._call(prompt, web=True)
@@ -1036,7 +1385,11 @@ class LunaProvider(BaseProvider):
 
     def supplement(self, subject: dict[str, str], gaps: list[str]) -> dict[str, Any]:
         return self._call(
-            "只补齐以下证据缺口，不重复已有搜索。输出JSON facts/evidence。对象="
+            "这是唯一一轮证据缺口补搜，最多使用5次Web Search。优先补齐同产业链A股比较：从产品路径、BOM、当前/下一瓶颈和"
+            "利润池寻找比输入对象更纯粹或更核心的A股表达，并用公告、财报、交易所或行业机构证据验证主营、壁垒、利润和成长；"
+            "同时补齐下列角色提出的实质缺口，不重复已有搜索。只能输出严格JSON "
+            "{facts:[{topic,fact,evidence_ids:[E001]}],evidence:[{id,title,url,publisher,published_at,source_tier,excerpt}]}，"
+            "每条证据必须有title和可直接打开的url。对象="
             + json.dumps(subject, ensure_ascii=False) + "\n缺口=" + json.dumps(gaps, ensure_ascii=False), web=True
         )
 
@@ -1090,10 +1443,11 @@ class LunaProvider(BaseProvider):
             return
         path = Path(debug_dir)
         path.mkdir(parents=True, exist_ok=True)
-        index = len(list(path.glob("luna_response_*.json"))) + 1
-        (path / f"luna_response_{index:02d}.json").write_text(
-            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        with self._state_lock:
+            index = len(list(path.glob("luna_response_*.json"))) + 1
+            (path / f"luna_response_{index:02d}.json").write_text(
+                json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
 
 
 def _provider_urlopen(
