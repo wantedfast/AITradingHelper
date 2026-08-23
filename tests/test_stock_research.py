@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import copy
 import sqlite3
 import tempfile
 import threading
@@ -22,6 +23,7 @@ from trade_review_agent.stock_research import (
     get_report,
     init_schema,
     list_reports,
+    load_stock_research_skill,
     merge_supplement_sources,
     normalize_sources,
     normalize_role_output_for_contract,
@@ -117,6 +119,42 @@ class FakeProvider:
             report["judge"]["evidence_ids"] = ["E999"]
         if self.subject.get("type") == "industry_chain":
             report.pop("input_stock_score", None)
+        return report
+
+
+class FakeSingleAgentProvider(FakeProvider):
+    def __init__(self, *, semantic_pass=True):
+        super().__init__()
+        self.semantic_pass = semantic_pass
+        self.single_calls = 0
+        self.legacy_calls = 0
+
+    def evidence(self, subject):
+        self.legacy_calls += 1
+        return super().evidence(subject)
+
+    def single_agent(self, subject):
+        self.single_calls += 1
+        self.subject = subject
+        self.usage.update({"input_tokens": 1200, "output_tokens": 600, "search_count": 8, "cost_cny": 0.42})
+        report = self.judge("")
+        report["schema_version"] = 2
+        report["subject"] = subject
+        report["evidence"] = copy.deepcopy(EVIDENCE)
+        report["positioning"].update({
+            "summary": "产业修复与高弹性并存", "reason": "证据支持",
+        })
+        report["audit"] = {
+            "claim_evidence_checks": [{
+                "claim": "关键结论", "evidence_id": "E001",
+                "verdict": "supported" if self.semantic_pass else "partial",
+                "reason": "公告支持" if self.semantic_pass else "只得到部分支持",
+            }],
+            "entity_mismatch_found": False,
+            "d_tier_only_claim_found": False,
+            "score_formula_checked": True,
+            "unresolved_evidence_gaps": [],
+        }
         return report
 
 
@@ -235,11 +273,11 @@ class StockResearchTest(unittest.TestCase):
         subject = {"type": "stock", "name": "华正新材", "code": "603186"}
         board = {"product_paths": [], "bom_tree": {}, "bottlenecks": [], "profit_flow": []}
         expected = {
-            "capital_logic": ("current_catalysts", "市场情绪标签"),
-            "product_path": ("real_product_line", "间接或弱暴露"),
-            "bom": ("bom_table", "连接器"),
-            "bottleneck": ("next_bottleneck", "谁最先涨价"),
-            "profit_flow": ("ranked_nodes", "1星伪核心"),
+            "capital_logic": ("current_catalysts", "Capital Logic Analyst"),
+            "product_path": ("real_product_line", "Product Path Mapper"),
+            "bom": ("bom_table", "BOM Chain Analyst"),
+            "bottleneck": ("next_bottleneck", "Bottleneck Analyst"),
+            "profit_flow": ("ranked_nodes", "Profit Flow Analyst"),
         }
         prompts = {role: build_role_prompt(role, subject, board, {}, EVIDENCE) for role in expected}
         for role, markers in expected.items():
@@ -250,7 +288,23 @@ class StockResearchTest(unittest.TestCase):
         self.assertIn("same_chain_core_asset_ranking", judge)
         self.assertIn("bottleneck_ranking", judge)
         self.assertIn("profit_capture_ranking", judge)
-        self.assertIn("不得再次放入同链排名", judge)
+        self.assertIn("Same-Chain Core Asset Ranking", judge)
+
+    def test_prompts_embed_the_versioned_canonical_skill_files(self):
+        bundle = load_stock_research_skill()
+        self.assertIn("# Stock Reverse Engineering", bundle.skill_markdown)
+        self.assertIn("# Multi-Agent Protocol", bundle.protocol_markdown)
+        self.assertEqual(len(bundle.version), 64)
+        prompt = build_role_prompt(
+            "bom",
+            {"type": "stock", "name": "华正新材", "code": "603186"},
+            {"product_paths": [], "bom_tree": {}, "bottlenecks": [], "profit_flow": []},
+            {},
+            EVIDENCE,
+            skill_bundle=bundle,
+        )
+        self.assertIn(bundle.skill_markdown, prompt)
+        self.assertIn(bundle.protocol_markdown, prompt)
 
     @patch.dict(os.environ, {"STOCK_RESEARCH_ACCESS": "all"})
     def test_complete_six_role_report_charges_three_once(self):
@@ -267,9 +321,39 @@ class StockResearchTest(unittest.TestCase):
         self.assertTrue(report["research_board"]["bom_tree"])
         self.assertTrue(report["research_board"]["bottlenecks"])
         self.assertTrue(report["research_board"]["profit_flow"])
+        self.assertEqual(report["meta"]["skill_version"], load_stock_research_skill().version)
         run_job(self.db, job["id"], provider_factory=lambda _: FakeProvider())
         self.assertEqual(self.balance(), 2)
         self.assertEqual(len(list_reports(self.db, user_id=self.user_id)), 1)
+
+    @patch.dict(os.environ, {"STOCK_RESEARCH_ACCESS": "all", "STOCK_RESEARCH_LUNA_SINGLE_AGENT": "1"})
+    def test_luna_single_agent_is_the_default_production_path(self):
+        provider = FakeSingleAgentProvider()
+        job = create_job(self.db, user=self.user, payload={"type": "stock", "value": "华正新材"}, start=False)
+        run_job(self.db, job["id"], provider_factory=lambda _: provider)
+        done = get_job(self.db, job["id"], user_id=self.user_id)
+        self.assertEqual(done["status"], "completed")
+        self.assertEqual(provider.single_calls, 1)
+        self.assertEqual(provider.legacy_calls, 0)
+        self.assertEqual(self.balance(), 2)
+        record = get_report(self.db, done["report_id"], user_id=self.user_id)
+        self.assertEqual(record["schema_version"], 2)
+        self.assertEqual(record["report"]["meta"]["execution_mode"], "single_agent")
+        self.assertEqual(record["report"]["research_board"]["execution_mode"], "luna_single_agent")
+
+    @patch.dict(os.environ, {"STOCK_RESEARCH_ACCESS": "all", "STOCK_RESEARCH_LUNA_SINGLE_AGENT": "1"})
+    def test_single_agent_semantic_gate_fails_without_charging(self):
+        provider = FakeSingleAgentProvider(semantic_pass=False)
+        job = create_job(self.db, user=self.user, payload={"type": "stock", "value": "华正新材"}, start=False)
+        run_job(self.db, job["id"], provider_factory=lambda _: provider, allow_provider_retry=False)
+        done = get_job(self.db, job["id"], user_id=self.user_id)
+        self.assertEqual(done["status"], "failed")
+        self.assertEqual(done["error_code"], "citation_semantic_error")
+        self.assertEqual(done["input_tokens"], 1200)
+        self.assertEqual(done["output_tokens"], 600)
+        self.assertEqual(done["search_count"], 8)
+        self.assertAlmostEqual(done["cost_cny"], 0.42)
+        self.assertEqual(self.balance(), 5)
 
     @patch.dict(os.environ, {"STOCK_RESEARCH_ACCESS": "all"})
     def test_capital_logic_and_product_path_start_in_parallel(self):
@@ -295,6 +379,75 @@ class StockResearchTest(unittest.TestCase):
         run_job(self.db, job["id"], provider_factory=lambda _: provider)
         self.assertEqual(get_job(self.db, job["id"], user_id=self.user_id)["status"], "completed")
         self.assertEqual(provider.started, {"capital_logic", "product_path"})
+
+    @patch.dict(os.environ, {"STOCK_RESEARCH_ACCESS": "all", "STOCK_RESEARCH_CROSS_EXAMINATION": "1"})
+    def test_cross_examination_revises_challenged_roles_and_reruns_downstream(self):
+        class ChallengingProvider(FakeProvider):
+            def __init__(inner_self):
+                super().__init__()
+                inner_self.calls = {}
+                inner_self.outputs = {}
+                inner_self.review_calls = 0
+
+            def role(inner_self, role, prompt):
+                inner_self.calls[role] = inner_self.calls.get(role, 0) + 1
+                result = super().role(role, prompt)
+                inner_self.outputs[role] = result
+                return result
+
+            def review_roles(inner_self, prompt):
+                inner_self.review_calls += 1
+                revised = copy.deepcopy(inner_self.outputs)
+                if inner_self.review_calls == 1:
+                    revised["bom"]["claims"][0]["evidence_ids"] = []
+                return {"revised_roles": revised, "conflicts": [{"issue": "产品暴露与资金标签需统一", "roles": ["capital_logic", "product_path"], "resolution": "按公告口径修订", "evidence_ids": ["E001"]}]}
+
+        provider = ChallengingProvider()
+        job = create_job(self.db, user=self.user, payload={"type": "stock", "value": "华正新材"}, start=False)
+        run_job(self.db, job["id"], provider_factory=lambda _: provider)
+        done = get_job(self.db, job["id"], user_id=self.user_id)
+        self.assertEqual(done["status"], "completed")
+        report = get_report(self.db, done["report_id"], user_id=self.user_id)["report"]
+        self.assertEqual(provider.review_calls, 2)
+        self.assertEqual(report["research_board"]["revision_log"], [{"stage": "initial_cross_examination", "reviewed_roles": ["capital_logic", "product_path", "bom", "bottleneck", "profit_flow"], "conflict_count": 1}])
+        self.assertEqual(report["research_board"]["conflicts"][0]["resolution"], "按公告口径修订")
+        self.assertEqual(report["research_board"]["contract_repairs"], [{"role": "cross_examination", "stage": "initial_cross_examination", "reason": "citation_error"}])
+        self.assertEqual(provider.calls, {"capital_logic": 1, "product_path": 1, "bom": 1, "bottleneck": 1, "profit_flow": 1})
+
+    @patch.dict(os.environ, {"STOCK_RESEARCH_ACCESS": "all"})
+    def test_supplemental_evidence_reruns_roles_that_reported_gaps(self):
+        class GapProvider(FakeProvider):
+            def __init__(inner_self):
+                super().__init__()
+                inner_self.capital_calls = 0
+                inner_self.outputs = {}
+                inner_self.review_calls = 0
+
+            def role(inner_self, role, prompt):
+                result = super().role(role, prompt)
+                if role == "capital_logic":
+                    inner_self.capital_calls += 1
+                    if inner_self.capital_calls == 1:
+                        result["evidence_gaps"] = ["缺少最新订单验证"]
+                inner_self.outputs[role] = result
+                return result
+
+            def review_roles(inner_self, prompt):
+                inner_self.review_calls += 1
+                return {"revised_roles": inner_self.outputs, "conflicts": []}
+
+            def supplement(inner_self, subject, gaps):
+                return {"facts": [{"topic": "订单", "fact": "补充验证", "evidence_ids": ["E001"]}], "evidence": [{"id": "E001", "title": "补充公告", "url": "https://example.com/supplement", "publisher": "交易所", "source_tier": "A", "excerpt": "订单说明"}]}
+
+        provider = GapProvider()
+        job = create_job(self.db, user=self.user, payload={"type": "stock", "value": "华正新材"}, start=False)
+        run_job(self.db, job["id"], provider_factory=lambda _: provider)
+        done = get_job(self.db, job["id"], user_id=self.user_id)
+        self.assertEqual(done["status"], "completed")
+        report = get_report(self.db, done["report_id"], user_id=self.user_id)["report"]
+        self.assertEqual(report["research_board"]["supplement_refreshed_roles"], ["capital_logic", "product_path", "bom", "bottleneck", "profit_flow"])
+        self.assertEqual(provider.review_calls, 2)
+        self.assertEqual(provider.capital_calls, 1)
 
     @patch.dict(os.environ, {"STOCK_RESEARCH_ACCESS": "all"})
     def test_invalid_role_citation_gets_one_same_provider_contract_repair(self):
