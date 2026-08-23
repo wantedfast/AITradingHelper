@@ -438,7 +438,14 @@ def run_job(
             _enforce_timeout(started)
             prompt = build_role_prompt(role, subject.payload(), board, role_outputs, sources)
             result = provider.role(role, prompt)
-            validate_role_output(role, result, sources)
+            try:
+                validate_role_output(role, result, sources)
+            except StockResearchError as exc:
+                if exc.code not in {"citation_error", "role_contract_error", "role_challenge_missing"}:
+                    raise
+                board.setdefault("contract_repairs", []).append({"role": role, "reason": exc.code})
+                result = provider.role(role, build_role_repair_prompt(role, result, sources, exc))
+                validate_role_output(role, result, sources)
             role_outputs[role] = result
             merge_role_into_board(board, role, result)
             progress = 18 + (index + 1) * 12
@@ -831,6 +838,24 @@ def build_role_prompt(role: str, subject: dict[str, str], board: dict[str, Any],
     return _json_prompt(
         f"你是六角色产业链逆向研究中的 {role}。{instructions[role]}", subject, board, roles, sources,
         "仅输出JSON：{summary:string,claims:[{claim,evidence_ids:[E001],confidence:high|medium|low}],challenges:[string],evidence_gaps:[string]}。每个重要claim必须有证据ID。"
+    )
+
+
+def build_role_repair_prompt(
+    role: str,
+    previous: Any,
+    sources: list[dict[str, Any]],
+    error: StockResearchError,
+) -> str:
+    known_ids = [str(item.get("id")) for item in sources if item.get("id")]
+    return (
+        f"你正在修复 {role} 角色的JSON契约错误：{error}。"
+        "只能修正JSON结构、evidence_ids和必需的challenges，不得新增事实、来源或投资建议。"
+        "每条claim必须至少引用一个给定证据ID，且只能使用以下ID："
+        + json.dumps(known_ids, ensure_ascii=False)
+        + "\n上一次输出="
+        + json.dumps(previous, ensure_ascii=False)
+        + "\n仅输出修复后的严格JSON对象。"
     )
 
 

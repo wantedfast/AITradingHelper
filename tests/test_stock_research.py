@@ -182,6 +182,34 @@ class StockResearchTest(unittest.TestCase):
         self.assertEqual(len(list_reports(self.db, user_id=self.user_id)), 1)
 
     @patch.dict(os.environ, {"STOCK_RESEARCH_ACCESS": "all"})
+    def test_invalid_role_citation_gets_one_same_provider_contract_repair(self):
+        class RepairProvider(FakeProvider):
+            def __init__(inner_self):
+                super().__init__()
+                inner_self.capital_calls = 0
+
+            def role(inner_self, role, prompt):
+                if role == "capital_logic":
+                    inner_self.capital_calls += 1
+                    if inner_self.capital_calls == 1:
+                        return {
+                            "summary": "待修复",
+                            "claims": [{"claim": "引用错误", "evidence_ids": ["E999"], "confidence": "low"}],
+                            "challenges": [],
+                            "evidence_gaps": [],
+                        }
+                return super().role(role, prompt)
+
+        provider = RepairProvider()
+        job = create_job(self.db, user=self.user, payload={"type": "stock", "value": "华正新材"}, start=False)
+        run_job(self.db, job["id"], provider_factory=lambda _: provider)
+        done = get_job(self.db, job["id"], user_id=self.user_id)
+        self.assertEqual(done["status"], "completed")
+        self.assertEqual(provider.capital_calls, 2)
+        report = get_report(self.db, done["report_id"], user_id=self.user_id)["report"]
+        self.assertEqual(report["research_board"]["contract_repairs"], [{"role": "capital_logic", "reason": "citation_error"}])
+
+    @patch.dict(os.environ, {"STOCK_RESEARCH_ACCESS": "all"})
     def test_provider_or_contract_failure_does_not_charge(self):
         first = create_job(self.db, user=self.user, payload={"type": "stock", "value": "华正新材"}, start=False)
         run_job(self.db, first["id"], provider_factory=lambda _: FakeProvider(fail=True), allow_provider_retry=False)
