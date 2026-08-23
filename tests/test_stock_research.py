@@ -15,6 +15,7 @@ from trade_review_agent.auth_system import AuthError, init_auth_db
 from trade_review_agent.stock_research import (
     create_job,
     _provider_urlopen,
+    finalize_report,
     get_job,
     get_report,
     init_schema,
@@ -149,6 +150,22 @@ class StockResearchTest(unittest.TestCase):
         proxy_handler = build.call_args.args[0]
         self.assertEqual(proxy_handler.proxies["https"], "http://172.19.0.1:7890")
         build.return_value.open.assert_called_once_with(request, timeout=12)
+
+    def test_backend_freezes_weighted_core_score_instead_of_trusting_model_arithmetic(self):
+        provider = FakeProvider()
+        raw = provider.judge("")
+        raw["input_stock_score"]["core_score"] = 99
+        report = finalize_report(
+            raw,
+            normalize_subject({"type": "stock", "value": "华正新材"}, allow_fetch=False),
+            {},
+            {},
+            EVIDENCE,
+            "luna",
+            provider.usage,
+        )
+        self.assertEqual(report["input_stock_score"]["core_score"], 71.0)
+        validate_report(report)
 
     @patch.dict(os.environ, {"STOCK_RESEARCH_ACCESS": "all"})
     def test_complete_six_role_report_charges_three_once(self):
