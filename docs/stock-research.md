@@ -5,6 +5,9 @@
 - `STOCK_RESEARCH_ACCESS=admin|pilot|all`，默认 `admin`。
 - `STOCK_RESEARCH_ROLLOUT_PERCENT=10` 仅在 `pilot` 模式生效。
 - `STOCK_RESEARCH_PROVIDER=luna|doubao_deepseek|auto`。
+- 正式用户任务默认强制 `luna`；Luna 密钥缺失时在入队前返回 503，不静默切换供应商。
+- `STOCK_RESEARCH_REQUIRE_LUNA_FOR_USERS=1` 为生产安全门；管理员仍可显式指定对照引擎做盲测。
+- `auto` 仅在同时配置 `STOCK_RESEARCH_ALLOW_AUTOMATIC_PROVIDER_SELECTION=1` 时生效，不能作为无意中的 fallback。
 - Luna 使用 `OPENAI_API_KEY` 与 `STOCK_RESEARCH_LUNA_MODEL`（默认 `gpt-5.6-luna`）。
 - 混合引擎使用 `ARK_API_KEY`、`DEEPSEEK_API_KEY`、`STOCK_RESEARCH_DEEPSEEK_FLASH_MODEL` 和 `STOCK_RESEARCH_DEEPSEEK_PRO_MODEL`。
 - `STOCK_RESEARCH_MAX_COST_CNY=2`，`STOCK_RESEARCH_TIMEOUT_SECONDS=300`。
@@ -32,7 +35,7 @@ Content-Type: application/json
 }
 ```
 
-`GET /api/admin/stock-research/benchmark` 返回聚合指标和当前裁决。配置 `STOCK_RESEARCH_PROVIDER=auto` 后，只有 Luna 同时满足 20 份样本、引用率、完整率、严重错误、质量差距、成本和 P95 时延门槛才会成为主引擎；否则使用 `doubao_deepseek`。
+`GET /api/admin/stock-research/benchmark` 返回聚合指标和当前裁决。只有管理员明确启用自动选择后，20 份样本、引用率、完整率、严重错误、质量差距、成本和 P95 时延门槛才参与供应商选择；正式用户环境应固定 `STOCK_RESEARCH_PROVIDER=luna`。
 
 管理员测试时可在创建任务 JSON 中附加 `provider` 强制选择某一引擎，普通用户传入该字段会被忽略。
 
