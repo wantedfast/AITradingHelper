@@ -83,6 +83,14 @@ class StockResearchApiE2ETest(unittest.TestCase):
         status, report_payload = self.request(f"/api/stock-research/reports/{completed['report_id']}")
         self.assertEqual(status, 200)
         self.assertEqual(report_payload["report"]["report"]["subject"]["code"], "603186")
+        status, cached = self.request(
+            "/api/stock-research/jobs", method="POST",
+            payload={"type": "stock", "value": "603186"},
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(cached["reused"])
+        self.assertEqual(cached["billing_cost"], 0)
+        self.assertEqual(cached["job"]["report_id"], completed["report_id"])
         status, history = self.request("/api/stock-research/reports")
         self.assertEqual(status, 200)
         self.assertEqual(len(history["reports"]), 1)

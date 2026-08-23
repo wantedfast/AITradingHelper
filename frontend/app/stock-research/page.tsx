@@ -13,6 +13,7 @@ type ResearchJob = {
   id: string; subject_type: "stock" | "industry_chain"; subject_name: string; stock_code?: string;
   status: JobStatus; stage: string; progress: number; provider: string; report_id?: string;
   error_message?: string; estimated_wait_seconds?: number; created_at: string;
+  cache_hit?: boolean; cache_source_report_id?: string; cache_source_created_at?: string;
 };
 type Evidence = { id: string; title: string; url: string; publisher?: string; published_at?: string; source_tier: string; excerpt?: string };
 type DataRecord = Record<string, unknown>;
@@ -29,9 +30,9 @@ type ResearchDocument = {
   bottleneck_ranking?: Ranking[]; profit_capture_ranking?: Ranking[];
   judge: CitationSection & { conclusion?: string; role_conflicts?: RoleConflict[]; disconfirming_signals?: string[]; classifications?: Record<string, unknown> };
   evidence: Evidence[]; role_outputs?: Record<string, unknown>; research_board?: Record<string, unknown>;
-  meta: { provider: string; execution_mode?: string; prompt_version?: string; skill_name?: string; skill_version?: string; input_tokens: number; output_tokens: number; search_count: number; cost_cny: number; duration_seconds?: number };
+  meta: { provider: string; execution_mode?: string; prompt_version?: string; skill_name?: string; skill_version?: string; input_tokens: number; output_tokens: number; search_count: number; cost_cny: number; duration_seconds?: number; cache_hit?: boolean; cache_source_created_at?: string; retrieved_at?: string };
 };
-type ReportRecord = { id: string; job_id: string; subject_type: string; subject_name: string; stock_code?: string; created_at: string; report?: ResearchDocument };
+type ReportRecord = { id: string; job_id: string; subject_type: string; subject_name: string; stock_code?: string; created_at: string; cache_hit?: boolean; cache_source_report_id?: string; report?: ResearchDocument };
 type ResearchQuota = {
   membership_active: boolean; monthly_included: number; monthly_used: number; monthly_remaining: number;
   daily_limit: number | null; daily_used: number; daily_remaining: number | null;
@@ -89,6 +90,7 @@ export default function StockResearchPage() {
   const [reports, setReports] = useState<ReportRecord[]>([]);
   const [quota, setQuota] = useState<ResearchQuota | null>(null);
   const [selected, setSelected] = useState<ReportRecord | null>(null);
+  const [cacheNotice, setCacheNotice] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
 
@@ -141,15 +143,23 @@ export default function StockResearchPage() {
     return () => window.clearInterval(timer);
   }, [job, loadHistory, openReport]);
 
-  async function submit() {
-    if (!value.trim()) return setMessage(kind === "stock" ? "请输入一只 A 股简称或六位代码" : "请输入一个产业链名称");
-    setBusy(true); setMessage(""); setSelected(null);
+  async function submit(forceRefresh = false, override?: { type: "stock" | "industry_chain"; value: string }) {
+    const requestKind = override?.type || kind;
+    const requestValue = (override?.value || value).trim();
+    if (!requestValue) return setMessage(requestKind === "stock" ? "请输入一只 A 股简称或六位代码" : "请输入一个产业链名称");
+    setBusy(true); setMessage(""); setSelected(null); setCacheNotice(false);
     try {
-      const payload = await apiFetch<{ job: ResearchJob; quota: ResearchQuota }>("/api/stock-research/jobs", {
-        method: "POST", body: JSON.stringify({ type: kind, value: value.trim() }),
+      const payload = await apiFetch<{ job: ResearchJob; quota: ResearchQuota; reused?: boolean }>("/api/stock-research/jobs", {
+        method: "POST", body: JSON.stringify({ type: requestKind, value: requestValue, force_refresh: forceRefresh }),
       });
       setJob(payload.job);
       setQuota(payload.quota || null);
+      if (payload.reused && payload.job.report_id) {
+        setCacheNotice(true);
+        await loadHistory();
+        await openReport(payload.job.report_id);
+        setMessage("已直接打开本地保存的最新报告，本次不调用模型、不扣次数。");
+      }
     } catch (error) {
       const fallback = error instanceof ApiError && error.status === 403 ? "该功能目前仅供管理员完成双引擎评测。" : "创建研究任务失败";
       setMessage(error instanceof Error ? error.message : fallback);
@@ -182,7 +192,7 @@ export default function StockResearchPage() {
           </div>
           <div className="stock-research-form">
             <label><Search /><input maxLength={kind === "stock" ? 20 : 30} onChange={(event) => setValue(event.target.value)} placeholder={kind === "stock" ? "例如：华正新材 / 603186" : "例如：算力租赁产业链"} value={value} /></label>
-            <button disabled={busy || Boolean(job && ["queued", "running", "retrying"].includes(job.status))} onClick={submit} type="button">
+            <button disabled={busy || Boolean(job && ["queued", "running", "retrying"].includes(job.status))} onClick={() => submit()} type="button">
               {busy ? <Loader2 className="spin" /> : <Boxes />}开始六角色研究
             </button>
           </div>
@@ -191,7 +201,7 @@ export default function StockResearchPage() {
 
         {message ? <div className="stock-research-alert"><AlertTriangle />{message}</div> : null}
         {job && job.status !== "completed" ? <JobProgress job={job} /> : null}
-        {document ? <ReportView report={document} evidenceMap={evidenceMap} /> : <History reports={reports} onOpen={openReport} busy={busy} />}
+        {document ? <ReportView busy={busy} cached={Boolean(cacheNotice || selected?.cache_hit || document.meta.cache_hit)} createdAt={selected?.created_at || ""} evidenceMap={evidenceMap} onRefresh={() => submit(true, { type: document.subject.type, value: document.subject.code || document.subject.name })} report={document} /> : <History reports={reports} onOpen={(id) => { setCacheNotice(false); void openReport(id); }} busy={busy} />}
         <FinancialDisclaimer />
       </section>
       <MobileFeatureNav activeKey="stock-research" />
@@ -214,10 +224,10 @@ function History({ reports, onOpen, busy }: { reports: ReportRecord[]; onOpen: (
   </section>;
 }
 
-function ReportView({ report, evidenceMap }: { report: ResearchDocument; evidenceMap: Map<string, Evidence> }) {
+function ReportView({ report, evidenceMap, cached, createdAt, busy, onRefresh }: { report: ResearchDocument; evidenceMap: Map<string, Evidence>; cached: boolean; createdAt: string; busy: boolean; onRefresh: () => void }) {
   const sameChain = report.same_chain_core_asset_ranking || report.core_asset_ranking || [];
   return <article className="stock-research-report">
-    <header><span>{report.subject.type === "stock" ? "股票逆向研究" : "产业链逆向研究"}</span><h2>{report.subject.name}{report.subject.code ? ` · ${report.subject.code}` : ""}</h2><p>{report.headline}</p><small>研究引擎 {report.meta.provider}{report.meta.execution_mode === "single_agent" ? " · 单智能研究引擎六视角" : ""} · {report.evidence.length} 条证据 · {report.meta.search_count || 0} 次搜索 · 成本 ¥{Number(report.meta.cost_cny || 0).toFixed(2)}{report.meta.duration_seconds ? ` · ${Math.round(report.meta.duration_seconds)} 秒` : ""}</small></header>
+    <header><span>{report.subject.type === "stock" ? "股票逆向研究" : "产业链逆向研究"}</span><h2>{report.subject.name}{report.subject.code ? ` · ${report.subject.code}` : ""}</h2><p>{report.headline}</p><small>研究引擎 {report.meta.provider}{report.meta.execution_mode === "single_agent" ? " · 单智能研究引擎六视角" : ""} · {report.evidence.length} 条证据 · {report.meta.search_count || 0} 次搜索 · 成本 ¥{Number(report.meta.cost_cny || 0).toFixed(2)}{report.meta.duration_seconds ? ` · ${Math.round(report.meta.duration_seconds)} 秒` : ""}</small><div className="stock-research-report-actions">{cached ? <em>本地报告复用 · 本次未扣次数</em> : <em>生成于 {formatDate(createdAt)}</em>}<button disabled={busy} onClick={onRefresh} type="button"><RefreshCcw />重新生成最新报告</button></div></header>
     <section className="stock-research-dashboard">
       <InsightCard title="资金为什么炒" section={report.capital_logic} evidenceMap={evidenceMap} />
       <InsightCard title="利润真正流向" section={report.profit_flow} evidenceMap={evidenceMap} />

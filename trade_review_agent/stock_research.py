@@ -15,7 +15,7 @@ from contextlib import contextmanager
 from math import ceil
 from statistics import median
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Protocol
 from uuid import uuid4
@@ -232,6 +232,8 @@ def init_schema(db_path: Path) -> None:
                 started_at TEXT,
                 updated_at TEXT NOT NULL,
                 completed_at TEXT,
+                cache_hit INTEGER NOT NULL DEFAULT 0,
+                cache_source_report_id TEXT NOT NULL DEFAULT '',
                 FOREIGN KEY (user_id) REFERENCES users(id)
             );
             CREATE TABLE IF NOT EXISTS stock_research_reports (
@@ -252,6 +254,8 @@ def init_schema(db_path: Path) -> None:
                 duration_seconds REAL NOT NULL DEFAULT 0,
                 source_count INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
+                cache_hit INTEGER NOT NULL DEFAULT 0,
+                cache_source_report_id TEXT NOT NULL DEFAULT '',
                 FOREIGN KEY (job_id) REFERENCES stock_research_jobs(id),
                 FOREIGN KEY (user_id) REFERENCES users(id)
             );
@@ -288,6 +292,28 @@ def init_schema(db_path: Path) -> None:
             except sqlite3.OperationalError as exc:
                 if "duplicate column" not in str(exc).lower():
                     raise
+        for name, declaration in (
+            ("cache_hit", "INTEGER NOT NULL DEFAULT 0"),
+            ("cache_source_report_id", "TEXT NOT NULL DEFAULT ''"),
+        ):
+            if name not in columns:
+                conn.execute(f"ALTER TABLE stock_research_jobs ADD COLUMN {name} {declaration}")
+        report_columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(stock_research_reports)").fetchall()}
+        for name, declaration in (
+            ("cache_hit", "INTEGER NOT NULL DEFAULT 0"),
+            ("cache_source_report_id", "TEXT NOT NULL DEFAULT ''"),
+        ):
+            if name not in report_columns:
+                conn.execute(f"ALTER TABLE stock_research_reports ADD COLUMN {name} {declaration}")
+        conn.execute(
+            """CREATE INDEX IF NOT EXISTS idx_stock_research_reports_subject_cache
+               ON stock_research_reports(subject_type,stock_code,subject_name,created_at DESC)"""
+        )
+        conn.execute(
+            """CREATE UNIQUE INDEX IF NOT EXISTS idx_stock_research_cache_copy_once
+               ON stock_research_reports(user_id,cache_source_report_id)
+               WHERE cache_hit=1 AND cache_source_report_id<>''"""
+        )
 
 
 def normalize_subject(payload: dict[str, Any], *, allow_fetch: bool = True) -> NormalizedSubject:
@@ -344,11 +370,11 @@ def quota_status(db_path: Path, *, user_id: int) -> dict[str, Any]:
         if not user:
             raise AuthError("用户不存在", 404)
         monthly_used = int(conn.execute(
-            "SELECT COUNT(*) FROM stock_research_reports WHERE user_id=? AND substr(created_at,1,7)=?",
+            "SELECT COUNT(*) FROM stock_research_reports WHERE user_id=? AND substr(created_at,1,7)=? AND cache_hit=0",
             (user_id, month_prefix),
         ).fetchone()[0])
         daily_used = int(conn.execute(
-            "SELECT COUNT(*) FROM stock_research_reports WHERE user_id=? AND substr(created_at,1,10)=?",
+            "SELECT COUNT(*) FROM stock_research_reports WHERE user_id=? AND substr(created_at,1,10)=? AND cache_hit=0",
             (user_id, day_prefix),
         ).fetchone()[0])
         credit_balance = int(conn.execute(
@@ -396,6 +422,107 @@ def _validate_job_quota(db_path: Path, *, user_id: int) -> dict[str, Any]:
     return quota
 
 
+def _cache_ttl_hours() -> int:
+    try:
+        return max(0, min(24 * 30, int(os.getenv("STOCK_RESEARCH_CACHE_TTL_HOURS", "24"))))
+    except ValueError:
+        return 24
+
+
+def _is_truthy(value: Any) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _find_recent_report(
+    db_path: Path, *, subject: NormalizedSubject, user_id: int | None = None,
+) -> sqlite3.Row | None:
+    ttl_hours = _cache_ttl_hours()
+    if ttl_hours <= 0:
+        return None
+    cutoff = (datetime.now(CN_TZ) - timedelta(hours=ttl_hours)).isoformat(timespec="seconds")
+    conditions = ["schema_version>=2", "cache_hit=0", "created_at>=?", "subject_type=?"]
+    params: list[Any] = [cutoff, subject.type]
+    if subject.type == "stock":
+        conditions.append("stock_code=?")
+        params.append(subject.code)
+    else:
+        conditions.append("subject_name=?")
+        params.append(subject.name)
+    if user_id is not None:
+        conditions.append("user_id=?")
+        params.append(user_id)
+    query = "SELECT * FROM stock_research_reports WHERE " + " AND ".join(conditions) + " ORDER BY created_at DESC LIMIT 1"
+    with _connect(db_path) as conn:
+        return conn.execute(query, params).fetchone()
+
+
+def _copy_cached_report_for_user(
+    db_path: Path, *, source: sqlite3.Row, subject: NormalizedSubject,
+    user_id: int, request_ip: str,
+) -> dict[str, Any]:
+    source_id = str(source["id"])
+    job_id = f"sr-{uuid4().hex}"
+    report_id = f"report-{job_id[3:]}"
+    now = _now()
+    report = json.loads(str(source["report_json"]))
+    meta = report.setdefault("meta", {})
+    meta["cache_hit"] = True
+    meta["cache_source_report_id"] = source_id
+    meta["cache_source_created_at"] = str(source["created_at"])
+    meta["retrieved_at"] = now
+    board = report.get("research_board") if isinstance(report.get("research_board"), dict) else {}
+    roles = report.get("role_outputs") if isinstance(report.get("role_outputs"), dict) else {}
+    sources = report.get("evidence") if isinstance(report.get("evidence"), list) else []
+    try:
+        with _connect(db_path) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            active = conn.execute(
+                "SELECT id FROM stock_research_jobs WHERE user_id=? AND status IN ('queued','running','retrying')",
+                (user_id,),
+            ).fetchone()
+            if active:
+                raise AuthError("当前已有一份研究正在生成，请等待完成后再提交", 409)
+            conn.execute(
+                """INSERT INTO stock_research_jobs
+                   (id,user_id,subject_type,subject_name,stock_code,status,stage,provider,billing_mode,model_names,
+                    progress,board_json,role_outputs_json,sources_json,request_ip,created_at,started_at,updated_at,
+                    completed_at,cache_hit,cache_source_report_id)
+                   VALUES(?,?,?,?,?,'completed','completed','cache','cache_reuse',?,100,?,?,?,?,?,?,?,?,1,?)""",
+                (
+                    job_id, user_id, subject.type, subject.name, subject.code,
+                    str(source["model_names"]), json.dumps(board, ensure_ascii=False),
+                    json.dumps(roles, ensure_ascii=False), json.dumps(sources, ensure_ascii=False),
+                    request_ip, now, now, now, now, source_id,
+                ),
+            )
+            conn.execute(
+                """INSERT INTO stock_research_reports
+                   (id,job_id,user_id,subject_type,subject_name,stock_code,schema_version,report_json,provider,
+                    model_names,input_tokens,output_tokens,search_count,cost_cny,duration_seconds,source_count,
+                    created_at,cache_hit,cache_source_report_id)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)""",
+                (
+                    report_id, job_id, user_id, subject.type, subject.name, subject.code,
+                    int(source["schema_version"]), json.dumps(report, ensure_ascii=False), "cache",
+                    str(source["model_names"]), 0, 0, 0, 0.0, 0.0, len(sources), now, source_id,
+                ),
+            )
+    except sqlite3.IntegrityError:
+        with _connect(db_path) as conn:
+            existing = conn.execute(
+                "SELECT job_id FROM stock_research_reports WHERE user_id=? AND cache_hit=1 AND cache_source_report_id=?",
+                (user_id, source_id),
+            ).fetchone()
+        if not existing:
+            raise
+        job_id = str(existing["job_id"])
+    reused = get_job(db_path, job_id, user_id=user_id)
+    reused["cache_hit"] = True
+    reused["cache_source_report_id"] = source_id
+    reused["cache_source_created_at"] = str(source["created_at"])
+    return reused
+
+
 def create_job(
     db_path: Path,
     *,
@@ -409,6 +536,20 @@ def create_job(
         raise AuthError("产业链逆向研究正在管理员评测阶段，暂未对当前账号开放", 403)
     subject = normalize_subject(payload)
     user_id = int(user["id"])
+    if not _is_truthy(payload.get("force_refresh")):
+        cached = _find_recent_report(db_path, subject=subject, user_id=user_id)
+        if cached:
+            reused = get_job(db_path, str(cached["job_id"]), user_id=user_id)
+            reused["cache_hit"] = True
+            reused["cache_source_report_id"] = str(cached["id"])
+            reused["cache_source_created_at"] = str(cached["created_at"])
+            return reused
+        shared_cached = _find_recent_report(db_path, subject=subject)
+        if shared_cached:
+            return _copy_cached_report_for_user(
+                db_path, source=shared_cached, subject=subject,
+                user_id=user_id, request_ip=request_ip,
+            )
     quota = _validate_job_quota(db_path, user_id=user_id)
     billing_mode = str(quota["next_billing_mode"])
     job_id = f"sr-{uuid4().hex}"
@@ -923,7 +1064,8 @@ def get_job(db_path: Path, job_id: str, *, user_id: int | None = None, admin: bo
 def list_reports(db_path: Path, *, user_id: int, limit: int = 30) -> list[dict[str, Any]]:
     with _connect(db_path) as conn:
         rows = conn.execute(
-            """SELECT id,job_id,subject_type,subject_name,stock_code,provider,cost_cny,duration_seconds,source_count,created_at
+            """SELECT id,job_id,subject_type,subject_name,stock_code,provider,cost_cny,duration_seconds,source_count,created_at,
+                      cache_hit,cache_source_report_id
                FROM stock_research_reports WHERE user_id=? ORDER BY created_at DESC LIMIT ?""",
             (user_id, max(1, min(limit, 100))),
         ).fetchall()
@@ -1061,7 +1203,7 @@ def _job_payload(row: sqlite3.Row) -> dict[str, Any]:
     keys = (
         "id", "user_id", "subject_type", "subject_name", "stock_code", "status", "stage", "provider", "billing_mode", "model_names", "attempts",
         "progress", "input_tokens", "output_tokens", "search_count", "cost_cny", "error_code", "error_message",
-        "created_at", "started_at", "updated_at", "completed_at",
+        "created_at", "started_at", "updated_at", "completed_at", "cache_hit", "cache_source_report_id",
     )
     payload = {key: row[key] for key in keys if key in row.keys()}
     for key in ("username", "email"):
