@@ -2096,7 +2096,7 @@
 
 .billing-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 380px;
+  grid-template-columns: minmax(0, 1fr) 440px;
   gap: 22px;
 }
 
@@ -2183,7 +2183,7 @@
 
 .billing-qr-row {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
 }
 
@@ -2191,9 +2191,13 @@
   min-height: 230px;
 }
 
+.billing-qr {
+  padding: 12px;
+}
+
 .billing-qr img {
-  width: min(240px, 100%);
-  aspect-ratio: 1;
+  width: min(420px, 100%);
+  height: auto;
   border-radius: 6px;
   background: #fff;
 }
