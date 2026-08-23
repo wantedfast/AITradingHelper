@@ -20,6 +20,7 @@ const shellRoutes = [
   { name: "watch", path: "/watch" },
   { name: "market-day", path: "/market-day" },
   { name: "ai-research", path: "/ai-research" },
+  { name: "stock-research", path: "/stock-research" },
   { name: "review-report", path: "/review/report/responsive-smoke" },
   { name: "watch-report", path: "/watch/result?planId=responsive-smoke" },
   { name: "market-day-report", path: "/market-day/report/responsive-smoke" },
@@ -28,7 +29,7 @@ const shellRoutes = [
   { name: "webhook", path: "/webhook" },
 ] as const;
 
-const featureRoutes = ["/auction-strength", "/review", "/watch", "/market-day", "/ai-research"];
+const featureRoutes = ["/auction-strength", "/review", "/watch", "/market-day", "/ai-research", "/stock-research"];
 
 const membershipPlans = [
   { id: "monthly_membership", plan_name: "月度会员", amount_cents: 5900, duration_days: 31, alipay_qr_url: "/pay/alipay-qr.jpg", wechat_qr_url: "/pay/wechat-qr.jpg" },
@@ -379,9 +380,11 @@ async function expectNoGlobalHorizontalOverflow(page: Page, routeName: string) {
 }
 
 async function expectFeatureNavigationInViewport(page: Page, viewportHeight: number, isMobile: boolean) {
-  const nav = page.locator(".review-workbench-nav");
+  // Some shells render a desktop sidebar and a mobile bottom nav together;
+  // only the breakpoint-appropriate navigation participates in layout.
+  const nav = page.locator(":is(.review-workbench-nav, .mobile-only-feature-nav):visible");
   await expect(nav).toBeVisible();
-  await expect(nav.locator("a")).toHaveCount(5);
+  await expect(nav.locator("a")).toHaveCount(6);
 
   const box = await nav.boundingBox();
   expect(box, "feature navigation should have a measurable layout box").not.toBeNull();
@@ -433,7 +436,7 @@ for (const viewport of viewports) {
       }
     });
 
-    test("five core features expose an unobstructed unified navigation", async ({ page }) => {
+    test("six core features expose an unobstructed unified navigation", async ({ page }) => {
       await installStableApiFixtures(page);
 
       for (const path of featureRoutes) {
@@ -470,7 +473,7 @@ for (const viewport of viewports) {
     });
 
     if (viewport.width <= 767) {
-      test("paid report actions remain visible above the five-feature navigation", async ({ page }) => {
+      test("paid report actions remain visible above the six-feature navigation", async ({ page }) => {
         await installStableApiFixtures(page, { datedBillingStatus: "pending_view" });
 
         for (const path of ["/auction-strength", "/market-day", "/ai-research"]) {
