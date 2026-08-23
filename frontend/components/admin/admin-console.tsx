@@ -5,7 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { ExternalLink, LogOut } from "lucide-react";
 import { useEffect, useState } from "react";
 import { clearAuth, getAuthToken, getStoredUser, refreshCurrentUser, type UserProfile } from "@/lib/auth-client";
-import { AdminEmailsPage, AdminFeedbackPage, AdminOrdersPage, AdminOverviewPage, AdminUpdatesPage, AdminUsersPage } from "@/components/admin/admin-pages";
+import { AdminEmailsPage, AdminFeedbackPage, AdminOrdersPage, AdminOverviewPage, AdminStockResearchPage, AdminUpdatesPage, AdminUsersPage } from "@/components/admin/admin-pages";
 import { AdminNavigation, adminSections, type AdminSection } from "@/components/admin/admin-navigation";
 
 export function AdminConsole({ section }: { section: AdminSection }) {
@@ -94,5 +94,6 @@ function AdminSectionContent({ section }: { section: AdminSection }) {
   if (section === "feedback") return <AdminFeedbackPage />;
   if (section === "updates") return <AdminUpdatesPage />;
   if (section === "emails") return <AdminEmailsPage />;
+  if (section === "stock-research") return <AdminStockResearchPage />;
   return <AdminOverviewPage />;
 }

@@ -1,7 +1,7 @@
 import Link from "next/link";
-import { BarChart3, CreditCard, Mail, Megaphone, MessageSquare, Users } from "lucide-react";
+import { BarChart3, Boxes, CreditCard, Mail, Megaphone, MessageSquare, Users } from "lucide-react";
 
-export type AdminSection = "overview" | "users" | "orders" | "feedback" | "updates" | "emails";
+export type AdminSection = "overview" | "users" | "orders" | "feedback" | "updates" | "emails" | "stock-research";
 
 export const adminSections: Array<{ key: AdminSection; label: string; icon: typeof BarChart3 }> = [
   { key: "overview", label: "总览", icon: BarChart3 },
@@ -10,6 +10,7 @@ export const adminSections: Array<{ key: AdminSection; label: string; icon: type
   { key: "feedback", label: "反馈建议", icon: MessageSquare },
   { key: "updates", label: "更新公告", icon: Megaphone },
   { key: "emails", label: "邮件推送", icon: Mail },
+  { key: "stock-research", label: "产业链研究", icon: Boxes },
 ];
 
 export function adminSectionPath(section: AdminSection) {
@@ -57,5 +58,11 @@ export function adminStatusLabel(value: string) {
   if (value === "paid") return "已完成";
   if (value === "accepted") return "已采纳";
   if (value === "rejected") return "异常";
+  if (value === "queued") return "排队中";
+  if (value === "running") return "生成中";
+  if (value === "completed") return "已完成";
+  if (value === "failed") return "生成失败";
+  if (value === "timed_out") return "已超时";
+  if (value === "payment_required") return "余额不足";
   return value;
 }
