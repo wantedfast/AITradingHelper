@@ -317,11 +317,20 @@ def create_job(
     quota = _validate_job_quota(db_path, user_id=user_id)
     billing_mode = str(quota["next_billing_mode"])
     job_id = f"sr-{uuid4().hex}"
-    provider = (provider_name or os.getenv("STOCK_RESEARCH_PROVIDER", "luna")).strip().lower()
+    requested_provider = provider_name.strip().lower()
+    provider = (requested_provider or os.getenv("STOCK_RESEARCH_PROVIDER", "luna")).strip().lower()
     if provider == "auto":
+        if os.getenv("STOCK_RESEARCH_ALLOW_AUTOMATIC_PROVIDER_SELECTION", "0").strip().lower() not in {"1", "true", "yes"}:
+            raise AuthError("自动模型切换未启用，请明确配置 Luna", 503)
         provider = select_production_provider(db_path)["provider"]
     if provider not in {"luna", "doubao_deepseek"}:
         raise AuthError("研究引擎配置无效", 503)
+    if str(user.get("role")) != "admin" and provider != "luna" and os.getenv(
+        "STOCK_RESEARCH_REQUIRE_LUNA_FOR_USERS", "1"
+    ).strip().lower() not in {"0", "false", "no"}:
+        raise AuthError("当前用户研究固定使用 Luna，服务器模型配置异常", 503)
+    if start:
+        ensure_provider_configured(provider)
     now = _now()
     model_names = _configured_model_names(provider)
     try:
@@ -344,6 +353,16 @@ def create_job(
     if start:
         start_job(db_path, job_id)
     return get_job(db_path, job_id, user_id=user_id)
+
+
+def ensure_provider_configured(provider: str) -> None:
+    """Fail before enqueueing when the selected provider has no credentials."""
+    if provider == "luna" and not os.getenv("OPENAI_API_KEY", "").strip():
+        raise AuthError("Luna 尚未完成服务器配置，请联系管理员", 503)
+    if provider == "doubao_deepseek" and (
+        not os.getenv("ARK_API_KEY", "").strip() or not os.getenv("DEEPSEEK_API_KEY", "").strip()
+    ):
+        raise AuthError("豆包或 DeepSeek 尚未完成服务器配置", 503)
 
 
 def start_job(db_path: Path, job_id: str, *, provider_factory: Callable[[str], Provider] | None = None) -> None:
@@ -387,7 +406,7 @@ def run_job(
             if not row or row["status"] not in {"queued", "retrying"}:
                 return
             conn.execute(
-                "UPDATE stock_research_jobs SET status='running',stage='collecting_evidence',attempts=attempts+1,started_at=COALESCE(started_at,?),updated_at=? WHERE id=?",
+                "UPDATE stock_research_jobs SET status='running',stage='collecting_evidence',progress=5,attempts=attempts+1,started_at=COALESCE(started_at,?),updated_at=? WHERE id=?",
                 (_now(), _now(), job_id),
             )
             subject = NormalizedSubject(str(row["subject_type"]), str(row["subject_name"]), str(row["stock_code"]))
@@ -400,10 +419,6 @@ def run_job(
         evidence_pack = provider.evidence(subject.payload())
         _enforce_cost(provider.usage)
         sources = normalize_sources(evidence_pack.get("evidence"))
-        if not sources:
-            raise StockResearchError("未找到可验证的一手或权威证据", code="evidence_missing")
-        if not any(item["source_tier"] in {"A", "B"} for item in sources):
-            raise StockResearchError("证据仅有概念标签或低等级来源", code="evidence_quality_low")
         board: dict[str, Any] = {
             "subject": subject.payload(),
             "facts": evidence_pack.get("facts") or [],
@@ -411,6 +426,11 @@ def run_job(
             "conflicts": [],
             "evidence_gaps": evidence_pack.get("evidence_gaps") or [],
         }
+        _persist_progress(db_path, job_id, "collecting_evidence", 8, board, {}, sources, provider.usage)
+        if not sources:
+            raise StockResearchError("未找到可验证的一手或权威证据", code="evidence_missing")
+        if not any(item["source_tier"] in {"A", "B"} for item in sources):
+            raise StockResearchError("证据仅有概念标签或低等级来源", code="evidence_quality_low")
         role_outputs: dict[str, Any] = {}
         _persist_progress(db_path, job_id, "capital_logic", 12, board, role_outputs, sources, provider.usage)
 

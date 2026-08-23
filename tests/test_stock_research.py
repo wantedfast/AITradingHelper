@@ -35,9 +35,10 @@ EVIDENCE = [
 class FakeProvider:
     name = "luna"
 
-    def __init__(self, *, invalid=False, fail=False, cost_cny=0.36):
+    def __init__(self, *, invalid=False, fail=False, empty_evidence=False, cost_cny=0.36):
         self.invalid = invalid
         self.fail = fail
+        self.empty_evidence = empty_evidence
         self.usage = {"input_tokens": 1200, "output_tokens": 400, "search_count": 2, "cost_cny": cost_cny}
         self.subject = {"type": "stock"}
 
@@ -45,6 +46,8 @@ class FakeProvider:
         self.subject = subject
         if self.fail:
             raise RuntimeError("provider unavailable")
+        if self.empty_evidence:
+            return {"facts": [], "evidence_gaps": ["未找到证据"], "evidence": []}
         return {"facts": ["事实"], "evidence_gaps": [], "evidence": EVIDENCE}
 
     def role(self, role, prompt):
@@ -198,6 +201,16 @@ class StockResearchTest(unittest.TestCase):
         self.assertEqual(after["daily_used"], before["daily_used"])
 
     @patch.dict(os.environ, {"STOCK_RESEARCH_ACCESS": "all"})
+    def test_empty_evidence_failure_preserves_search_progress_and_usage(self):
+        job = create_job(self.db, user=self.user, payload={"type": "stock", "value": "华正新材"}, start=False)
+        run_job(self.db, job["id"], provider_factory=lambda _: FakeProvider(empty_evidence=True))
+        failed = get_job(self.db, job["id"], user_id=self.user_id)
+        self.assertEqual(failed["error_code"], "evidence_missing")
+        self.assertEqual(failed["progress"], 8)
+        self.assertEqual(failed["search_count"], 2)
+        self.assertEqual(self.balance(), 5)
+
+    @patch.dict(os.environ, {"STOCK_RESEARCH_ACCESS": "all"})
     def test_admin_research_is_free(self):
         conn = sqlite3.connect(self.db)
         try:
@@ -217,6 +230,40 @@ class StockResearchTest(unittest.TestCase):
         with self.assertRaises(AuthError) as caught:
             create_job(self.db, user=self.user, payload={"type": "industry_chain", "value": "算力租赁"}, start=False)
         self.assertEqual(caught.exception.status, 409)
+
+    @patch.dict(os.environ, {
+        "STOCK_RESEARCH_ACCESS": "all",
+        "STOCK_RESEARCH_PROVIDER": "doubao_deepseek",
+        "ARK_API_KEY": "test-ark",
+        "DEEPSEEK_API_KEY": "test-deepseek",
+    })
+    def test_normal_users_cannot_silently_fallback_from_luna(self):
+        with self.assertRaises(AuthError) as caught:
+            create_job(self.db, user=self.user, payload={"type": "stock", "value": "华正新材"}, start=False)
+        self.assertEqual(caught.exception.status, 503)
+        self.assertIn("Luna", caught.exception.message)
+
+    @patch.dict(os.environ, {
+        "STOCK_RESEARCH_ACCESS": "all",
+        "STOCK_RESEARCH_PROVIDER": "luna",
+        "OPENAI_API_KEY": "",
+    })
+    def test_missing_luna_key_fails_before_job_is_enqueued(self):
+        with self.assertRaises(AuthError) as caught:
+            create_job(self.db, user=self.user, payload={"type": "stock", "value": "华正新材"}, start=True)
+        self.assertEqual(caught.exception.status, 503)
+        with sqlite3.connect(self.db) as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM stock_research_jobs").fetchone()[0], 0)
+
+    @patch.dict(os.environ, {
+        "STOCK_RESEARCH_ACCESS": "all",
+        "STOCK_RESEARCH_PROVIDER": "auto",
+        "STOCK_RESEARCH_ALLOW_AUTOMATIC_PROVIDER_SELECTION": "0",
+    })
+    def test_automatic_provider_selection_requires_explicit_opt_in(self):
+        with self.assertRaises(AuthError) as caught:
+            create_job(self.db, user=self.user, payload={"type": "stock", "value": "华正新材"}, start=False)
+        self.assertEqual(caught.exception.status, 503)
 
     @patch.dict(os.environ, {"STOCK_RESEARCH_ACCESS": "all"})
     def test_industry_chain_report_has_chain_rankings_and_no_stock_score(self):

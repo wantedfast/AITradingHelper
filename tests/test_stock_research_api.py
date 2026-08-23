@@ -41,7 +41,11 @@ class StockResearchApiE2ETest(unittest.TestCase):
         self.stack = ExitStack()
         self.stack.enter_context(patch.object(simple_api, "AUTH_DB", self.db))
         self.stack.enter_context(patch("trade_review_agent.stock_research.build_provider", side_effect=lambda _: FakeProvider()))
-        self.stack.enter_context(patch.dict("os.environ", {"STOCK_RESEARCH_ACCESS": "all"}))
+        self.stack.enter_context(patch.dict("os.environ", {
+            "STOCK_RESEARCH_ACCESS": "all",
+            "STOCK_RESEARCH_PROVIDER": "luna",
+            "OPENAI_API_KEY": "test-key",
+        }))
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), simple_api.TradeReviewHandler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
