@@ -1,4 +1,5 @@
 import re
+import io
 import tempfile
 import unittest
 from pathlib import Path
@@ -312,6 +313,101 @@ class PrebuiltDeployContractTest(unittest.TestCase):
         for pattern in (".next", "*.log", "coverage", "test-results", "playwright-report"):
             with self.subTest(pattern=pattern):
                 self.assertIn(pattern, source)
+
+    def test_remote_shell_scripts_have_lf_shebang_and_no_crlf_bytes(self) -> None:
+        for relative_path in ("deploy/remote_release.sh", "deploy/remote_cleanup.sh"):
+            with self.subTest(path=relative_path):
+                source = (ROOT / relative_path).read_bytes()
+                self.assertTrue(source.startswith(b"#!/usr/bin/env bash\n"))
+                self.assertNotIn(b"\r\n", source)
+
+    def test_gitattributes_enforces_lf_for_shell_scripts(self) -> None:
+        source = read(".gitattributes")
+        self.assertRegex(source, r"(?m)^\*\.sh\s+text(?:\s+[^\n]*)?\s+eol=lf\s*$")
+
+    def test_uploader_never_sends_crlf_shell_script(self) -> None:
+        class RecordingSftp:
+            def __init__(self) -> None:
+                self.uploaded: bytes | None = None
+                self.renamed = False
+
+            def file(self, _remote: str, _mode: str):
+                owner = self
+
+                class Buffer(io.BytesIO):
+                    def __exit__(self, *args):
+                        owner.uploaded = self.getvalue()
+                        self.close()
+
+                return Buffer()
+
+            def posix_rename(self, _partial: str, _remote: str) -> None:
+                self.renamed = True
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            script = Path(temp_dir) / "unsafe.sh"
+            script.write_bytes(b"#!/usr/bin/env bash\r\necho unsafe\r\n")
+            sftp = RecordingSftp()
+            try:
+                prebuilt_deploy.upload_shell_script(sftp, script, "/tmp/unsafe.sh")
+            except (RuntimeError, ValueError):
+                self.assertIsNone(sftp.uploaded)
+                self.assertFalse(sftp.renamed)
+            else:
+                self.assertIsNotNone(sftp.uploaded)
+                self.assertNotIn(b"\r\n", sftp.uploaded)
+                self.assertTrue(sftp.uploaded.startswith(b"#!/usr/bin/env bash\n"))
+
+    def test_matching_remote_archive_is_not_uploaded_again(self) -> None:
+        class FakeClient:
+            def __init__(self) -> None:
+                self.sftp = mock.Mock()
+
+            def open_sftp(self):
+                return self.sftp
+
+            def close(self) -> None:
+                pass
+
+        tag = "d" * 40
+        digest = "e" * 64
+        with tempfile.TemporaryDirectory() as temp_dir:
+            archive = Path(temp_dir) / f"aitrading-{tag}.tar.gz"
+            archive.write_bytes(b"already uploaded")
+            client = FakeClient()
+            with mock.patch.object(prebuilt_deploy, "connect", return_value=client), mock.patch.object(
+                prebuilt_deploy, "run_remote"
+            ), mock.patch.object(
+                prebuilt_deploy, "sftp_mkdirs"
+            ), mock.patch.object(
+                prebuilt_deploy, "remote_archive_matches", return_value=True
+            ) as matches, mock.patch.object(
+                prebuilt_deploy, "upload"
+            ) as upload, mock.patch.object(
+                prebuilt_deploy, "upload_shell_script"
+            ):
+                prebuilt_deploy.deploy(archive, tag, digest)
+
+            matches.assert_called_once_with(
+                client,
+                f"/opt/trade-review-agent/.deploy/releases/{tag}/{archive.name}",
+                archive.stat().st_size,
+                digest,
+            )
+            self.assertEqual(upload.call_count, 1, "only the small compose manifest is uploaded")
+            self.assertNotEqual(upload.call_args.args[1], archive)
+
+    def test_small_release_files_atomically_replace_existing_remote_files(self) -> None:
+        sftp = mock.Mock()
+        prebuilt_deploy.promote_upload(sftp, "/tmp/file.partial", "/tmp/file")
+        sftp.posix_rename.assert_called_once_with("/tmp/file.partial", "/tmp/file")
+        sftp.rename.assert_not_called()
+
+        fallback = mock.Mock()
+        fallback.posix_rename.side_effect = OSError("extension unavailable")
+        prebuilt_deploy.promote_upload(fallback, "/tmp/file.partial", "/tmp/file")
+        fallback.remove.assert_called_once_with("/tmp/file")
+        fallback.rename.assert_called_once_with("/tmp/file.partial", "/tmp/file")
 
 
 if __name__ == "__main__":

@@ -201,11 +201,56 @@ def sftp_mkdirs(sftp: paramiko.SFTPClient, path: str) -> None:
             sftp.mkdir(current)
 
 
+def promote_upload(sftp: paramiko.SFTPClient, partial: str, remote: str) -> None:
+    """Atomically replace a release file, including on SFTP v3 servers."""
+
+    try:
+        sftp.posix_rename(partial, remote)
+        return
+    except OSError:
+        # Some SSH servers do not implement the OpenSSH posix-rename extension.
+        try:
+            sftp.remove(remote)
+        except FileNotFoundError:
+            pass
+        sftp.rename(partial, remote)
+
+
 def upload(sftp: paramiko.SFTPClient, local: Path, remote: str) -> None:
     partial = remote + ".partial"
     print(f"Uploading {local.name}")
     sftp.put(str(local), partial)
-    sftp.rename(partial, remote)
+    promote_upload(sftp, partial, remote)
+
+
+def upload_shell_script(sftp: paramiko.SFTPClient, local: Path, remote: str) -> None:
+    """Upload a shell script with LF bytes regardless of Windows autocrlf."""
+
+    content = local.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    if not content.startswith(b"#!/usr/bin/env bash\n") or b"\r" in content:
+        raise RuntimeError(f"invalid shell script line endings or shebang: {local.name}")
+    partial = remote + ".partial"
+    print(f"Uploading {local.name}")
+    with sftp.file(partial, "wb") as handle:
+        handle.write(content)
+        handle.flush()
+    promote_upload(sftp, partial, remote)
+
+
+def remote_archive_matches(
+    client: paramiko.SSHClient, remote: str, expected_size: int, expected_sha256: str
+) -> bool:
+    command = (
+        f"test -f {shlex.quote(remote)} && "
+        f"test \"$(stat -c %s {shlex.quote(remote)})\" = {expected_size} && "
+        f"test \"$(sha256sum {shlex.quote(remote)} | awk '{{print $1}}')\" = {shlex.quote(expected_sha256)}"
+    )
+    stdin, stdout, stderr = client.exec_command(command, timeout=120)
+    stdin.close()
+    code = stdout.channel.recv_exit_status()
+    stdout.read()
+    stderr.read()
+    return code == 0
 
 
 def deploy(archive: Path, tag: str, archive_sha256: str) -> None:
@@ -229,10 +274,13 @@ def deploy(archive: Path, tag: str, archive_sha256: str) -> None:
         sftp = client.open_sftp()
         sftp_mkdirs(sftp, release_dir)
         sftp_mkdirs(sftp, bin_dir)
-        upload(sftp, archive, remote_archive)
+        if remote_archive_matches(client, remote_archive, archive.stat().st_size, archive_sha256):
+            print("Reusing verified release archive already present on server")
+        else:
+            upload(sftp, archive, remote_archive)
         upload(sftp, ROOT / "docker-compose.release.yml", f"{release_dir}/docker-compose.release.yml")
-        upload(sftp, ROOT / "deploy" / "remote_release.sh", f"{bin_dir}/remote_release.sh")
-        upload(sftp, ROOT / "deploy" / "remote_cleanup.sh", f"{bin_dir}/remote_cleanup.sh")
+        upload_shell_script(sftp, ROOT / "deploy" / "remote_release.sh", f"{bin_dir}/remote_release.sh")
+        upload_shell_script(sftp, ROOT / "deploy" / "remote_cleanup.sh", f"{bin_dir}/remote_cleanup.sh")
         sftp.close()
         quoted_root = shlex.quote(remote_root)
         command = (
