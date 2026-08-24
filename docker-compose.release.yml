@@ -1,10 +1,13 @@
 version: "3.3"
 
+# Production release manifest. Images are built on the operator workstation and
+# loaded on the server before this file is used. Never add `build:` here.
 services:
   trade-review-api:
-    build: .
-    image: ${API_IMAGE:-aitrading/trade-review-api:local}
+    image: aitrading/trade-review-api:${RELEASE_TAG}
     container_name: trade-review-api
+    labels:
+      com.aitrading.managed: "true"
     restart: unless-stopped
     command: ["python", "-m", "trade_review_agent.api.simple_api"]
     extra_hosts:
@@ -17,20 +20,18 @@ services:
     ports:
       - "127.0.0.1:8600:8600"
     volumes:
-      - ./work:/app/work
-      - ./outputs:/app/outputs
+      - ${DEPLOY_ROOT:-/opt/trade-review-agent}/work:/app/work
+      - ${DEPLOY_ROOT:-/opt/trade-review-agent}/outputs:/app/outputs
     env_file:
-      - .env
+      - ${DEPLOY_ROOT:-/opt/trade-review-agent}/.env
     environment:
       - TZ=Asia/Shanghai
 
   trade-review-frontend:
-    build:
-      context: ./frontend
-      args:
-        INTERNAL_API_BASE: http://trade-review-api:8600
-    image: ${FRONTEND_IMAGE:-aitrading/trade-review-frontend:local}
+    image: aitrading/trade-review-frontend:${RELEASE_TAG}
     container_name: trade-review-frontend
+    labels:
+      com.aitrading.managed: "true"
     restart: unless-stopped
     depends_on:
       - trade-review-api

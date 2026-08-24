@@ -1,0 +1,12 @@
+node_modules/
+.next/
+.next*/
+npm-debug.log*
+*.log
+.env*
+.git/
+README.md
+test-results/
+playwright-report/
+coverage/
+tsconfig.tsbuildinfo

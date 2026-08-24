@@ -1,5 +1,7 @@
 FROM python:3.11-slim-bookworm
 
+LABEL com.aitrading.managed="true"
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \

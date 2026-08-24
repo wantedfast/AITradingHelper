@@ -2,6 +2,11 @@
 
 Minimal AI trade review app.
 
+> Production releases must use the prebuilt-image workflow in
+> [`deploy/ALIYUN_DEPLOY.md`](deploy/ALIYUN_DEPLOY.md). Building Docker or
+> Next.js on the 2 GB production server is prohibited. The old
+> `deploy/remote_deploy.py` entrypoint is deprecated.
+
 ## Official Review Flow
 
 ```text

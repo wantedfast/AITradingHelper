@@ -1,7 +1,7 @@
 FROM node:20-alpine AS deps
 WORKDIR /app
 COPY package.json package-lock.json* ./
-RUN npm install
+RUN npm ci
 
 FROM node:20-alpine AS builder
 WORKDIR /app
@@ -13,6 +13,7 @@ RUN npm run build
 
 FROM node:20-alpine AS runner
 WORKDIR /app
+LABEL com.aitrading.managed="true"
 ENV NODE_ENV=production
 ENV INTERNAL_API_BASE=${INTERNAL_API_BASE}
 COPY --from=builder /app/.next ./.next
