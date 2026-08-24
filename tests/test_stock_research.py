@@ -326,7 +326,7 @@ class StockResearchTest(unittest.TestCase):
         self.assertEqual(self.balance(), 2)
         self.assertEqual(len(list_reports(self.db, user_id=self.user_id)), 1)
 
-    @patch.dict(os.environ, {"STOCK_RESEARCH_ACCESS": "all", "STOCK_RESEARCH_CACHE_TTL_HOURS": "24"})
+    @patch.dict(os.environ, {"STOCK_RESEARCH_ACCESS": "all"})
     def test_same_subject_reuses_recent_report_without_provider_or_second_charge(self):
         first = create_job(
             self.db, user=self.user,
@@ -347,19 +347,32 @@ class StockResearchTest(unittest.TestCase):
         self.assertEqual(self.balance(), 2)
         self.assertEqual(len(list_reports(self.db, user_id=self.user_id)), 1)
 
-    @patch.dict(os.environ, {"STOCK_RESEARCH_ACCESS": "all", "STOCK_RESEARCH_CACHE_TTL_HOURS": "24"})
-    def test_legacy_v1_report_is_reused_without_starting_a_new_job(self):
+    @patch.dict(os.environ, {"STOCK_RESEARCH_ACCESS": "all"})
+    def test_legacy_v1_report_is_not_reused(self):
         first = create_job(
             self.db, user=self.user,
             payload={"type": "stock", "value": "华正新材"}, start=False,
         )
         run_job(self.db, first["id"], provider_factory=lambda _: FakeProvider())
         with sqlite3.connect(self.db) as conn:
+            artifact_json = conn.execute(
+                "SELECT report_json FROM stock_research_artifacts LIMIT 1"
+            ).fetchone()[0]
             conn.execute(
-                "UPDATE stock_research_reports SET schema_version=1 WHERE job_id=?",
-                (first["id"],),
+                "UPDATE stock_research_reports SET schema_version=1,report_json=?,artifact_id='' WHERE job_id=?",
+                (artifact_json, first["id"]),
+            )
+            conn.execute("UPDATE stock_research_jobs SET artifact_id='' WHERE id=?", (first["id"],))
+            conn.execute("DELETE FROM stock_research_artifacts")
+            conn.execute(
+                "INSERT INTO credit_ledger(user_id,delta,reason,created_at) VALUES(?,3,'v1-refresh-test',?)",
+                (self.user_id, "2026-08-24T09:00:00+08:00"),
             )
             jobs_before = int(conn.execute("SELECT COUNT(*) FROM stock_research_jobs").fetchone()[0])
+
+        self.assertEqual(list_reports(self.db, user_id=self.user_id), [])
+        with self.assertRaises(AuthError):
+            get_report(self.db, f"report-{first['id'][3:]}", user_id=self.user_id)
 
         reused = create_job(
             self.db, user=self.user,
@@ -368,13 +381,35 @@ class StockResearchTest(unittest.TestCase):
 
         with sqlite3.connect(self.db) as conn:
             jobs_after = int(conn.execute("SELECT COUNT(*) FROM stock_research_jobs").fetchone()[0])
-        self.assertTrue(reused["cache_hit"])
-        self.assertEqual(reused["id"], first["id"])
-        self.assertEqual(jobs_after, jobs_before)
-        self.assertEqual(self.balance(), 2)
+        self.assertEqual(reused["status"], "queued")
+        self.assertFalse(bool(reused.get("cache_hit")))
+        self.assertNotEqual(reused["id"], first["id"])
+        self.assertEqual(jobs_after, jobs_before + 1)
 
-    @patch.dict(os.environ, {"STOCK_RESEARCH_ACCESS": "all", "STOCK_RESEARCH_CACHE_TTL_HOURS": "24"})
-    def test_recent_report_cache_is_reusable_by_another_user_without_credits_or_data_leak(self):
+    @patch.dict(os.environ, {"STOCK_RESEARCH_ACCESS": "all"})
+    def test_schema_migrates_existing_v2_report_into_shared_artifact(self):
+        first = create_job(
+            self.db, user=self.user,
+            payload={"type": "stock", "value": "华正新材"}, start=False,
+        )
+        run_job(self.db, first["id"], provider_factory=lambda _: FakeProvider())
+        with sqlite3.connect(self.db) as conn:
+            report_json = conn.execute("SELECT report_json FROM stock_research_artifacts").fetchone()[0]
+            conn.execute("UPDATE stock_research_reports SET artifact_id='',report_json=?", (report_json,))
+            conn.execute("UPDATE stock_research_jobs SET artifact_id=''")
+            conn.execute("DELETE FROM stock_research_artifacts")
+
+        init_schema(self.db)
+
+        with sqlite3.connect(self.db) as conn:
+            artifact_count = int(conn.execute("SELECT COUNT(*) FROM stock_research_artifacts").fetchone()[0])
+            access = conn.execute("SELECT artifact_id,report_json FROM stock_research_reports").fetchone()
+        self.assertEqual(artifact_count, 1)
+        self.assertTrue(access[0].startswith("artifact-"))
+        self.assertEqual(access[1], "{}")
+
+    @patch.dict(os.environ, {"STOCK_RESEARCH_ACCESS": "all"})
+    def test_shared_report_charges_second_user_without_running_provider_again(self):
         first = create_job(
             self.db, user=self.user,
             payload={"type": "stock", "value": "华正新材"}, start=False,
@@ -388,6 +423,10 @@ class StockResearchTest(unittest.TestCase):
                    VALUES('email:reader@example.com','reader','reader@example.com',1,'x','y','user','active','READER01',?)""",
                 ("2026-08-23T09:30:00+08:00",),
             ).lastrowid)
+            conn.execute(
+                "INSERT INTO credit_ledger(user_id,delta,reason,created_at) VALUES(?,5,'cache-test',?)",
+                (second_user_id, "2026-08-23T09:31:00+08:00"),
+            )
         reused = create_job(
             self.db, user={"id": second_user_id, "role": "user"},
             payload={"type": "stock", "value": "603186"}, start=False,
@@ -400,11 +439,78 @@ class StockResearchTest(unittest.TestCase):
         self.assertEqual(copied["report"]["subject"]["code"], "603186")
         self.assertTrue(copied["cache_hit"])
         self.assertEqual(len(list_reports(self.db, user_id=second_user_id)), 1)
-        self.assertEqual(quota_status(self.db, user_id=second_user_id)["monthly_used"], 0)
+        second_quota = quota_status(self.db, user_id=second_user_id)
+        self.assertEqual(second_quota["monthly_used"], 1)
+        self.assertEqual(second_quota["credit_balance"], 2)
+        with sqlite3.connect(self.db) as conn:
+            usage = conn.execute(
+                "SELECT credits_spent,status FROM usage_events WHERE user_id=? AND related_id=?",
+                (second_user_id, reused["id"]),
+            ).fetchone()
+            artifact_count = int(conn.execute("SELECT COUNT(*) FROM stock_research_artifacts").fetchone()[0])
+            stored_payloads = [row[0] for row in conn.execute(
+                "SELECT report_json FROM stock_research_reports ORDER BY created_at"
+            ).fetchall()]
+        self.assertEqual(tuple(usage), (3, "charged"))
+        self.assertEqual(artifact_count, 1)
+        self.assertEqual(stored_payloads, ["{}", "{}"])
         with self.assertRaises(AuthError):
             get_report(self.db, source["report_id"], user_id=second_user_id)
 
-    @patch.dict(os.environ, {"STOCK_RESEARCH_ACCESS": "all", "STOCK_RESEARCH_CACHE_TTL_HOURS": "24"})
+    @patch.dict(os.environ, {"STOCK_RESEARCH_ACCESS": "all"})
+    def test_shared_report_still_requires_sufficient_user_quota(self):
+        first = create_job(
+            self.db, user=self.user,
+            payload={"type": "stock", "value": "华正新材"}, start=False,
+        )
+        run_job(self.db, first["id"], provider_factory=lambda _: FakeProvider())
+        with sqlite3.connect(self.db) as conn:
+            second_user_id = int(conn.execute(
+                """INSERT INTO users(phone,username,email,email_verified,password_hash,password_salt,role,status,invite_code,created_at)
+                   VALUES('email:no-credit@example.com','no-credit','no-credit@example.com',1,'x','y','user','active','NOCREDIT',?)""",
+                ("2026-08-24T09:00:00+08:00",),
+            ).lastrowid)
+
+        with self.assertRaises(AuthError) as raised:
+            create_job(
+                self.db, user={"id": second_user_id, "role": "user"},
+                payload={"type": "stock", "value": "603186"}, start=False,
+            )
+
+        self.assertEqual(raised.exception.status, 402)
+        self.assertEqual(list_reports(self.db, user_id=second_user_id), [])
+
+    @patch.dict(os.environ, {"STOCK_RESEARCH_ACCESS": "all"})
+    def test_shared_report_consumes_member_quota_without_credits(self):
+        first = create_job(
+            self.db, user=self.user,
+            payload={"type": "stock", "value": "华正新材"}, start=False,
+        )
+        run_job(self.db, first["id"], provider_factory=lambda _: FakeProvider())
+        expires = (datetime.now().astimezone() + timedelta(days=60)).isoformat(timespec="seconds")
+        with sqlite3.connect(self.db) as conn:
+            member_id = int(conn.execute(
+                """INSERT INTO users(phone,username,email,email_verified,password_hash,password_salt,role,status,invite_code,
+                                      membership_status,membership_expires_at,created_at)
+                   VALUES('email:cache-member@example.com','cache-member','cache-member@example.com',1,'x','y','user','active','CACHEMEM',
+                          'active',?,?)""",
+                (expires, "2026-08-24T09:00:00+08:00"),
+            ).lastrowid)
+
+        reused = create_job(
+            self.db, user={"id": member_id, "role": "user"},
+            payload={"type": "stock", "value": "603186"}, start=False,
+        )
+
+        self.assertTrue(reused["cache_hit"])
+        self.assertTrue(reused["charged"])
+        self.assertEqual(reused["billing_mode"], "membership_included")
+        self.assertEqual(reused["credits_spent"], 0)
+        member_quota = quota_status(self.db, user_id=member_id)
+        self.assertEqual(member_quota["monthly_used"], 1)
+        self.assertEqual(member_quota["daily_used"], 1)
+
+    @patch.dict(os.environ, {"STOCK_RESEARCH_ACCESS": "all"})
     def test_force_refresh_bypasses_cache_and_uses_normal_quota_rules(self):
         first = create_job(
             self.db, user=self.user,
@@ -425,9 +531,17 @@ class StockResearchTest(unittest.TestCase):
         self.assertEqual(refreshed["status"], "queued")
         self.assertFalse(bool(refreshed.get("cache_hit")))
         self.assertNotEqual(refreshed["id"], first["id"])
+        run_job(self.db, refreshed["id"], provider_factory=lambda _: FakeProvider())
+        with sqlite3.connect(self.db) as conn:
+            artifact_count = int(conn.execute("SELECT COUNT(*) FROM stock_research_artifacts").fetchone()[0])
+            active_count = int(conn.execute("SELECT COUNT(*) FROM stock_research_artifacts WHERE is_active=1").fetchone()[0])
+        self.assertEqual(artifact_count, 2)
+        self.assertEqual(active_count, 1)
+        self.assertEqual(len(list_reports(self.db, user_id=self.user_id)), 2)
+        self.assertEqual(self.balance(), 2)
 
-    @patch.dict(os.environ, {"STOCK_RESEARCH_ACCESS": "all", "STOCK_RESEARCH_CACHE_TTL_HOURS": "1"})
-    def test_expired_report_is_not_reused(self):
+    @patch.dict(os.environ, {"STOCK_RESEARCH_ACCESS": "all"})
+    def test_shared_report_has_no_automatic_expiration(self):
         first = create_job(
             self.db, user=self.user,
             payload={"type": "stock", "value": "华正新材"}, start=False,
@@ -435,16 +549,52 @@ class StockResearchTest(unittest.TestCase):
         run_job(self.db, first["id"], provider_factory=lambda _: FakeProvider())
         with sqlite3.connect(self.db) as conn:
             conn.execute(
-                "UPDATE stock_research_reports SET created_at=? WHERE job_id=?",
-                ((datetime.now().astimezone() - timedelta(hours=2)).isoformat(timespec="seconds"), first["id"]),
+                "UPDATE stock_research_artifacts SET created_at='2024-01-01T09:00:00+08:00'",
+            )
+            second_user_id = int(conn.execute(
+                """INSERT INTO users(phone,username,email,email_verified,password_hash,password_salt,role,status,invite_code,created_at)
+                   VALUES('email:long-cache@example.com','long-cache','long-cache@example.com',1,'x','y','user','active','LONGCACHE',?)""",
+                ("2026-08-24T09:00:00+08:00",),
+            ).lastrowid)
+            conn.execute(
+                "INSERT INTO credit_ledger(user_id,delta,reason,created_at) VALUES(?,5,'long-cache-test',?)",
+                (second_user_id, "2026-08-24T09:01:00+08:00"),
+            )
+
+        reused = create_job(
+            self.db, user={"id": second_user_id, "role": "user"},
+            payload={"type": "stock", "value": "603186"}, start=False,
+        )
+
+        self.assertTrue(reused["cache_hit"])
+        self.assertEqual(reused["credits_spent"], 3)
+        self.assertEqual(quota_status(self.db, user_id=second_user_id)["credit_balance"], 2)
+
+    @patch.dict(os.environ, {"STOCK_RESEARCH_ACCESS": "all"})
+    def test_same_subject_allows_only_one_active_luna_job_across_users(self):
+        first = create_job(
+            self.db, user=self.user,
+            payload={"type": "stock", "value": "华正新材"}, start=False,
+        )
+        with sqlite3.connect(self.db) as conn:
+            second_user_id = int(conn.execute(
+                """INSERT INTO users(phone,username,email,email_verified,password_hash,password_salt,role,status,invite_code,created_at)
+                   VALUES('email:parallel@example.com','parallel','parallel@example.com',1,'x','y','user','active','PARALLEL',?)""",
+                ("2026-08-24T09:00:00+08:00",),
+            ).lastrowid)
+            conn.execute(
+                "INSERT INTO credit_ledger(user_id,delta,reason,created_at) VALUES(?,5,'parallel-test',?)",
+                (second_user_id, "2026-08-24T09:01:00+08:00"),
             )
 
         with self.assertRaises(AuthError) as raised:
             create_job(
-                self.db, user=self.user,
+                self.db, user={"id": second_user_id, "role": "user"},
                 payload={"type": "stock", "value": "603186"}, start=False,
             )
-        self.assertEqual(raised.exception.status, 402)
+
+        self.assertEqual(first["status"], "queued")
+        self.assertEqual(raised.exception.status, 409)
 
     @patch.dict(os.environ, {"STOCK_RESEARCH_ACCESS": "all", "STOCK_RESEARCH_LUNA_SINGLE_AGENT": "1"})
     def test_luna_single_agent_is_the_default_production_path(self):
@@ -747,6 +897,45 @@ class StockResearchTest(unittest.TestCase):
         for thread in threads: thread.join()
         self.assertEqual(calls, 1)
         self.assertEqual(self.balance(), 2)
+
+    @patch.dict(os.environ, {"STOCK_RESEARCH_ACCESS": "all"})
+    def test_concurrent_cache_access_charges_user_once(self):
+        source_job = create_job(
+            self.db, user=self.user,
+            payload={"type": "stock", "value": "华正新材"}, start=False,
+        )
+        run_job(self.db, source_job["id"], provider_factory=lambda _: FakeProvider())
+        with sqlite3.connect(self.db) as conn:
+            second_user_id = int(conn.execute(
+                """INSERT INTO users(phone,username,email,email_verified,password_hash,password_salt,role,status,invite_code,created_at)
+                   VALUES('email:cache-race@example.com','cache-race','cache-race@example.com',1,'x','y','user','active','CACHERACE',?)""",
+                ("2026-08-24T09:00:00+08:00",),
+            ).lastrowid)
+            conn.execute(
+                "INSERT INTO credit_ledger(user_id,delta,reason,created_at) VALUES(?,5,'cache-race-test',?)",
+                (second_user_id, "2026-08-24T09:01:00+08:00"),
+            )
+        outcomes: list[dict[str, object]] = []
+        failures: list[Exception] = []
+
+        def submit_cached() -> None:
+            try:
+                outcomes.append(create_job(
+                    self.db, user={"id": second_user_id, "role": "user"},
+                    payload={"type": "stock", "value": "603186"}, start=False,
+                ))
+            except Exception as exc:  # pragma: no cover - assertion reports details
+                failures.append(exc)
+
+        threads = [threading.Thread(target=submit_cached) for _ in range(2)]
+        for thread in threads: thread.start()
+        for thread in threads: thread.join()
+
+        self.assertEqual(failures, [])
+        self.assertEqual(len(outcomes), 2)
+        self.assertEqual(sum(bool(item.get("charged")) for item in outcomes), 1)
+        self.assertEqual(len(list_reports(self.db, user_id=second_user_id)), 1)
+        self.assertEqual(quota_status(self.db, user_id=second_user_id)["credit_balance"], 2)
 
     @patch.dict(os.environ, {"STOCK_RESEARCH_ACCESS": "all"})
     def test_restart_recovery_resumes_queued_job(self):

@@ -32,7 +32,7 @@ type ResearchDocument = {
   evidence: Evidence[]; role_outputs?: Record<string, unknown>; research_board?: Record<string, unknown>;
   meta: { provider: string; execution_mode?: string; prompt_version?: string; skill_name?: string; skill_version?: string; input_tokens: number; output_tokens: number; search_count: number; cost_cny: number; duration_seconds?: number; cache_hit?: boolean; cache_source_created_at?: string; retrieved_at?: string };
 };
-type ReportRecord = { id: string; job_id: string; subject_type: string; subject_name: string; stock_code?: string; created_at: string; cache_hit?: boolean; cache_source_report_id?: string; report?: ResearchDocument };
+type ReportRecord = { id: string; job_id: string; subject_type: string; subject_name: string; stock_code?: string; created_at: string; artifact_created_at?: string; cache_hit?: boolean; cache_source_report_id?: string; report?: ResearchDocument };
 type ResearchQuota = {
   membership_active: boolean; monthly_included: number; monthly_used: number; monthly_remaining: number;
   daily_limit: number | null; daily_used: number; daily_remaining: number | null;
@@ -90,7 +90,7 @@ export default function StockResearchPage() {
   const [reports, setReports] = useState<ReportRecord[]>([]);
   const [quota, setQuota] = useState<ResearchQuota | null>(null);
   const [selected, setSelected] = useState<ReportRecord | null>(null);
-  const [cacheNotice, setCacheNotice] = useState(false);
+  const [cacheNotice, setCacheNotice] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
 
@@ -147,18 +147,25 @@ export default function StockResearchPage() {
     const requestKind = override?.type || kind;
     const requestValue = (override?.value || value).trim();
     if (!requestValue) return setMessage(requestKind === "stock" ? "请输入一只 A 股简称或六位代码" : "请输入一个产业链名称");
-    setBusy(true); setMessage(""); setSelected(null); setCacheNotice(false);
+    setBusy(true); setMessage(""); setSelected(null); setCacheNotice("");
     try {
-      const payload = await apiFetch<{ job: ResearchJob; quota: ResearchQuota; reused?: boolean }>("/api/stock-research/jobs", {
+      const payload = await apiFetch<{ job: ResearchJob; quota: ResearchQuota; reused?: boolean; charged?: boolean; billing_cost?: number; billing_mode?: string; existing_access?: boolean }>("/api/stock-research/jobs", {
         method: "POST", body: JSON.stringify({ type: requestKind, value: requestValue, force_refresh: forceRefresh }),
       });
       setJob(payload.job);
       setQuota(payload.quota || null);
       if (payload.reused && payload.job.report_id) {
-        setCacheNotice(true);
+        const notice = payload.existing_access
+          ? "已打开你取得过的这份报告，本次不重复扣费。"
+          : payload.billing_mode === "membership_included"
+            ? "已复用服务器保存的报告，本次使用 1 份会员额度，未重新调用模型。"
+            : payload.billing_mode === "credits"
+              ? `已复用服务器保存的报告，本次已扣 ${payload.billing_cost || 3} 次，未重新调用模型。`
+              : "已复用服务器保存的报告，管理员评测不扣次数。";
+        setCacheNotice(notice);
         await loadHistory();
         await openReport(payload.job.report_id);
-        setMessage("已直接打开本地保存的最新报告，本次不调用模型、不扣次数。");
+        setMessage(notice);
       }
     } catch (error) {
       const fallback = error instanceof ApiError && error.status === 403 ? "该功能目前仅供管理员完成双引擎评测。" : "创建研究任务失败";
@@ -201,7 +208,7 @@ export default function StockResearchPage() {
 
         {message ? <div className="stock-research-alert"><AlertTriangle />{message}</div> : null}
         {job && job.status !== "completed" ? <JobProgress job={job} /> : null}
-        {document ? <ReportView busy={busy} cached={Boolean(cacheNotice || selected?.cache_hit || document.meta.cache_hit)} createdAt={selected?.created_at || ""} evidenceMap={evidenceMap} onRefresh={() => submit(true, { type: document.subject.type, value: document.subject.code || document.subject.name })} report={document} /> : <History reports={reports} onOpen={(id) => { setCacheNotice(false); void openReport(id); }} busy={busy} />}
+        {document ? <ReportView busy={busy} cacheNotice={cacheNotice} cached={Boolean(cacheNotice || selected?.cache_hit || document.meta.cache_hit)} createdAt={selected?.artifact_created_at || selected?.created_at || ""} evidenceMap={evidenceMap} onRefresh={() => submit(true, { type: document.subject.type, value: document.subject.code || document.subject.name })} report={document} /> : <History reports={reports} onOpen={(id) => { setCacheNotice(""); void openReport(id); }} busy={busy} />}
         <FinancialDisclaimer />
       </section>
       <MobileFeatureNav activeKey="stock-research" />
@@ -224,10 +231,10 @@ function History({ reports, onOpen, busy }: { reports: ReportRecord[]; onOpen: (
   </section>;
 }
 
-function ReportView({ report, evidenceMap, cached, createdAt, busy, onRefresh }: { report: ResearchDocument; evidenceMap: Map<string, Evidence>; cached: boolean; createdAt: string; busy: boolean; onRefresh: () => void }) {
+function ReportView({ report, evidenceMap, cached, cacheNotice, createdAt, busy, onRefresh }: { report: ResearchDocument; evidenceMap: Map<string, Evidence>; cached: boolean; cacheNotice: string; createdAt: string; busy: boolean; onRefresh: () => void }) {
   const sameChain = report.same_chain_core_asset_ranking || report.core_asset_ranking || [];
   return <article className="stock-research-report">
-    <header><span>{report.subject.type === "stock" ? "股票逆向研究" : "产业链逆向研究"}</span><h2>{report.subject.name}{report.subject.code ? ` · ${report.subject.code}` : ""}</h2><p>{report.headline}</p><small>研究引擎 {report.meta.provider}{report.meta.execution_mode === "single_agent" ? " · 单智能研究引擎六视角" : ""} · {report.evidence.length} 条证据 · {report.meta.search_count || 0} 次搜索 · 成本 ¥{Number(report.meta.cost_cny || 0).toFixed(2)}{report.meta.duration_seconds ? ` · ${Math.round(report.meta.duration_seconds)} 秒` : ""}</small><div className="stock-research-report-actions">{cached ? <em>本地报告复用 · 本次未扣次数</em> : <em>生成于 {formatDate(createdAt)}</em>}<button disabled={busy} onClick={onRefresh} type="button"><RefreshCcw />重新生成最新报告</button></div></header>
+    <header><span>{report.subject.type === "stock" ? "股票逆向研究" : "产业链逆向研究"}</span><h2>{report.subject.name}{report.subject.code ? ` · ${report.subject.code}` : ""}</h2><p>{report.headline}</p><small>研究引擎 {report.meta.provider}{report.meta.execution_mode === "single_agent" ? " · 单智能研究引擎六视角" : ""} · {report.evidence.length} 条证据 · {report.meta.search_count || 0} 次搜索 · 成本 ¥{Number(report.meta.cost_cny || 0).toFixed(2)}{report.meta.duration_seconds ? ` · ${Math.round(report.meta.duration_seconds)} 秒` : ""}</small><div className="stock-research-report-actions">{cached ? <em>{cacheNotice || "服务器报告复用 · 取得时已按规则计费"} · 原报告生成于 {formatDate(createdAt)}</em> : <em>生成于 {formatDate(createdAt)}</em>}<button disabled={busy} onClick={onRefresh} type="button"><RefreshCcw />重新生成最新报告</button></div></header>
     <section className="stock-research-dashboard">
       <InsightCard title="资金为什么炒" section={report.capital_logic} evidenceMap={evidenceMap} />
       <InsightCard title="利润真正流向" section={report.profit_flow} evidenceMap={evidenceMap} />

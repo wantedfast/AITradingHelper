@@ -35,8 +35,14 @@ class StockResearchApiE2ETest(unittest.TestCase):
                 """INSERT INTO users(phone,username,email,email_verified,password_hash,password_salt,role,status,invite_code,created_at)
                    VALUES('admin-api','apiadmin','admin-api@example.com',1,'x','y','admin','active','APIADMIN',?)""", (now,)
             ).lastrowid)
+            self.second_user_id = int(conn.execute(
+                """INSERT INTO users(phone,username,email,email_verified,password_hash,password_salt,role,status,invite_code,created_at)
+                   VALUES('api2@example.com','apiuser2','api2@example.com',1,'x','y','user','active','APIUSER2',?)""", (now,)
+            ).lastrowid)
             conn.execute("INSERT INTO credit_ledger(user_id,delta,reason,created_at) VALUES(?,5,'test',?)", (self.user_id, now))
+            conn.execute("INSERT INTO credit_ledger(user_id,delta,reason,created_at) VALUES(?,5,'test',?)", (self.second_user_id, now))
             conn.execute("INSERT INTO sessions(token,user_id,expires_at,created_at) VALUES('user-token',?,'2999-01-01T00:00:00+08:00',?)", (self.user_id, now))
+            conn.execute("INSERT INTO sessions(token,user_id,expires_at,created_at) VALUES('second-token',?,'2999-01-01T00:00:00+08:00',?)", (self.second_user_id, now))
             conn.execute("INSERT INTO sessions(token,user_id,expires_at,created_at) VALUES('admin-token',?,'2999-01-01T00:00:00+08:00',?)", (admin_id, now))
         self.stack = ExitStack()
         self.stack.enter_context(patch.object(simple_api, "AUTH_DB", self.db))
@@ -83,6 +89,19 @@ class StockResearchApiE2ETest(unittest.TestCase):
         status, report_payload = self.request(f"/api/stock-research/reports/{completed['report_id']}")
         self.assertEqual(status, 200)
         self.assertEqual(report_payload["report"]["report"]["subject"]["code"], "603186")
+        status, second_cached = self.request(
+            "/api/stock-research/jobs", method="POST", token="second-token",
+            payload={"type": "stock", "value": "603186"},
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(second_cached["reused"])
+        self.assertTrue(second_cached["charged"])
+        self.assertEqual(second_cached["billing_cost"], 3)
+        self.assertFalse(second_cached["existing_access"])
+        status, second_history = self.request("/api/stock-research/reports", token="second-token")
+        self.assertEqual(status, 200)
+        self.assertEqual(second_history["quota"]["credit_balance"], 2)
+        self.assertEqual(second_history["quota"]["monthly_used"], 1)
         status, cached = self.request(
             "/api/stock-research/jobs", method="POST",
             payload={"type": "stock", "value": "603186"},
@@ -90,6 +109,8 @@ class StockResearchApiE2ETest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertTrue(cached["reused"])
         self.assertEqual(cached["billing_cost"], 0)
+        self.assertFalse(cached["charged"])
+        self.assertTrue(cached["existing_access"])
         self.assertEqual(cached["job"]["report_id"], completed["report_id"])
         status, history = self.request("/api/stock-research/reports")
         self.assertEqual(status, 200)
