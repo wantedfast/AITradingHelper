@@ -5,6 +5,8 @@
 - `STOCK_RESEARCH_ACCESS=admin|pilot|all`，默认 `admin`。
 - `STOCK_RESEARCH_ROLLOUT_PERCENT=10` 仅在 `pilot` 模式生效。
 - `STOCK_RESEARCH_PROVIDER=luna|doubao_deepseek|auto`。
+- 同一股票或产业链的成功 v2 报告会长期保存在服务器共享报告库，不设自动过期时间。每个用户首次取得某个报告版本时照常使用 1 份会员额度或扣 3 次；从自己的历史记录重复打开不重复扣费。
+- 命中共享报告时不会再次调用模型；用户选择“重新生成最新报告”才会调用 Luna，成功后生成新版本并按正常额度计费。
 - 正式用户任务默认强制 `luna`；Luna 密钥缺失时在入队前返回 503，不静默切换供应商。
 - `STOCK_RESEARCH_REQUIRE_LUNA_FOR_USERS=1` 为生产安全门；管理员仍可显式指定对照引擎做盲测。
 - `auto` 仅在同时配置 `STOCK_RESEARCH_ALLOW_AUTOMATIC_PROVIDER_SELECTION=1` 时生效，不能作为无意中的 fallback。

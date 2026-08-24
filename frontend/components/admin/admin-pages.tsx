@@ -1616,7 +1616,7 @@ export function AdminStockResearchPage() {
   }
 
   return <section className="admin-section-stack">
-    <PageToolbar title="产业链逆向研究" actions={<button type="button" onClick={jobs.reload} disabled={jobs.loading}><RefreshCw />刷新</button>} />
+    <PageToolbar title="A股逆向研究" actions={<button type="button" onClick={jobs.reload} disabled={jobs.loading}><RefreshCw />刷新</button>} />
     <AdminStatusFilters value={status || "all"} onChange={(value) => replaceQuery({ status: value === "all" ? "" : value })} options={["all", "queued", "running", "completed", "failed", "timed_out", "payment_required"]} />
     {message ? <div className="admin-alert">{message}</div> : null}
     <PageState loading={jobs.loading} error={jobs.error} hasData={Boolean(jobs.data)} onRetry={jobs.reload}>
@@ -1889,7 +1889,7 @@ function featureLabel(value: string) {
   if (value === "auction_strength_view") return "每日 TOP5";
   if (value === "market_day_report") return "AI 当日行情";
   if (value === "ai_research_view") return "AI 研报";
-  if (value === "stock_reverse_research") return "产业链逆向研究";
+  if (value === "stock_reverse_research") return "A股逆向研究";
   if (value === "membership_free") return "会员免扣";
   return value;
 }

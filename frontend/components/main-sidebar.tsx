@@ -34,7 +34,7 @@ const navItems: Array<{
   { key: "watch", href: "/watch", label: "AI 盯盘", shortLabel: "盯盘", icon: BarChart3, prototypeIcon: PhChartBar },
   { key: "market-day", href: "/market-day", label: "AI 当日行情", shortLabel: "行情", icon: TrendingUp, prototypeIcon: PhTrendUp },
   { key: "ai-research", href: "/ai-research", label: "AI 研报", shortLabel: "研报", icon: FileText, prototypeIcon: PhFileText },
-  { key: "stock-research", href: "/stock-research", label: "产业链研究", shortLabel: "产业链", icon: Boxes, prototypeIcon: PhFileText },
+  { key: "stock-research", href: "/stock-research", label: "A股研究", shortLabel: "个股", icon: Boxes, prototypeIcon: PhFileText },
 ];
 
 export function MainSidebar({ activeKey, note, hrefOverrides, prototypeIcons = false }: MainSidebarProps) {

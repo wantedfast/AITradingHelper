@@ -232,16 +232,17 @@ def init_schema(db_path: Path) -> None:
                 started_at TEXT,
                 updated_at TEXT NOT NULL,
                 completed_at TEXT,
+                cache_hit INTEGER NOT NULL DEFAULT 0,
+                cache_source_report_id TEXT NOT NULL DEFAULT '',
+                artifact_id TEXT NOT NULL DEFAULT '',
                 FOREIGN KEY (user_id) REFERENCES users(id)
             );
-            CREATE TABLE IF NOT EXISTS stock_research_reports (
+            CREATE TABLE IF NOT EXISTS stock_research_artifacts (
                 id TEXT PRIMARY KEY,
-                job_id TEXT NOT NULL UNIQUE,
-                user_id INTEGER NOT NULL,
                 subject_type TEXT NOT NULL,
                 subject_name TEXT NOT NULL,
                 stock_code TEXT NOT NULL DEFAULT '',
-                schema_version INTEGER NOT NULL DEFAULT 1,
+                schema_version INTEGER NOT NULL DEFAULT 2,
                 report_json TEXT NOT NULL,
                 provider TEXT NOT NULL,
                 model_names TEXT NOT NULL DEFAULT '',
@@ -252,8 +253,33 @@ def init_schema(db_path: Path) -> None:
                 duration_seconds REAL NOT NULL DEFAULT 0,
                 source_count INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                superseded_at TEXT NOT NULL DEFAULT ''
+            );
+            CREATE TABLE IF NOT EXISTS stock_research_reports (
+                id TEXT PRIMARY KEY,
+                job_id TEXT NOT NULL UNIQUE,
+                user_id INTEGER NOT NULL,
+                subject_type TEXT NOT NULL,
+                subject_name TEXT NOT NULL,
+                stock_code TEXT NOT NULL DEFAULT '',
+                schema_version INTEGER NOT NULL DEFAULT 2,
+                report_json TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                model_names TEXT NOT NULL DEFAULT '',
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                search_count INTEGER NOT NULL DEFAULT 0,
+                cost_cny REAL NOT NULL DEFAULT 0,
+                duration_seconds REAL NOT NULL DEFAULT 0,
+                source_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                cache_hit INTEGER NOT NULL DEFAULT 0,
+                cache_source_report_id TEXT NOT NULL DEFAULT '',
+                artifact_id TEXT NOT NULL DEFAULT '',
                 FOREIGN KEY (job_id) REFERENCES stock_research_jobs(id),
-                FOREIGN KEY (user_id) REFERENCES users(id)
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                FOREIGN KEY (artifact_id) REFERENCES stock_research_artifacts(id)
             );
             CREATE INDEX IF NOT EXISTS idx_stock_research_jobs_user_created
               ON stock_research_jobs(user_id, created_at DESC);
@@ -288,22 +314,113 @@ def init_schema(db_path: Path) -> None:
             except sqlite3.OperationalError as exc:
                 if "duplicate column" not in str(exc).lower():
                     raise
+        for name, declaration in (
+            ("cache_hit", "INTEGER NOT NULL DEFAULT 0"),
+            ("cache_source_report_id", "TEXT NOT NULL DEFAULT ''"),
+            ("artifact_id", "TEXT NOT NULL DEFAULT ''"),
+        ):
+            if name not in columns:
+                conn.execute(f"ALTER TABLE stock_research_jobs ADD COLUMN {name} {declaration}")
+        report_columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(stock_research_reports)").fetchall()}
+        for name, declaration in (
+            ("cache_hit", "INTEGER NOT NULL DEFAULT 0"),
+            ("cache_source_report_id", "TEXT NOT NULL DEFAULT ''"),
+            ("artifact_id", "TEXT NOT NULL DEFAULT ''"),
+        ):
+            if name not in report_columns:
+                conn.execute(f"ALTER TABLE stock_research_reports ADD COLUMN {name} {declaration}")
+        conn.execute(
+            """CREATE INDEX IF NOT EXISTS idx_stock_research_reports_subject_cache
+               ON stock_research_reports(subject_type,stock_code,subject_name,created_at DESC)"""
+        )
+        conn.execute(
+            """CREATE UNIQUE INDEX IF NOT EXISTS idx_stock_research_cache_copy_once
+               ON stock_research_reports(user_id,cache_source_report_id)
+               WHERE cache_hit=1 AND cache_source_report_id<>''"""
+        )
+        conn.execute(
+            """CREATE INDEX IF NOT EXISTS idx_stock_research_artifacts_subject_active
+               ON stock_research_artifacts(subject_type,stock_code,subject_name,is_active,created_at DESC)"""
+        )
+        conn.execute(
+            """CREATE UNIQUE INDEX IF NOT EXISTS idx_stock_research_one_active_artifact
+               ON stock_research_artifacts(subject_type,COALESCE(NULLIF(stock_code,''),subject_name))
+               WHERE is_active=1"""
+        )
+        conn.execute(
+            """CREATE UNIQUE INDEX IF NOT EXISTS idx_stock_research_user_artifact_once
+               ON stock_research_reports(user_id,artifact_id)
+               WHERE artifact_id<>''"""
+        )
+        _migrate_v2_reports_to_artifacts(conn)
+
+
+def _migrate_v2_reports_to_artifacts(conn: sqlite3.Connection) -> None:
+    """Normalize existing successful v2 rows without retaining duplicate JSON."""
+    rows = conn.execute(
+        """SELECT * FROM stock_research_reports
+           WHERE schema_version>=2 AND artifact_id=''
+           ORDER BY created_at,id"""
+    ).fetchall()
+    for row in rows:
+        canonical_id = str(row["cache_source_report_id"] or row["id"])
+        base = conn.execute(
+            "SELECT * FROM stock_research_reports WHERE id=? AND schema_version>=2",
+            (canonical_id,),
+        ).fetchone() or row
+        artifact_id = "artifact-" + re.sub(r"^report-", "", canonical_id)
+        existing = conn.execute(
+            "SELECT 1 FROM stock_research_artifacts WHERE id=?", (artifact_id,)
+        ).fetchone()
+        if not existing:
+            if str(base["subject_type"]) == "stock":
+                conn.execute(
+                    "UPDATE stock_research_artifacts SET is_active=0,superseded_at=? WHERE subject_type='stock' AND stock_code=? AND is_active=1",
+                    (str(base["created_at"]), str(base["stock_code"])),
+                )
+            else:
+                conn.execute(
+                    "UPDATE stock_research_artifacts SET is_active=0,superseded_at=? WHERE subject_type='industry_chain' AND subject_name=? AND is_active=1",
+                    (str(base["created_at"]), str(base["subject_name"])),
+                )
+            conn.execute(
+                """INSERT INTO stock_research_artifacts
+                   (id,subject_type,subject_name,stock_code,schema_version,report_json,provider,model_names,
+                    input_tokens,output_tokens,search_count,cost_cny,duration_seconds,source_count,created_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    artifact_id, base["subject_type"], base["subject_name"], base["stock_code"],
+                    base["schema_version"], base["report_json"], base["provider"], base["model_names"],
+                    base["input_tokens"], base["output_tokens"], base["search_count"], base["cost_cny"],
+                    base["duration_seconds"], base["source_count"], base["created_at"],
+                ),
+            )
+        conn.execute(
+            "UPDATE stock_research_reports SET artifact_id=?,report_json='{}' WHERE id=?",
+            (artifact_id, str(row["id"])),
+        )
+        conn.execute(
+            "UPDATE stock_research_jobs SET artifact_id=? WHERE id=?",
+            (artifact_id, str(row["job_id"])),
+        )
 
 
 def normalize_subject(payload: dict[str, Any], *, allow_fetch: bool = True) -> NormalizedSubject:
-    kind = str(payload.get("type") or payload.get("subject_type") or "").strip().lower()
+    declared_types = {
+        str(payload.get(field) or "").strip().lower()
+        for field in ("type", "subject_type", "input_type")
+        if str(payload.get(field) or "").strip()
+    }
     value = str(payload.get("value") or payload.get("subject") or payload.get("name") or "").strip()
-    if kind not in {"stock", "industry_chain"}:
-        raise AuthError("研究类型必须是 stock 或 industry_chain", 422)
+    if "industry_chain" in declared_types:
+        raise AuthError("产业链查询已下线，当前仅支持单只 A 股研究", 422)
+    if declared_types != {"stock"}:
+        raise AuthError("研究类型仅支持 stock（单只 A 股）", 422)
+    kind = "stock"
     if not value:
-        raise AuthError("请输入一只 A 股或一个产业链名称", 422)
+        raise AuthError("请输入一只 A 股简称或六位代码", 422)
     if any(mark in value for mark in (",", "，", ";", "；", "、", "\n")):
-        raise AuthError("每次只能研究一只 A 股或一个产业链", 422)
-    if kind == "industry_chain":
-        compact = re.sub(r"\s+", "", value)
-        if not 2 <= len(compact) <= 30:
-            raise AuthError("产业链名称需为 2–30 个字", 422)
-        return NormalizedSubject(kind, compact)
+        raise AuthError("每次只能研究一只 A 股", 422)
 
     compact = re.sub(r"\s+", "", value)
     code = resolve_stock_code(compact, allow_fetch=allow_fetch, exact_only=True)
@@ -344,11 +461,11 @@ def quota_status(db_path: Path, *, user_id: int) -> dict[str, Any]:
         if not user:
             raise AuthError("用户不存在", 404)
         monthly_used = int(conn.execute(
-            "SELECT COUNT(*) FROM stock_research_reports WHERE user_id=? AND substr(created_at,1,7)=?",
+            "SELECT COUNT(*) FROM stock_research_reports WHERE user_id=? AND schema_version>=2 AND substr(created_at,1,7)=?",
             (user_id, month_prefix),
         ).fetchone()[0])
         daily_used = int(conn.execute(
-            "SELECT COUNT(*) FROM stock_research_reports WHERE user_id=? AND substr(created_at,1,10)=?",
+            "SELECT COUNT(*) FROM stock_research_reports WHERE user_id=? AND schema_version>=2 AND substr(created_at,1,10)=?",
             (user_id, day_prefix),
         ).fetchone()[0])
         credit_balance = int(conn.execute(
@@ -390,10 +507,195 @@ def quota_status(db_path: Path, *, user_id: int) -> dict[str, Any]:
 def _validate_job_quota(db_path: Path, *, user_id: int) -> dict[str, Any]:
     quota = quota_status(db_path, user_id=user_id)
     if quota["membership_active"] and int(quota["daily_used"]) >= MEMBER_DAILY_LIMIT:
-        raise AuthError("今日产业链逆向研究额度已用完，明天可继续生成", 429)
+        raise AuthError("今日 A股逆向研究额度已用完，明天可继续生成", 429)
     if quota["next_billing_mode"] == "credits" and int(quota["credit_balance"]) < 3:
         raise AuthError("可用次数不足，本功能需要 3 次", 402)
     return quota
+
+
+def _is_truthy(value: Any) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _find_active_artifact(db_path: Path, *, subject: NormalizedSubject) -> sqlite3.Row | None:
+    conditions = ["schema_version>=2", "is_active=1", "subject_type=?"]
+    params: list[Any] = [subject.type]
+    if subject.type == "stock":
+        conditions.append("stock_code=?")
+        params.append(subject.code)
+    else:
+        conditions.append("subject_name=?")
+        params.append(subject.name)
+    query = "SELECT * FROM stock_research_artifacts WHERE " + " AND ".join(conditions) + " ORDER BY created_at DESC LIMIT 1"
+    with _connect(db_path) as conn:
+        return conn.execute(query, params).fetchone()
+
+
+def _membership_active(user: sqlite3.Row, now: datetime) -> bool:
+    expires_at = str(user["membership_expires_at"] or "") if "membership_expires_at" in user.keys() else ""
+    if str(user["membership_status"] or "") != "active" or not expires_at:
+        return False
+    try:
+        expires = datetime.fromisoformat(expires_at)
+        if expires.tzinfo is None:
+            expires = expires.replace(tzinfo=CN_TZ)
+        return expires > now
+    except ValueError:
+        return False
+
+
+def _current_billing_mode_in_transaction(
+    conn: sqlite3.Connection, *, user: sqlite3.Row, now: datetime,
+) -> str:
+    if str(user["role"] or "") == "admin":
+        return "admin_free"
+    membership_active = _membership_active(user, now)
+    if membership_active:
+        day_prefix = now.strftime("%Y-%m-%d")
+        daily_used = int(conn.execute(
+            "SELECT COUNT(*) FROM stock_research_reports WHERE user_id=? AND schema_version>=2 AND substr(created_at,1,10)=?",
+            (int(user["id"]), day_prefix),
+        ).fetchone()[0])
+        if daily_used >= MEMBER_DAILY_LIMIT:
+            raise AuthError("今日 A股逆向研究额度已用完，明天可继续生成", 429)
+        month_prefix = now.strftime("%Y-%m")
+        monthly_used = int(conn.execute(
+            "SELECT COUNT(*) FROM stock_research_reports WHERE user_id=? AND schema_version>=2 AND substr(created_at,1,7)=?",
+            (int(user["id"]), month_prefix),
+        ).fetchone()[0])
+        if monthly_used < MEMBER_MONTHLY_INCLUDED:
+            return "membership_included"
+    balance = int(conn.execute(
+        "SELECT COALESCE(SUM(delta),0) FROM credit_ledger WHERE user_id=?", (int(user["id"]),)
+    ).fetchone()[0])
+    if balance < 3:
+        raise AuthError("可用次数不足，本功能需要 3 次", 402)
+    return "credits"
+
+
+def _charge_usage_in_transaction(
+    conn: sqlite3.Connection, *, user_id: int, billing_mode: str, related_id: str,
+    request_ip: str, now: str,
+) -> tuple[str, int]:
+    already = conn.execute(
+        "SELECT status,credits_spent FROM usage_events WHERE user_id=? AND feature=? AND related_id=? AND status IN ('charged','admin_free','membership_free')",
+        (user_id, FEATURE, related_id),
+    ).fetchone()
+    if already:
+        return str(already["status"]), int(already["credits_spent"])
+    if billing_mode == "admin_free":
+        billing_status, credits = "admin_free", 0
+    elif billing_mode == "membership_included":
+        billing_status, credits = "membership_free", 0
+    else:
+        balance = int(conn.execute(
+            "SELECT COALESCE(SUM(delta),0) FROM credit_ledger WHERE user_id=?", (user_id,)
+        ).fetchone()[0])
+        if balance < 3:
+            raise AuthError("可用次数不足，本功能需要 3 次", 402)
+        conn.execute(
+            "INSERT INTO credit_ledger(user_id,delta,reason,related_id,created_at) VALUES(?,-3,?,?,?)",
+            (user_id, f"use_{FEATURE}", related_id, now),
+        )
+        billing_status, credits = "charged", 3
+    conn.execute(
+        "INSERT INTO usage_events(user_id,feature,credits_spent,status,related_id,ip,created_at) VALUES(?,?,?,?,?,?,?)",
+        (user_id, FEATURE, credits, billing_status, related_id, request_ip, now),
+    )
+    return billing_status, credits
+
+
+def _grant_cached_artifact(
+    db_path: Path, *, artifact: sqlite3.Row, subject: NormalizedSubject,
+    user_id: int, request_ip: str,
+) -> dict[str, Any]:
+    artifact_id = str(artifact["id"])
+    job_id = f"sr-{uuid4().hex}"
+    report_id = f"report-{job_id[3:]}"
+    now = _now()
+    report = json.loads(str(artifact["report_json"]))
+    board = report.get("research_board") if isinstance(report.get("research_board"), dict) else {}
+    roles = report.get("role_outputs") if isinstance(report.get("role_outputs"), dict) else {}
+    sources = report.get("evidence") if isinstance(report.get("evidence"), list) else []
+    try:
+        with _connect(db_path) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            existing = conn.execute(
+                "SELECT job_id FROM stock_research_reports WHERE user_id=? AND artifact_id=?",
+                (user_id, artifact_id),
+            ).fetchone()
+            if existing:
+                reused = get_job(db_path, str(existing["job_id"]), user_id=user_id)
+                reused.update({
+                    "cache_hit": True, "cache_source_report_id": artifact_id,
+                    "cache_source_created_at": str(artifact["created_at"]),
+                    "charged": False, "credits_spent": 0, "existing_access": True,
+                })
+                return reused
+            active = conn.execute(
+                "SELECT id FROM stock_research_jobs WHERE user_id=? AND status IN ('queued','running','retrying')",
+                (user_id,),
+            ).fetchone()
+            if active:
+                raise AuthError("当前已有一份研究正在生成，请等待完成后再提交", 409)
+            user = conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+            if not user:
+                raise AuthError("用户不存在", 404)
+            billing_mode = _current_billing_mode_in_transaction(
+                conn, user=user, now=datetime.fromisoformat(now),
+            )
+            conn.execute(
+                """INSERT INTO stock_research_jobs
+                   (id,user_id,subject_type,subject_name,stock_code,status,stage,provider,billing_mode,model_names,
+                    progress,board_json,role_outputs_json,sources_json,request_ip,created_at,started_at,updated_at,
+                    completed_at,cache_hit,cache_source_report_id,artifact_id)
+                   VALUES(?,?,?,?,?,'completed','completed','cache',?,?,100,?,?,?,?,?,?,?,?,1,?,?)""",
+                (
+                    job_id, user_id, subject.type, subject.name, subject.code,
+                    billing_mode, str(artifact["model_names"]), json.dumps(board, ensure_ascii=False),
+                    json.dumps(roles, ensure_ascii=False), json.dumps(sources, ensure_ascii=False),
+                    request_ip, now, now, now, now, artifact_id, artifact_id,
+                ),
+            )
+            billing_status, credits = _charge_usage_in_transaction(
+                conn, user_id=user_id, billing_mode=billing_mode, related_id=job_id,
+                request_ip=request_ip, now=now,
+            )
+            conn.execute(
+                """INSERT INTO stock_research_reports
+                   (id,job_id,user_id,subject_type,subject_name,stock_code,schema_version,report_json,provider,
+                    model_names,input_tokens,output_tokens,search_count,cost_cny,duration_seconds,source_count,
+                    created_at,cache_hit,cache_source_report_id,artifact_id)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?)""",
+                (
+                    report_id, job_id, user_id, subject.type, subject.name, subject.code,
+                    int(artifact["schema_version"]), "{}", "cache",
+                    str(artifact["model_names"]), 0, 0, 0, 0.0, 0.0, len(sources), now, artifact_id, artifact_id,
+                ),
+            )
+    except sqlite3.IntegrityError:
+        with _connect(db_path) as conn:
+            existing = conn.execute(
+                "SELECT job_id FROM stock_research_reports WHERE user_id=? AND artifact_id=?",
+                (user_id, artifact_id),
+            ).fetchone()
+        if not existing:
+            raise
+        reused = get_job(db_path, str(existing["job_id"]), user_id=user_id)
+        reused.update({
+            "cache_hit": True, "cache_source_report_id": artifact_id,
+            "cache_source_created_at": str(artifact["created_at"]),
+            "charged": False, "credits_spent": 0, "existing_access": True,
+        })
+        return reused
+    reused = get_job(db_path, job_id, user_id=user_id)
+    reused.update({
+        "cache_hit": True, "cache_source_report_id": artifact_id,
+        "cache_source_created_at": str(artifact["created_at"]),
+        "charged": billing_status != "admin_free", "credits_spent": credits,
+        "existing_access": False,
+    })
+    return reused
 
 
 def create_job(
@@ -406,9 +708,16 @@ def create_job(
     provider_name: str = "",
 ) -> dict[str, Any]:
     if not is_user_allowed(user):
-        raise AuthError("产业链逆向研究正在管理员评测阶段，暂未对当前账号开放", 403)
+        raise AuthError("A股逆向研究正在管理员评测阶段，暂未对当前账号开放", 403)
     subject = normalize_subject(payload)
     user_id = int(user["id"])
+    if not _is_truthy(payload.get("force_refresh")):
+        artifact = _find_active_artifact(db_path, subject=subject)
+        if artifact:
+            return _grant_cached_artifact(
+                db_path, artifact=artifact, subject=subject,
+                user_id=user_id, request_ip=request_ip,
+            )
     quota = _validate_job_quota(db_path, user_id=user_id)
     billing_mode = str(quota["next_billing_mode"])
     job_id = f"sr-{uuid4().hex}"
@@ -431,6 +740,20 @@ def create_job(
     try:
         with _connect(db_path) as conn:
             conn.execute("BEGIN IMMEDIATE")
+            if subject.type == "stock":
+                subject_active = conn.execute(
+                    """SELECT id FROM stock_research_jobs
+                       WHERE subject_type='stock' AND stock_code=? AND status IN ('queued','running','retrying')""",
+                    (subject.code,),
+                ).fetchone()
+            else:
+                subject_active = conn.execute(
+                    """SELECT id FROM stock_research_jobs
+                       WHERE subject_type='industry_chain' AND subject_name=? AND status IN ('queued','running','retrying')""",
+                    (subject.name,),
+                ).fetchone()
+            if subject_active:
+                raise AuthError("该研究对象的报告正在生成，请稍后再试", 409)
             active = conn.execute(
                 "SELECT id FROM stock_research_jobs WHERE user_id = ? AND status IN ('queued','running','retrying')",
                 (user_id,),
@@ -851,51 +1174,54 @@ def _store_report_charge_and_complete(
         user = conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
         if not user:
             raise AuthError("用户不存在", 404)
-        already_charged = conn.execute(
-            "SELECT 1 FROM usage_events WHERE user_id=? AND feature=? AND related_id=? AND status IN ('charged','admin_free','membership_free')",
-            (user_id, FEATURE, job_id),
-        ).fetchone()
-        if not already_charged:
-            if user["role"] == "admin" or billing_mode == "admin_free":
-                billing_status, credits = "admin_free", 0
-            elif billing_mode == "membership_included":
-                billing_status, credits = "membership_free", 0
-            else:
-                balance = int(conn.execute(
-                    "SELECT COALESCE(SUM(delta),0) AS balance FROM credit_ledger WHERE user_id=?", (user_id,)
-                ).fetchone()["balance"])
-                if balance < 3:
-                    raise AuthError("可用次数不足，本功能需要 3 次", 402)
-                conn.execute(
-                    "INSERT INTO credit_ledger(user_id,delta,reason,related_id,created_at) VALUES(?, -3, ?, ?, ?)",
-                    (user_id, f"use_{FEATURE}", job_id, now),
-                )
-                billing_status, credits = "charged", 3
+        _charge_usage_in_transaction(
+            conn, user_id=user_id, billing_mode=billing_mode, related_id=job_id,
+            request_ip=request_ip, now=now,
+        )
+        artifact_id = f"artifact-{job_id[3:]}"
+        if subject.type == "stock":
             conn.execute(
-                "INSERT INTO usage_events(user_id,feature,credits_spent,status,related_id,ip,created_at) VALUES(?,?,?,?,?,?,?)",
-                (user_id, FEATURE, credits, billing_status, job_id, request_ip, now),
+                "UPDATE stock_research_artifacts SET is_active=0,superseded_at=? WHERE subject_type='stock' AND stock_code=? AND is_active=1",
+                (now, subject.code),
             )
+        else:
+            conn.execute(
+                "UPDATE stock_research_artifacts SET is_active=0,superseded_at=? WHERE subject_type='industry_chain' AND subject_name=? AND is_active=1",
+                (now, subject.name),
+            )
+        conn.execute(
+            """INSERT OR IGNORE INTO stock_research_artifacts
+               (id,subject_type,subject_name,stock_code,schema_version,report_json,provider,model_names,
+                input_tokens,output_tokens,search_count,cost_cny,duration_seconds,source_count,created_at)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                artifact_id, subject.type, subject.name, subject.code, int(report.get("schema_version") or 2),
+                json.dumps(report, ensure_ascii=False), provider, _configured_model_names(provider),
+                int(usage.get("input_tokens", 0)), int(usage.get("output_tokens", 0)),
+                int(usage.get("search_count", 0)), float(usage.get("cost_cny", 0)), duration, len(sources), now,
+            ),
+        )
         conn.execute(
             """INSERT OR IGNORE INTO stock_research_reports
                (id,job_id,user_id,subject_type,subject_name,stock_code,schema_version,report_json,provider,model_names,
-                input_tokens,output_tokens,search_count,cost_cny,duration_seconds,source_count,created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                input_tokens,output_tokens,search_count,cost_cny,duration_seconds,source_count,created_at,artifact_id)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
-                report_id, job_id, user_id, subject.type, subject.name, subject.code, int(report.get("schema_version") or 1),
-                json.dumps(report, ensure_ascii=False), provider, _configured_model_names(provider), int(usage.get("input_tokens", 0)),
+                report_id, job_id, user_id, subject.type, subject.name, subject.code, int(report.get("schema_version") or 2),
+                "{}", provider, _configured_model_names(provider), int(usage.get("input_tokens", 0)),
                 int(usage.get("output_tokens", 0)), int(usage.get("search_count", 0)),
-                float(usage.get("cost_cny", 0)), duration, len(sources), now,
+                float(usage.get("cost_cny", 0)), duration, len(sources), now, artifact_id,
             ),
         )
         conn.execute(
             """UPDATE stock_research_jobs SET status='completed',stage='completed',progress=100,
                board_json=?,role_outputs_json=?,sources_json=?,input_tokens=?,output_tokens=?,search_count=?,cost_cny=?,
-               error_code='',error_message='',completed_at=?,updated_at=? WHERE id=?""",
+               error_code='',error_message='',completed_at=?,updated_at=?,artifact_id=? WHERE id=?""",
             (
                 json.dumps(board, ensure_ascii=False), json.dumps(role_outputs, ensure_ascii=False),
                 json.dumps(sources, ensure_ascii=False), int(usage.get("input_tokens", 0)),
                 int(usage.get("output_tokens", 0)), int(usage.get("search_count", 0)),
-                float(usage.get("cost_cny", 0)), now, now, job_id,
+                float(usage.get("cost_cny", 0)), now, now, artifact_id, job_id,
             ),
         )
 
@@ -923,8 +1249,12 @@ def get_job(db_path: Path, job_id: str, *, user_id: int | None = None, admin: bo
 def list_reports(db_path: Path, *, user_id: int, limit: int = 30) -> list[dict[str, Any]]:
     with _connect(db_path) as conn:
         rows = conn.execute(
-            """SELECT id,job_id,subject_type,subject_name,stock_code,provider,cost_cny,duration_seconds,source_count,created_at
-               FROM stock_research_reports WHERE user_id=? ORDER BY created_at DESC LIMIT ?""",
+            """SELECT r.id,r.job_id,r.subject_type,r.subject_name,r.stock_code,r.provider,r.cost_cny,
+                      r.duration_seconds,r.source_count,r.created_at,r.cache_hit,r.cache_source_report_id,r.artifact_id,
+                      COALESCE(a.created_at,r.created_at) AS artifact_created_at
+               FROM stock_research_reports r
+               LEFT JOIN stock_research_artifacts a ON a.id=r.artifact_id
+               WHERE r.user_id=? AND r.schema_version>=2 ORDER BY r.created_at DESC LIMIT ?""",
             (user_id, max(1, min(limit, 100))),
         ).fetchall()
     return [dict(row) for row in rows]
@@ -932,11 +1262,20 @@ def list_reports(db_path: Path, *, user_id: int, limit: int = 30) -> list[dict[s
 
 def get_report(db_path: Path, report_id: str, *, user_id: int | None = None, admin: bool = False) -> dict[str, Any]:
     with _connect(db_path) as conn:
-        row = conn.execute("SELECT * FROM stock_research_reports WHERE id=?", (report_id,)).fetchone()
-    if not row or (not admin and user_id is not None and int(row["user_id"]) != int(user_id)):
+        row = conn.execute(
+            """SELECT r.*,a.report_json AS artifact_report_json,a.created_at AS artifact_created_at,
+                      a.provider AS artifact_provider,a.cost_cny AS artifact_cost_cny
+               FROM stock_research_reports r
+               LEFT JOIN stock_research_artifacts a ON a.id=r.artifact_id
+               WHERE r.id=?""",
+            (report_id,),
+        ).fetchone()
+    if not row or int(row["schema_version"]) < 2 or (not admin and user_id is not None and int(row["user_id"]) != int(user_id)):
         raise AuthError("研究报告不存在", 404)
     payload = dict(row)
-    payload["report"] = json.loads(payload.pop("report_json"))
+    artifact_json = payload.pop("artifact_report_json", None)
+    payload["report"] = json.loads(artifact_json or payload.pop("report_json"))
+    payload.pop("report_json", None)
     return payload
 
 
@@ -1061,7 +1400,7 @@ def _job_payload(row: sqlite3.Row) -> dict[str, Any]:
     keys = (
         "id", "user_id", "subject_type", "subject_name", "stock_code", "status", "stage", "provider", "billing_mode", "model_names", "attempts",
         "progress", "input_tokens", "output_tokens", "search_count", "cost_cny", "error_code", "error_message",
-        "created_at", "started_at", "updated_at", "completed_at",
+        "created_at", "started_at", "updated_at", "completed_at", "cache_hit", "cache_source_report_id",
     )
     payload = {key: row[key] for key in keys if key in row.keys()}
     for key in ("username", "email"):

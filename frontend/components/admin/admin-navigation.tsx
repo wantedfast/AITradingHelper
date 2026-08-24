@@ -10,7 +10,7 @@ export const adminSections: Array<{ key: AdminSection; label: string; icon: type
   { key: "feedback", label: "反馈建议", icon: MessageSquare },
   { key: "updates", label: "更新公告", icon: Megaphone },
   { key: "emails", label: "邮件推送", icon: Mail },
-  { key: "stock-research", label: "产业链研究", icon: Boxes },
+  { key: "stock-research", label: "A股研究", icon: Boxes },
 ];
 
 export function adminSectionPath(section: AdminSection) {

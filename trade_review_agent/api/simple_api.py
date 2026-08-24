@@ -1519,7 +1519,21 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             provider_name=requested_provider,
         )
         quota = stock_research_quota_status(AUTH_DB, user_id=int(user["id"]))
-        self._json({"job": job, "quota": quota, "billing_cost": int(quota["next_credit_cost"]), "charged": False}, status=202)
+        reused = bool(job.get("cache_hit"))
+        charged = bool(job.get("charged"))
+        credits_spent = int(job.get("credits_spent") or 0)
+        self._json(
+            {
+                "job": job,
+                "quota": quota,
+                "billing_cost": credits_spent if reused else int(quota["next_credit_cost"]),
+                "charged": charged,
+                "billing_mode": str(job.get("billing_mode") or ""),
+                "existing_access": bool(job.get("existing_access")),
+                "reused": reused,
+            },
+            status=200 if reused else 202,
+        )
 
     def _stock_research_job_status(self, path: str) -> None:
         user = self._require_user()
