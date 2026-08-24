@@ -1,0 +1,53 @@
+name: Build prebuilt production images
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.sha }}
+      DEPLOY_ROOT: /opt/trade-review-agent
+      API_IMAGE: aitrading/trade-review-api:${{ github.sha }}
+      FRONTEND_IMAGE: aitrading/trade-review-frontend:${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build SHA-tagged API and frontend images
+        run: docker compose -f docker-compose.prod.yml build
+
+      - name: Package docker save archive
+        run: |
+          docker save \
+            "aitrading/trade-review-api:${GITHUB_SHA}" \
+            "aitrading/trade-review-frontend:${GITHUB_SHA}" \
+            | gzip -6 > "aitrading-${GITHUB_SHA}.tar.gz"
+          sha256sum "aitrading-${GITHUB_SHA}.tar.gz" > "aitrading-${GITHUB_SHA}.tar.gz.sha256"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aitrading-${{ github.sha }}
+          path: |
+            aitrading-${{ github.sha }}.tar.gz
+            aitrading-${{ github.sha }}.tar.gz.sha256
+          retention-days: 14
+
+      - name: Publish immutable release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: deploy-${{ github.sha }}
+          name: Prebuilt deployment ${{ github.sha }}
+          prerelease: true
+          files: |
+            aitrading-${{ github.sha }}.tar.gz
+            aitrading-${{ github.sha }}.tar.gz.sha256
