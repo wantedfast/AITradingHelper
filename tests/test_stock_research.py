@@ -200,14 +200,20 @@ class StockResearchTest(unittest.TestCase):
         finally:
             conn.close()
 
-    def seed_successful_report(self, created_at: str, suffix: str):
+    def seed_successful_report(
+        self, created_at: str, suffix: str, *, subject_type: str = "stock",
+        subject_name: str = "样本", report_json: str = "{}",
+    ):
         conn = sqlite3.connect(self.db)
         try:
             conn.execute(
                 """INSERT INTO stock_research_reports
                    (id,job_id,user_id,subject_type,subject_name,report_json,provider,created_at)
-                   VALUES(?,?,?,?,?,'{}','luna',?)""",
-                (f"report-seed-{suffix}", f"job-seed-{suffix}", self.user_id, "stock", "样本", created_at),
+                   VALUES(?,?,?,?,?,?,'luna',?)""",
+                (
+                    f"report-seed-{suffix}", f"job-seed-{suffix}", self.user_id,
+                    subject_type, subject_name, report_json, created_at,
+                ),
             )
             conn.commit()
         finally:
@@ -215,9 +221,18 @@ class StockResearchTest(unittest.TestCase):
 
     def test_input_normalization_enforces_one_subject(self):
         self.assertEqual(normalize_subject({"type": "stock", "value": "华正新材"}, allow_fetch=False).code, "603186")
-        self.assertEqual(normalize_subject({"type": "industry_chain", "value": "算力租赁产业链"}).name, "算力租赁产业链")
-        with self.assertRaises(AuthError):
-            normalize_subject({"type": "industry_chain", "value": "算力租赁、PCB"})
+        for payload in (
+            {"type": "industry_chain", "value": "算力租赁产业链"},
+            {"input_type": "industry_chain", "value": "算力租赁产业链"},
+            {"type": "stock", "subject_type": "industry_chain", "value": "华正新材"},
+            {"type": "stock", "input_type": "industry_chain", "value": "华正新材"},
+            {"type": "unknown", "value": "华正新材"},
+            {"type": "stock", "subject_type": "unknown", "value": "华正新材"},
+        ):
+            with self.subTest(payload=payload), self.assertRaises(AuthError) as caught:
+                normalize_subject(payload)
+            self.assertEqual(caught.exception.status, 422)
+        self.assertIn("单只 A 股", caught.exception.message)
 
     def test_luna_provider_uses_dedicated_proxy_without_global_proxy_state(self):
         request = urllib.request.Request("https://api.openai.com/v1/responses")
@@ -774,7 +789,7 @@ class StockResearchTest(unittest.TestCase):
         self.activate_membership()
         first = create_job(self.db, user=self.user, payload={"type": "stock", "value": "华正新材"}, start=False)
         run_job(self.db, first["id"], provider_factory=lambda _: FakeProvider())
-        second = create_job(self.db, user=self.user, payload={"type": "industry_chain", "value": "算力租赁"}, start=False)
+        second = create_job(self.db, user=self.user, payload={"type": "stock", "value": "东材科技"}, start=False)
         run_job(self.db, second["id"], provider_factory=lambda _: FakeProvider())
         self.assertEqual(self.balance(), 5)
         quota = quota_status(self.db, user_id=self.user_id)
@@ -783,8 +798,18 @@ class StockResearchTest(unittest.TestCase):
         self.assertTrue(cached["cache_hit"])
         self.assertEqual(quota_status(self.db, user_id=self.user_id)["daily_used"], 2)
         with self.assertRaises(AuthError) as caught:
-            create_job(self.db, user=self.user, payload={"type": "industry_chain", "value": "人形机器人"}, start=False)
+            create_job(self.db, user=self.user, payload={"type": "stock", "value": "长电科技"}, start=False)
         self.assertEqual(caught.exception.status, 429)
+        self.assertIn("A股逆向研究", caught.exception.message)
+        self.assertNotIn("产业链", caught.exception.message)
+
+    @patch.dict(os.environ, {"STOCK_RESEARCH_ACCESS": "admin"})
+    def test_access_error_uses_current_feature_name(self):
+        with self.assertRaises(AuthError) as caught:
+            create_job(self.db, user=self.user, payload={"type": "stock", "value": "华正新材"}, start=False)
+        self.assertEqual(caught.exception.status, 403)
+        self.assertIn("A股逆向研究", caught.exception.message)
+        self.assertNotIn("产业链", caught.exception.message)
 
     @patch.dict(os.environ, {"STOCK_RESEARCH_ACCESS": "all"})
     def test_failed_member_job_does_not_consume_quota(self):
@@ -824,7 +849,7 @@ class StockResearchTest(unittest.TestCase):
     def test_only_one_active_job_per_user(self):
         create_job(self.db, user=self.user, payload={"type": "stock", "value": "华正新材"}, start=False)
         with self.assertRaises(AuthError) as caught:
-            create_job(self.db, user=self.user, payload={"type": "industry_chain", "value": "算力租赁"}, start=False)
+            create_job(self.db, user=self.user, payload={"type": "stock", "value": "东材科技"}, start=False)
         self.assertEqual(caught.exception.status, 409)
 
     @patch.dict(os.environ, {
@@ -862,14 +887,17 @@ class StockResearchTest(unittest.TestCase):
         self.assertEqual(caught.exception.status, 503)
 
     @patch.dict(os.environ, {"STOCK_RESEARCH_ACCESS": "all"})
-    def test_industry_chain_report_has_chain_rankings_and_no_stock_score(self):
-        job = create_job(self.db, user=self.user, payload={"type": "industry_chain", "value": "算力租赁产业链"}, start=False)
-        run_job(self.db, job["id"], provider_factory=lambda _: FakeProvider())
-        done = get_job(self.db, job["id"], user_id=self.user_id)
-        report = get_report(self.db, done["report_id"], user_id=self.user_id)["report"]
-        self.assertNotIn("input_stock_score", report)
-        self.assertTrue(report["bottleneck_ranking"])
-        self.assertTrue(report["profit_capture_ranking"])
+    def test_historical_industry_chain_report_remains_readable(self):
+        created_at = "2026-08-23T09:00:00+08:00"
+        self.seed_successful_report(
+            created_at, "legacy-chain", subject_type="industry_chain",
+            subject_name="算力租赁产业链",
+            report_json='{"schema_version":2,"subject":{"type":"industry_chain","name":"算力租赁产业链"}}',
+        )
+        history = list_reports(self.db, user_id=self.user_id)
+        self.assertEqual(history[0]["subject_type"], "industry_chain")
+        report = get_report(self.db, history[0]["id"], user_id=self.user_id)["report"]
+        self.assertEqual(report["subject"]["type"], "industry_chain")
 
     @patch.dict(os.environ, {"STOCK_RESEARCH_ACCESS": "all"})
     def test_cost_cap_stops_without_charge(self):

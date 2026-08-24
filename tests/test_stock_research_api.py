@@ -122,8 +122,22 @@ class StockResearchApiE2ETest(unittest.TestCase):
     def test_unauthenticated_and_multi_subject_are_rejected(self):
         status, _ = self.request("/api/stock-research/reports", token="")
         self.assertEqual(status, 401)
-        status, _ = self.request("/api/stock-research/jobs", method="POST", payload={"type": "industry_chain", "value": "算力、PCB"})
+        status, payload = self.request("/api/stock-research/jobs", method="POST", payload={"type": "industry_chain", "value": "算力租赁产业链"})
         self.assertEqual(status, 422)
+        self.assertIn("仅支持单只 A 股", payload["error"])
+        status, payload = self.request("/api/stock-research/jobs", method="POST", payload={"input_type": "industry_chain", "value": "算力租赁产业链"})
+        self.assertEqual(status, 422)
+        self.assertIn("仅支持单只 A 股", payload["error"])
+        for conflicting_payload in (
+            {"type": "stock", "subject_type": "industry_chain", "value": "华正新材"},
+            {"type": "stock", "input_type": "industry_chain", "value": "华正新材"},
+        ):
+            with self.subTest(payload=conflicting_payload):
+                status, payload = self.request(
+                    "/api/stock-research/jobs", method="POST", payload=conflicting_payload,
+                )
+                self.assertEqual(status, 422)
+                self.assertIn("仅支持单只 A 股", payload["error"])
 
     def test_admin_can_record_blind_benchmark_result(self):
         status, payload = self.request(

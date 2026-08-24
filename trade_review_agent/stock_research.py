@@ -406,19 +406,21 @@ def _migrate_v2_reports_to_artifacts(conn: sqlite3.Connection) -> None:
 
 
 def normalize_subject(payload: dict[str, Any], *, allow_fetch: bool = True) -> NormalizedSubject:
-    kind = str(payload.get("type") or payload.get("subject_type") or "").strip().lower()
+    declared_types = {
+        str(payload.get(field) or "").strip().lower()
+        for field in ("type", "subject_type", "input_type")
+        if str(payload.get(field) or "").strip()
+    }
     value = str(payload.get("value") or payload.get("subject") or payload.get("name") or "").strip()
-    if kind not in {"stock", "industry_chain"}:
-        raise AuthError("研究类型必须是 stock 或 industry_chain", 422)
+    if "industry_chain" in declared_types:
+        raise AuthError("产业链查询已下线，当前仅支持单只 A 股研究", 422)
+    if declared_types != {"stock"}:
+        raise AuthError("研究类型仅支持 stock（单只 A 股）", 422)
+    kind = "stock"
     if not value:
-        raise AuthError("请输入一只 A 股或一个产业链名称", 422)
+        raise AuthError("请输入一只 A 股简称或六位代码", 422)
     if any(mark in value for mark in (",", "，", ";", "；", "、", "\n")):
-        raise AuthError("每次只能研究一只 A 股或一个产业链", 422)
-    if kind == "industry_chain":
-        compact = re.sub(r"\s+", "", value)
-        if not 2 <= len(compact) <= 30:
-            raise AuthError("产业链名称需为 2–30 个字", 422)
-        return NormalizedSubject(kind, compact)
+        raise AuthError("每次只能研究一只 A 股", 422)
 
     compact = re.sub(r"\s+", "", value)
     code = resolve_stock_code(compact, allow_fetch=allow_fetch, exact_only=True)
@@ -505,7 +507,7 @@ def quota_status(db_path: Path, *, user_id: int) -> dict[str, Any]:
 def _validate_job_quota(db_path: Path, *, user_id: int) -> dict[str, Any]:
     quota = quota_status(db_path, user_id=user_id)
     if quota["membership_active"] and int(quota["daily_used"]) >= MEMBER_DAILY_LIMIT:
-        raise AuthError("今日产业链逆向研究额度已用完，明天可继续生成", 429)
+        raise AuthError("今日 A股逆向研究额度已用完，明天可继续生成", 429)
     if quota["next_billing_mode"] == "credits" and int(quota["credit_balance"]) < 3:
         raise AuthError("可用次数不足，本功能需要 3 次", 402)
     return quota
@@ -555,7 +557,7 @@ def _current_billing_mode_in_transaction(
             (int(user["id"]), day_prefix),
         ).fetchone()[0])
         if daily_used >= MEMBER_DAILY_LIMIT:
-            raise AuthError("今日产业链逆向研究额度已用完，明天可继续生成", 429)
+            raise AuthError("今日 A股逆向研究额度已用完，明天可继续生成", 429)
         month_prefix = now.strftime("%Y-%m")
         monthly_used = int(conn.execute(
             "SELECT COUNT(*) FROM stock_research_reports WHERE user_id=? AND schema_version>=2 AND substr(created_at,1,7)=?",
@@ -706,7 +708,7 @@ def create_job(
     provider_name: str = "",
 ) -> dict[str, Any]:
     if not is_user_allowed(user):
-        raise AuthError("产业链逆向研究正在管理员评测阶段，暂未对当前账号开放", 403)
+        raise AuthError("A股逆向研究正在管理员评测阶段，暂未对当前账号开放", 403)
     subject = normalize_subject(payload)
     user_id = int(user["id"])
     if not _is_truthy(payload.get("force_refresh")):
