@@ -179,7 +179,7 @@ export default function StockResearchPage() {
       <MainSidebar activeKey="stock-research" note={<>每次只研究一只 A 股<br />仅成功报告计费</>} />
       <section className="stock-research-shell">
         <header className="stock-research-hero">
-          <div><span className="eyebrow">六角色协同研究</span><h1>A股逆向研究</h1><p>输入一只 A 股，从资金为何交易一路拆到真实产品、物料清单、瓶颈与利润中心，再由基金经理角色裁决。</p></div>
+          <div><span className="eyebrow">六角色协同研究</span><h1>A股逆向研究</h1><p>价值投资大师都在用的选股法，从“三高”拆解一只个股的真实价值。输入一只 A 股，我们会先看它的竞争壁垒、盈利质量和成长确定性，再沿着真实产品拆解产业链，找出关键瓶颈与利润中心，判断它具备长期价值，还是只有短期热度。</p></div>
           <div className="stock-research-balance"><ShieldCheck /><span>当前权限</span><b>{user?.role === "admin" ? "管理员评测" : `${user?.credits ?? "—"} 次`}</b></div>
         </header>
 
