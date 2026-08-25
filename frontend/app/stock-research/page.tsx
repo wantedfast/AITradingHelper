@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { AlertTriangle, ArrowRight, Boxes, Clock3, ExternalLink, Loader2, RefreshCcw, Search, ShieldCheck } from "lucide-react";
@@ -89,7 +89,6 @@ export default function StockResearchPage() {
   const [reports, setReports] = useState<ReportRecord[]>([]);
   const [quota, setQuota] = useState<ResearchQuota | null>(null);
   const [selected, setSelected] = useState<ReportRecord | null>(null);
-  const [cacheNotice, setCacheNotice] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
 
@@ -145,7 +144,7 @@ export default function StockResearchPage() {
   async function submit(forceRefresh = false, overrideValue?: string) {
     const requestValue = (overrideValue || value).trim();
     if (!requestValue) return setMessage("请输入一只 A 股简称或六位代码");
-    setBusy(true); setMessage(""); setSelected(null); setCacheNotice("");
+    setBusy(true); setMessage(""); setSelected(null);
     try {
       const payload = await apiFetch<{ job: ResearchJob; quota: ResearchQuota; reused?: boolean; charged?: boolean; billing_cost?: number; billing_mode?: string; existing_access?: boolean }>("/api/stock-research/jobs", {
         method: "POST", body: JSON.stringify({ type: "stock", value: requestValue, force_refresh: forceRefresh }),
@@ -153,17 +152,8 @@ export default function StockResearchPage() {
       setJob(payload.job);
       setQuota(payload.quota || null);
       if (payload.reused && payload.job.report_id) {
-        const notice = payload.existing_access
-          ? "已打开你取得过的这份报告，本次不重复扣费。"
-          : payload.billing_mode === "membership_included"
-            ? "已复用服务器保存的报告，本次使用 1 份会员额度，未重新调用模型。"
-            : payload.billing_mode === "credits"
-              ? `已复用服务器保存的报告，本次已扣 ${payload.billing_cost || 3} 次，未重新调用模型。`
-              : "已复用服务器保存的报告，管理员评测不扣次数。";
-        setCacheNotice(notice);
         await loadHistory();
         await openReport(payload.job.report_id);
-        setMessage(notice);
       }
     } catch (error) {
       const fallback = error instanceof ApiError && error.status === 403 ? "该功能目前仅供管理员完成双引擎评测。" : "创建研究任务失败";
@@ -172,8 +162,6 @@ export default function StockResearchPage() {
   }
 
   const document = selected?.report;
-  const evidenceMap = useMemo(() => new Map((document?.evidence || []).map((item) => [item.id, item])), [document]);
-
   return (
     <main className="stock-research-page">
       <MainSidebar activeKey="stock-research" note={<>每次只研究一只 A 股<br />仅成功报告计费</>} />
@@ -202,7 +190,7 @@ export default function StockResearchPage() {
 
         {message ? <div className="stock-research-alert"><AlertTriangle />{message}</div> : null}
         {job && job.status !== "completed" ? <JobProgress job={job} /> : null}
-        {document ? <ReportView busy={busy} cacheNotice={cacheNotice} cached={Boolean(cacheNotice || selected?.cache_hit || document.meta.cache_hit)} createdAt={selected?.artifact_created_at || selected?.created_at || ""} evidenceMap={evidenceMap} onRefresh={document.subject.type === "stock" ? () => submit(true, document.subject.code || document.subject.name) : undefined} report={document} /> : <History reports={reports} onOpen={(id) => { setCacheNotice(""); void openReport(id); }} busy={busy} />}
+        {document ? <ReportView busy={busy} onRefresh={document.subject.type === "stock" ? () => submit(true, document.subject.code || document.subject.name) : undefined} report={document} /> : <History reports={reports} onOpen={(id) => { void openReport(id); }} busy={busy} />}
         <FinancialDisclaimer />
       </section>
       <MobileFeatureNav activeKey="stock-research" />
@@ -225,57 +213,57 @@ function History({ reports, onOpen, busy }: { reports: ReportRecord[]; onOpen: (
   </section>;
 }
 
-function ReportView({ report, evidenceMap, cached, cacheNotice, createdAt, busy, onRefresh }: { report: ResearchDocument; evidenceMap: Map<string, Evidence>; cached: boolean; cacheNotice: string; createdAt: string; busy: boolean; onRefresh?: () => void }) {
+function ReportView({ report, busy, onRefresh }: { report: ResearchDocument; busy: boolean; onRefresh?: () => void }) {
   const sameChain = report.same_chain_core_asset_ranking || report.core_asset_ranking || [];
   return <article className="stock-research-report">
-    <header><span>{report.subject.type === "stock" ? "股票逆向研究" : "历史产业链报告"}</span><h2>{report.subject.name}{report.subject.code ? ` · ${report.subject.code}` : ""}</h2><p>{report.headline}</p><small>研究引擎 {report.meta.provider}{report.meta.execution_mode === "single_agent" ? " · 单智能研究引擎六视角" : ""} · {report.evidence.length} 条证据 · {report.meta.search_count || 0} 次搜索 · 成本 ¥{Number(report.meta.cost_cny || 0).toFixed(2)}{report.meta.duration_seconds ? ` · ${Math.round(report.meta.duration_seconds)} 秒` : ""}</small><div className="stock-research-report-actions">{cached ? <em>{cacheNotice || "服务器报告复用 · 取得时已按规则计费"} · 原报告生成于 {formatDate(createdAt)}</em> : <em>生成于 {formatDate(createdAt)}</em>}{onRefresh ? <button disabled={busy} onClick={onRefresh} type="button"><RefreshCcw />重新生成最新报告</button> : <em>历史报告仅供查看</em>}</div></header>
+    <header><span>{report.subject.type === "stock" ? "股票逆向研究" : "历史产业链报告"}</span><h2>{report.subject.name}{report.subject.code ? ` · ${report.subject.code}` : ""}</h2><p>{report.headline}</p>{onRefresh ? <div className="stock-research-report-actions"><button disabled={busy} onClick={onRefresh} type="button"><RefreshCcw />重新生成最新报告</button></div> : null}</header>
     <section className="stock-research-dashboard">
-      <InsightCard title="资金为什么炒" section={report.capital_logic} evidenceMap={evidenceMap} />
-      <InsightCard title="利润真正流向" section={report.profit_flow} evidenceMap={evidenceMap} />
-      <InsightCard title="当前产业瓶颈" section={report.bottleneck} evidenceMap={evidenceMap} />
-      <InsightCard title="输入对象定位" section={{ ...report.positioning, summary: report.positioning.label ? `${report.positioning.label}：${report.positioning.summary || ""}` : report.positioning.summary }} evidenceMap={evidenceMap} />
-      <InsightCard danger title="最重要证伪信号" section={{ summary: (report.judge.disconfirming_signals || []).join("；"), evidence_ids: report.judge.evidence_ids }} evidenceMap={evidenceMap} />
+      <InsightCard title="资金为什么炒" section={report.capital_logic} />
+      <InsightCard title="利润真正流向" section={report.profit_flow} />
+      <InsightCard title="当前产业瓶颈" section={report.bottleneck} />
+      <InsightCard title="输入对象定位" section={{ ...report.positioning, summary: report.positioning.label ? `${report.positioning.label}：${report.positioning.summary || ""}` : report.positioning.summary }} />
+      <InsightCard danger title="最重要证伪信号" section={{ summary: (report.judge.disconfirming_signals || []).join("；"), evidence_ids: report.judge.evidence_ids }} />
     </section>
     {report.input_stock_score ? <ScoreCard score={report.input_stock_score} schemaVersion={report.schema_version} /> : null}
-    <RankingCard emptyText={report.same_chain_core_asset_status?.reason || "未识别到中等置信度的同链核心资产"} title="同产业链核心资产" rows={sameChain} evidenceMap={evidenceMap} />
-    {report.bottleneck_ranking ? <RankingCard title="瓶颈环节榜" rows={report.bottleneck_ranking} evidenceMap={evidenceMap} /> : null}
-    {report.profit_capture_ranking ? <RankingCard title="利润捕获榜" rows={report.profit_capture_ranking} evidenceMap={evidenceMap} /> : null}
-    <details className="stock-research-professional"><summary>展开六角色专业研究、物料清单与完整证据</summary>
-      <RoleResearchSections report={report} evidenceMap={evidenceMap} />
+    <RankingCard emptyText={report.same_chain_core_asset_status?.reason || "未识别到中等置信度的同链核心资产"} title="同产业链核心资产" rows={sameChain} />
+    {report.bottleneck_ranking ? <RankingCard title="瓶颈环节榜" rows={report.bottleneck_ranking} /> : null}
+    {report.profit_capture_ranking ? <RankingCard title="利润捕获榜" rows={report.profit_capture_ranking} /> : null}
+    <details className="stock-research-professional"><summary>展开六角色专业研究、物料清单与参考来源</summary>
+      <RoleResearchSections report={report} />
       <section><h3>完整证据</h3><div className="stock-research-evidence-list">{report.evidence.map((item) => <a href={item.url} key={item.id} rel="noreferrer" target="_blank"><b>{item.id} · {item.source_tier}级</b><span>{item.title}</span><small>{item.publisher} {item.published_at}</small>{item.excerpt ? <p>{item.excerpt}</p> : null}<ExternalLink /></a>)}</div></section>
     </details>
   </article>;
 }
 
-function RoleResearchSections({ report, evidenceMap }: { report: ResearchDocument; evidenceMap: Map<string, Evidence> }) {
+function RoleResearchSections({ report }: { report: ResearchDocument }) {
   const speculation = asRecord(report.capital_logic.speculation_json);
   const bomItems = report.bom.items || [];
   const rankedNodes = asRecords(report.profit_flow.ranked_nodes);
   const conflicts = report.judge.role_conflicts || [];
   return <div className="stock-research-role-stack">
-    <RoleSection index="01" title="资金逻辑分析" summary={report.capital_logic.summary} ids={report.capital_logic.evidence_ids} evidenceMap={evidenceMap}>
+    <RoleSection index="01" title="资金逻辑分析" summary={report.capital_logic.summary}>
       <FactGrid entries={[["事件", speculation.event], ["交易逻辑", speculation.logic], ["行业趋势", speculation.industry_trend], ["证据可信度", speculation.evidence_confidence]]} />
     </RoleSection>
-    <RoleSection index="02" title="产品路径映射" summary={report.product_path.summary} ids={report.product_path.evidence_ids} evidenceMap={evidenceMap}>
+    <RoleSection index="02" title="产品路径映射" summary={report.product_path.summary}>
       {report.product_path.path?.length ? <div className="stock-research-path">{report.product_path.path.map((node, index) => <span key={`${node}-${index}`}>{node}</span>)}</div> : null}
     </RoleSection>
-    <RoleSection index="03" title="产业物料清单拆解" summary={report.bom.summary} ids={report.bom.evidence_ids} evidenceMap={evidenceMap}>
+    <RoleSection index="03" title="产业物料清单拆解" summary={report.bom.summary}>
       {bomItems.length ? <ResearchTable columns={["物料节点", "产业位置", "对应 A 股", "价值变化", "可信度"]} rows={bomItems.map((item) => [item.node, item.chain_position, companiesText(item.a_share_companies), item.value_trend, item.evidence_confidence])} /> : <EmptyResearch />}
     </RoleSection>
-    <RoleSection index="04" title="瓶颈分析" summary={report.bottleneck.summary} ids={report.bottleneck.evidence_ids} evidenceMap={evidenceMap}>
+    <RoleSection index="04" title="瓶颈分析" summary={report.bottleneck.summary}>
       <FactGrid entries={[["当前瓶颈", report.bottleneck.current], ["瓶颈类型", report.bottleneck.type], ["谁先涨价", report.bottleneck.first_price_response], ["扩产难度", report.bottleneck.expansion_difficulty], ["利润兑现", report.bottleneck.profit_realization], ["下一瓶颈", report.bottleneck.next_bottleneck]]} />
     </RoleSection>
-    <RoleSection index="05" title="利润流向分析" summary={report.profit_flow.summary} ids={report.profit_flow.evidence_ids} evidenceMap={evidenceMap}>
+    <RoleSection index="05" title="利润流向分析" summary={report.profit_flow.summary}>
       {rankedNodes.length ? <ResearchTable columns={["环节", "等级", "定位", "定价权", "利润弹性"]} rows={rankedNodes.map((item) => [item.node, item.stars ? `${item.stars} 星` : "—", item.classification, item.pricing_power, item.profit_elasticity])} /> : <EmptyResearch />}
     </RoleSection>
-    <RoleSection index="06" title="基金经理裁决" summary={report.judge.conclusion || report.judge.summary} ids={report.judge.evidence_ids} evidenceMap={evidenceMap}>
-      {conflicts.length ? <div className="stock-research-conflicts">{conflicts.map((item, index) => <article key={index}><span>争议 {index + 1}</span><p>{formatConflict(item)}</p>{typeof item === "object" ? <Citations ids={item.evidence_ids} evidenceMap={evidenceMap} /> : null}</article>)}</div> : <p className="stock-research-muted">各角色结论未发现需要单独披露的重大冲突。</p>}
+    <RoleSection index="06" title="基金经理裁决" summary={report.judge.conclusion || report.judge.summary}>
+      {conflicts.length ? <div className="stock-research-conflicts">{conflicts.map((item, index) => <article key={index}><span>争议 {index + 1}</span><p>{formatConflict(item)}</p></article>)}</div> : <p className="stock-research-muted">各角色结论未发现需要单独披露的重大冲突。</p>}
     </RoleSection>
   </div>;
 }
 
-function RoleSection({ index, title, summary, ids, evidenceMap, children }: { index: string; title: string; summary?: string; ids?: string[]; evidenceMap: Map<string, Evidence>; children?: ReactNode }) {
-  return <section className="stock-research-role-section"><header><b>{index}</b><div><span>专业角色复核</span><h3>{title}</h3></div></header><p className="stock-research-role-summary">{summary || "证据不足，暂不下结论"}</p>{children}<Citations ids={ids} evidenceMap={evidenceMap} /></section>;
+function RoleSection({ index, title, summary, children }: { index: string; title: string; summary?: string; children?: ReactNode }) {
+  return <section className="stock-research-role-section"><header><b>{index}</b><div><span>专业角色复核</span><h3>{title}</h3></div></header><p className="stock-research-role-summary">{summary || "证据不足，暂不下结论"}</p>{children}</section>;
 }
 
 function FactGrid({ entries }: { entries: [string, unknown][] }) {
@@ -302,18 +290,15 @@ function displayValue(value: unknown): string {
   return String(record.name || record.label || record.summary || "—");
 }
 
-function InsightCard({ title, section, evidenceMap, danger = false }: { title: string; section: CitationSection; evidenceMap: Map<string, Evidence>; danger?: boolean }) {
-  return <section className={`stock-research-insight ${danger ? "danger" : ""}`}><span>{title}</span><p>{section.summary || "证据不足，暂不下结论"}</p><Citations ids={section.evidence_ids} evidenceMap={evidenceMap} /></section>;
-}
-function Citations({ ids, evidenceMap }: { ids?: string[]; evidenceMap: Map<string, Evidence> }) {
-  return <div className="stock-research-citations">{(ids || []).map((id) => { const item = evidenceMap.get(id); return item ? <a href={item.url} key={id} rel="noreferrer" target="_blank" title={id}>来源：{item.title}</a> : <span key={id}>待核实来源</span>; })}</div>;
+function InsightCard({ title, section, danger = false }: { title: string; section: CitationSection; danger?: boolean }) {
+  return <section className={`stock-research-insight ${danger ? "danger" : ""}`}><span>{title}</span><p>{section.summary || "证据不足，暂不下结论"}</p></section>;
 }
 function ScoreCard({ score, schemaVersion }: { score: NonNullable<ResearchDocument["input_stock_score"]>; schemaVersion: number }) {
   const scale = schemaVersion >= 2 ? 10 : 100;
   return <section className="stock-research-score"><div><span>三高综合评分</span><strong>{score.core_score.toFixed(1)}<small> / {scale}</small></strong><small>不是上涨概率或买入评级</small></div>{[["壁垒高度", score.barrier], ["利润质量", score.profit], ["成长确定性", score.growth]].map(([label, value]) => <label key={String(label)}><span>{label}</span><i><b style={{ width: `${Number(value) / scale * 100}%` }} /></i><strong>{value}</strong></label>)}{score.explanation ? <p>{score.explanation}</p> : null}</section>;
 }
-function RankingCard({ title, rows, evidenceMap, emptyText = "证据不足" }: { title: string; rows: Ranking[]; evidenceMap: Map<string, Evidence>; emptyText?: string }) {
-  return <section className="stock-research-ranking"><h3>{title}</h3>{rows.length ? rows.map((row, index) => <div key={`${row.name}-${index}`}><b>{index + 1}</b><span><strong>{row.name}{row.code ? ` · ${row.code}` : ""}{typeof row.core_score === "number" ? ` · ${row.core_score.toFixed(1)}分` : ""}</strong><small>{row.industry_position || row.position || row.industry_node || "待核实定位"}{row.product ? ` · ${row.product}` : ""} · {row.reason}</small>{row.labels?.length ? <em>{row.labels.join(" · ")}</em> : null}</span><Citations ids={row.evidence_ids} evidenceMap={evidenceMap} /></div>) : <p>{emptyText}</p>}</section>;
+function RankingCard({ title, rows, emptyText = "证据不足" }: { title: string; rows: Ranking[]; emptyText?: string }) {
+  return <section className="stock-research-ranking"><h3>{title}</h3>{rows.length ? rows.map((row, index) => <div key={`${row.name}-${index}`}><b>{index + 1}</b><span><strong>{row.name}{row.code ? ` · ${row.code}` : ""}{typeof row.core_score === "number" ? ` · ${row.core_score.toFixed(1)}分` : ""}</strong><small>{row.industry_position || row.position || row.industry_node || "待核实定位"}{row.product ? ` · ${row.product}` : ""} · {row.reason}</small>{row.labels?.length ? <em>{row.labels.join(" · ")}</em> : null}</span></div>) : <p>{emptyText}</p>}</section>;
 }
 function formatConflict(item: RoleConflict) {
   if (typeof item === "string") return item;
