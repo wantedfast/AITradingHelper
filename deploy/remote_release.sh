@@ -12,6 +12,7 @@ COMPOSE_FILE="$RELEASE_DIR/docker-compose.release.yml"
 LOCK_FILE="$STATE_DIR/deploy.lock"
 API_IMAGE="aitrading/trade-review-api:$RELEASE_TAG"
 FRONTEND_IMAGE="aitrading/trade-review-frontend:$RELEASE_TAG"
+CURL_BIN="${CURL_BIN:-curl}"
 
 mkdir -p "$RELEASE_DIR" "$DEPLOY_ROOT/work" "$DEPLOY_ROOT/outputs"
 exec 9>"$LOCK_FILE"
@@ -45,6 +46,24 @@ elif command -v docker-compose >/dev/null 2>&1; then
 else
   echo "ERROR: docker compose v2 or docker-compose v1 is required" >&2
   exit 14
+fi
+
+# A cancelled local download can outlive its terminal on Windows and arrive
+# after the same immutable release has already succeeded through another path.
+# Recreating an already healthy release would add downtime with no possible
+# code change, and an SSH disconnect during that redundant switch could leave
+# only one container stopped. Treat an identical healthy release as a no-op.
+current_tag="$(cat "$STATE_DIR/current-release" 2>/dev/null || true)"
+if [[ "$current_tag" == "$RELEASE_TAG" ]] \
+  && docker image inspect "$API_IMAGE" >/dev/null 2>&1 \
+  && docker image inspect "$FRONTEND_IMAGE" >/dev/null 2>&1 \
+  && [[ "$(docker inspect -f '{{.State.Running}}' trade-review-api 2>/dev/null || true)" == true ]] \
+  && [[ "$(docker inspect -f '{{.State.Running}}' trade-review-frontend 2>/dev/null || true)" == true ]] \
+  && "$CURL_BIN" -fsS --max-time 5 http://127.0.0.1:8600/api/health >/dev/null \
+  && "$CURL_BIN" -fsS --max-time 5 http://127.0.0.1:3000/ >/dev/null; then
+  echo "Release $RELEASE_TAG is already healthy; skipping container recreation"
+  rm -f -- "$ARCHIVE_PATH"
+  exit 0
 fi
 
 available_kb="$(df -Pk "$DEPLOY_ROOT" | awk 'NR==2 {print $4}')"
@@ -110,8 +129,8 @@ compose_logs() {
 health_check() {
   local attempt
   for attempt in $(seq 1 60); do
-    if curl -fsS --max-time 5 http://127.0.0.1:8600/api/health >/dev/null \
-      && curl -fsS --max-time 5 http://127.0.0.1:3000/ >/dev/null; then
+    if "$CURL_BIN" -fsS --max-time 5 http://127.0.0.1:8600/api/health >/dev/null \
+      && "$CURL_BIN" -fsS --max-time 5 http://127.0.0.1:3000/ >/dev/null; then
       return 0
     fi
     sleep 2

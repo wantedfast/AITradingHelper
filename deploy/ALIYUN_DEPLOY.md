@@ -67,12 +67,17 @@ python deploy/prebuilt_deploy.py --archive C:\path\aitrading-<sha>.tar.gz --tag 
 服务器端 [`remote_release.sh`](./remote_release.sh) 固定执行：
 
 1. 获取排他发布锁，检查 `.env`、Docker、Compose 和磁盘空间。
-2. 记录正在运行的 API、前端镜像。
-3. `docker load` 加载不可变 Git SHA 镜像。
-4. 使用 [`docker-compose.release.yml`](../docker-compose.release.yml) 执行 `up -d --no-build`。
-5. 最多等待 120 秒，同时检查后端 `/api/health` 与前端首页。
-6. 健康检查失败时自动切回发布前的两个镜像，并再次检查。
-7. 成功后更新 current/previous 状态，并运行安全清理。
+2. 如果相同 Git SHA 已在线且前后端健康，直接成功返回，不重复重建容器。
+3. 记录正在运行的 API、前端镜像。
+4. `docker load` 加载不可变 Git SHA 镜像。
+5. 使用 [`docker-compose.release.yml`](../docker-compose.release.yml) 执行 `up -d --no-build`。
+6. 最多等待 120 秒，同时检查后端 `/api/health` 与前端首页。
+7. 健康检查失败时自动切回发布前的两个镜像，并再次检查。
+8. 成功后更新 current/previous 状态，并运行安全清理。
+
+本地编排器通过独立的 systemd transient unit 执行远端切换。SSH、Codex
+终端或操作者电脑意外断开时，服务器端发布仍会继续完成健康检查或自动回滚，
+不会停在“旧容器已停止、新容器尚未启动”的中间状态。
 
 同时兼容 Docker Compose v2（`docker compose`）与 v1（`docker-compose`）。
 

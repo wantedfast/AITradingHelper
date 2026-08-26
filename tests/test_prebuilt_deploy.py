@@ -1,5 +1,9 @@
 import re
 import io
+import hashlib
+import os
+import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -23,6 +27,136 @@ def executable_shell(source: str) -> str:
 
 
 class PrebuiltDeployContractTest(unittest.TestCase):
+    def test_same_healthy_release_is_a_noop_instead_of_recreating_containers(self) -> None:
+        bash = shutil.which("bash")
+        if bash is None:
+            for candidate in (
+                Path(r"C:\Program Files\Git\bin\bash.exe"),
+                Path(r"C:\Program Files\Git\usr\bin\bash.exe"),
+            ):
+                if candidate.exists():
+                    bash = str(candidate)
+                    break
+        if bash is None:
+            self.skipTest("bash is required for the release behavior test")
+
+        tag = "a" * 40
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+
+            def bash_path(path: Path) -> str:
+                resolved = path.resolve()
+                return f"/{resolved.drive[0].lower()}/{resolved.as_posix()[3:]}"
+
+            release_dir = root / ".deploy" / "releases" / tag
+            fake_bin = root / "fake-bin"
+            release_dir.mkdir(parents=True)
+            fake_bin.mkdir()
+            (root / ".env").write_text("SAFE_TEST_VALUE=1\n", encoding="utf-8")
+            (root / ".deploy" / "current-release").write_bytes((tag + "\n").encode("ascii"))
+            (release_dir / "docker-compose.release.yml").write_text("services: {}\n", encoding="utf-8")
+            archive = release_dir / f"aitrading-{tag}.tar.gz"
+            archive.write_bytes(b"verified release archive")
+            digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+            docker_log = root / "docker.log"
+
+            (fake_bin / "docker").write_text(
+                "#!/usr/bin/env bash\n"
+                "echo \"$*\" >> \"$DOCKER_LOG\"\n"
+                "case \"$*\" in\n"
+                "  'compose version') exit 0 ;;\n"
+                "  image\\ inspect*) exit 0 ;;\n"
+                "  inspect*State.Running*) echo true; exit 0 ;;\n"
+                "  inspect*State.Health.Status*) echo healthy; exit 0 ;;\n"
+                "esac\n"
+                "exit 99\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            (fake_bin / "curl").write_text(
+                "#!/usr/bin/env bash\nexit 0\n", encoding="utf-8", newline="\n"
+            )
+            shutil.copyfile(fake_bin / "curl", fake_bin / "curl.exe")
+            (fake_bin / "flock").write_text(
+                "#!/usr/bin/env bash\nexit 0\n", encoding="utf-8", newline="\n"
+            )
+            for executable in (
+                fake_bin / "docker",
+                fake_bin / "curl",
+                fake_bin / "curl.exe",
+                fake_bin / "flock",
+            ):
+                executable.chmod(0o755)
+
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PATH": bash_path(fake_bin) + ":/usr/bin:/bin",
+                    "DOCKER_LOG": bash_path(docker_log),
+                    "DEPLOY_ROOT": bash_path(root),
+                    "RELEASE_TAG": tag,
+                    "ARCHIVE_PATH": bash_path(archive),
+                    "ARCHIVE_SHA256": digest,
+                    "CURL_BIN": bash_path(fake_bin / "curl"),
+                }
+            )
+            completed = subprocess.run(
+                [bash, str(ROOT / "deploy" / "remote_release.sh")],
+                cwd=ROOT,
+                env=env,
+                text=True,
+                capture_output=True,
+            )
+
+            observed_calls = docker_log.read_text(encoding="utf-8") if docker_log.exists() else ""
+            self.assertEqual(
+                completed.returncode,
+                0,
+                completed.stdout + completed.stderr + "\ndocker calls:\n" + observed_calls,
+            )
+            self.assertIn("already healthy", completed.stdout.lower())
+            docker_calls = observed_calls
+            self.assertNotIn(" up ", f" {docker_calls} ")
+            self.assertNotIn("image tag", docker_calls)
+            self.assertNotIn("load", docker_calls)
+
+    def test_remote_release_runs_in_a_systemd_unit_that_survives_ssh_disconnect(self) -> None:
+        class FakeClient:
+            def __init__(self) -> None:
+                self.sftp = mock.Mock()
+
+            def open_sftp(self):
+                return self.sftp
+
+            def close(self) -> None:
+                pass
+
+        tag = "b" * 40
+        digest = "c" * 64
+        with tempfile.TemporaryDirectory() as temp_dir:
+            archive = Path(temp_dir) / f"aitrading-{tag}.tar.gz"
+            archive.write_bytes(b"release")
+            client = FakeClient()
+            commands: list[str] = []
+
+            def record_remote(_client, command: str, *, timeout=None) -> None:
+                commands.append(command)
+
+            with mock.patch.object(prebuilt_deploy, "connect", return_value=client), mock.patch.object(
+                prebuilt_deploy, "run_remote", side_effect=record_remote
+            ), mock.patch.object(prebuilt_deploy, "sftp_mkdirs"), mock.patch.object(
+                prebuilt_deploy, "remote_archive_matches", return_value=True
+            ), mock.patch.object(prebuilt_deploy, "upload"), mock.patch.object(
+                prebuilt_deploy, "upload_shell_script"
+            ):
+                prebuilt_deploy.deploy(archive, tag, digest)
+
+        release_command = commands[-1]
+        self.assertIn("systemd-run", release_command)
+        self.assertIn("--wait", release_command)
+        self.assertIn("--collect", release_command)
+        self.assertIn("--setenv", release_command)
+
     def test_release_tag_is_inferred_from_standard_archive_name(self) -> None:
         self.assertEqual(
             prebuilt_deploy.release_tag(None, "aitrading-abcdef123456.tar.gz"),
