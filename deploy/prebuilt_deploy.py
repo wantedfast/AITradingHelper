@@ -21,6 +21,7 @@ import tempfile
 import time
 import urllib.request
 import urllib.parse
+from uuid import uuid4
 
 import paramiko
 
@@ -267,6 +268,7 @@ def deploy(archive: Path, tag: str, archive_sha256: str) -> None:
             f"mkdir -p {shlex.quote(release_dir)} {shlex.quote(bin_dir)} && "
             f"test -s {shlex.quote(remote_root + '/.env')} && "
             "command -v docker >/dev/null && "
+            "command -v systemd-run >/dev/null && "
             "(docker compose version >/dev/null 2>&1 || command -v docker-compose >/dev/null) && "
             f"test $(df -Pk {shlex.quote(remote_root)} | awk 'NR==2 {{print $4}}') -ge {required_kb}"
         )
@@ -283,11 +285,30 @@ def deploy(archive: Path, tag: str, archive_sha256: str) -> None:
         upload_shell_script(sftp, ROOT / "deploy" / "remote_cleanup.sh", f"{bin_dir}/remote_cleanup.sh")
         sftp.close()
         quoted_root = shlex.quote(remote_root)
+        release_script = f"{bin_dir}/remote_release.sh"
+        cleanup_script = f"{bin_dir}/remote_cleanup.sh"
+        unit_name = f"aitrading-release-{tag[:12]}-{uuid4().hex[:8]}"
+        systemd_release = " ".join(
+            [
+                "systemd-run",
+                f"--unit={shlex.quote(unit_name)}",
+                "--wait",
+                "--collect",
+                "--quiet",
+                "--property=Type=exec",
+                f"--setenv=DEPLOY_ROOT={quoted_root}",
+                f"--setenv=RELEASE_TAG={shlex.quote(tag)}",
+                f"--setenv=ARCHIVE_PATH={shlex.quote(remote_archive)}",
+                f"--setenv=ARCHIVE_SHA256={shlex.quote(archive_sha256)}",
+                shlex.quote(release_script),
+            ]
+        )
         command = (
-            f"chmod 700 {shlex.quote(bin_dir)}/remote_release.sh {shlex.quote(bin_dir)}/remote_cleanup.sh && "
-            f"DEPLOY_ROOT={quoted_root} RELEASE_TAG={shlex.quote(tag)} "
-            f"ARCHIVE_PATH={shlex.quote(remote_archive)} "
-            f"ARCHIVE_SHA256={shlex.quote(archive_sha256)} {shlex.quote(bin_dir)}/remote_release.sh"
+            f"chmod 700 {shlex.quote(release_script)} {shlex.quote(cleanup_script)} || exit $?; "
+            "status=0; "
+            f"{systemd_release} || status=$?; "
+            f"journalctl --unit={shlex.quote(unit_name)} --no-pager -n 300 || true; "
+            "exit $status"
         )
         run_remote(client, command, timeout=None)
     finally:
