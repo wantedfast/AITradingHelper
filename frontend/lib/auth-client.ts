@@ -42,6 +42,43 @@ export class ApiError extends Error {
   }
 }
 
+function requestHeaders(init: RequestInit) {
+  const token = getAuthToken();
+  const headers = new Headers(init.headers);
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  if (init.body && !(init.body instanceof FormData) && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+  return { token, headers };
+}
+
+async function request(path: string, init: RequestInit) {
+  const { token, headers } = requestHeaders(init);
+  try {
+    const response = await fetch(`${API_BASE}${path}`, { ...init, headers, cache: "no-store" });
+    return { response, token };
+  } catch {
+    throw new ApiError("网络连接失败，请检查网络后重试。", 0);
+  }
+}
+
+async function errorFromResponse(response: Response, token: string) {
+  const text = await response.text();
+  let payload: { error?: string; detail?: string } = {};
+  if (text && response.headers.get("content-type")?.includes("application/json")) {
+    try {
+      payload = JSON.parse(text) as typeof payload;
+    } catch {
+      payload = {};
+    }
+  }
+  if (response.status === 401 && token) clearAuth();
+  const message = response.status >= 500
+    ? "服务暂时不可用，请稍后重试。"
+    : payload.error || payload.detail || `请求失败（HTTP ${response.status}）`;
+  return new ApiError(message, response.status);
+}
+
 export function getAuthToken() {
   if (typeof window === "undefined") return "";
   return window.localStorage.getItem(TOKEN_KEY) || "";
@@ -114,20 +151,37 @@ export function usageBillingText(user: AccessUser | null | undefined) {
 }
 
 export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const token = getAuthToken();
-  const headers = new Headers(init.headers);
-  if (token) headers.set("Authorization", `Bearer ${token}`);
-  if (init.body && !(init.body instanceof FormData) && !headers.has("Content-Type")) {
-    headers.set("Content-Type", "application/json");
-  }
-  const response = await fetch(`${API_BASE}${path}`, { ...init, headers, cache: "no-store" });
+  const { response, token } = await request(path, init);
   const text = await response.text();
-  const payload = text ? JSON.parse(text) : {};
   if (!response.ok) {
+    let payload: { error?: string; detail?: string } = {};
+    if (text && response.headers.get("content-type")?.includes("application/json")) {
+      try {
+        payload = JSON.parse(text) as typeof payload;
+      } catch {
+        payload = {};
+      }
+    }
     if (response.status === 401 && token) clearAuth();
-    throw new ApiError(payload?.error || payload?.detail || "请求失败", response.status);
+    throw new ApiError(
+      response.status >= 500
+        ? "服务暂时不可用，请稍后重试。"
+        : payload.error || payload.detail || `请求失败（HTTP ${response.status}）`,
+      response.status,
+    );
   }
-  return payload as T;
+  if (!text) return {} as T;
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw new ApiError("服务器返回了无法识别的数据，请稍后重试。", 502);
+  }
+}
+
+export async function apiFetchBlob(path: string, init: RequestInit = {}): Promise<Blob> {
+  const { response, token } = await request(path, init);
+  if (!response.ok) throw await errorFromResponse(response, token);
+  return response.blob();
 }
 
 export async function refreshCurrentUser() {

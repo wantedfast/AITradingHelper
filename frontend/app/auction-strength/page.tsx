@@ -4,14 +4,12 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { ReactNode } from "react";
 import { BarChart3, CalendarDays, Flame, GitBranch, Loader2, LockKeyhole, RefreshCcw, ShieldAlert, Sparkles, Trophy } from "lucide-react";
-import { getAuthToken, storeUser, usageBillingText, type UserProfile } from "@/lib/auth-client";
+import { ApiError, apiFetch, getAuthToken, storeUser, usageBillingText, type UserProfile } from "@/lib/auth-client";
 import { MainSidebar } from "@/components/main-sidebar";
 import { FinancialDisclaimer } from "@/components/financial-disclaimer";
 import { MobileActionDock } from "@/components/mobile-action-dock";
 import { MobileTaskHeader } from "@/components/mobile-task-header";
 import { canReadDatedReport, shouldShowDatedReportPayment, type BillingStatus } from "@/lib/dated-report-access";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE || (process.env.NODE_ENV === "development" ? "http://127.0.0.1:8600" : "");
 
 type AuctionSummary = {
   one_sentence: string;
@@ -210,6 +208,7 @@ export default function AuctionStrengthPage() {
   const [dateQueryReady, setDateQueryReady] = useState(false);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState("");
+  const [loadError, setLoadError] = useState("");
   const [billingStatus, setBillingStatus] = useState<BillingStatus>("no_data");
   const [billingCost, setBillingCost] = useState(0);
   const [billingMessage, setBillingMessage] = useState("");
@@ -252,6 +251,7 @@ export default function AuctionStrengthPage() {
     setReports([]);
     setSelectedId("");
     setMessage("");
+    setLoadError("");
     setBillingMessage("");
     setBillingStatus("no_data");
     setBillingCost(0);
@@ -265,25 +265,23 @@ export default function AuctionStrengthPage() {
     }
     setMessage("");
     setBillingMessage("");
+    setLoadError("");
     setLoading(true);
     try {
-      const response = await fetch(`${API_BASE}/api/auction-strength/ack`, {
+      const payload = await apiFetch<AuctionAckPayload>("/api/auction-strength/ack", {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
         body: JSON.stringify({ trade_date: selectedDate }),
-        cache: "no-store",
       });
-      const payload = (await response.json()) as AuctionAckPayload;
-      if (!response.ok) throw new Error(payload.error || "确认每日 TOP5 访问失败");
       if (payload.user) {
         storeUser(payload.user);
         setBillingMessage(`每日 TOP5 已确认展示。${usageBillingText(payload.user)}`);
       }
       await loadReports(true);
     } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        router.push(`/auth?redirect=/auction-strength`);
+        return;
+      }
       setBillingMessage(error instanceof Error ? error.message : "确认每日 TOP5 访问失败");
     } finally {
       setLoading(false);
@@ -300,13 +298,8 @@ export default function AuctionStrengthPage() {
       }
       const params = new URLSearchParams({ limit: "20" });
       if (selectedDate) params.set("date", selectedDate);
-      const response = await fetch(`${API_BASE}/api/auction-strength?${params.toString()}`, {
-        headers: { Authorization: `Bearer ${token}` },
-        cache: "no-store",
-      });
-      const text = await response.text();
-      const payload = text ? (JSON.parse(text) as AuctionPayload) : {};
-      if (!response.ok) throw new Error(payload.error || `读取失败：HTTP ${response.status}`);
+      const payload = await apiFetch<AuctionPayload>(`/api/auction-strength?${params.toString()}`);
+      setLoadError("");
       const nextReports = payload.reports || [];
       const nextLatest = payload.latest || nextReports[0] || null;
       setBillingStatus(payload.billing_status || "no_data");
@@ -322,7 +315,13 @@ export default function AuctionStrengthPage() {
         setMessage(nextLatest ? "已刷新每日 TOP5 数据。" : "当前日期暂无每日 TOP5 数据。");
       }
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "读取每日 TOP5 数据失败");
+      if (error instanceof ApiError && error.status === 401) {
+        router.push(`/auth?redirect=/auction-strength`);
+        return;
+      }
+      const errorMessage = error instanceof Error ? error.message : "读取每日 TOP5 数据失败";
+      setLoadError(errorMessage);
+      setMessage(errorMessage);
     } finally {
       setLoading(false);
     }
@@ -410,7 +409,21 @@ export default function AuctionStrengthPage() {
           </div>
         </section>
 
-        {shouldShowDatedReportPayment(billingStatus, Boolean(selectedReport)) ? (
+        {loadError ? (
+          <section className="auction-panel auction-load-error" role="alert">
+            <ShieldAlert className="h-5 w-5" aria-hidden="true" />
+            <div>
+              <b>每日 TOP5 暂时无法加载</b>
+              <span>{loadError}</span>
+            </div>
+            <button type="button" onClick={() => loadReports()} disabled={loading}>
+              {loading ? <Loader2 className="spin-icon" aria-hidden="true" /> : <RefreshCcw className="h-4 w-4" aria-hidden="true" />}
+              重新加载
+            </button>
+          </section>
+        ) : null}
+
+        {!loadError && shouldShowDatedReportPayment(billingStatus, Boolean(selectedReport)) ? (
           <section className="auction-panel auction-confirm-panel">
             <PanelHead icon={<LockKeyhole className="h-5 w-5" />} title="确认查看每日 TOP5" text={`今天的数据尚未付费，确认后扣除 ${billingCost} 次使用机会。`} />
             <MobileActionDock className="auction-confirm-actions">
@@ -420,7 +433,7 @@ export default function AuctionStrengthPage() {
               <span>所选日期无数据或读取失败时不会扣除使用次数。</span>
             </MobileActionDock>
           </section>
-        ) : hasAccess ? (
+        ) : !loadError && hasAccess ? (
           <>
             {billingMessage ? <p className="auction-message">{billingMessage}</p> : null}
             <section className="auction-grid auction-grid--primary">
@@ -565,7 +578,7 @@ export default function AuctionStrengthPage() {
               </section>
             </section>
           </>
-        ) : !loading && billingStatus === "no_data" ? isToday ? (
+        ) : !loadError && !loading && billingStatus === "no_data" ? isToday ? (
           <section className="auction-panel auction-confirm-panel auction-waiting-panel">
             <PanelHead icon={<LockKeyhole className="h-5 w-5" />} title="等待今日数据" text="数据到达后，查看按钮会自动变为可用状态。" />
             <MobileActionDock className="auction-confirm-actions">

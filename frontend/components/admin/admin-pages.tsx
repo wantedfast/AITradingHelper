@@ -3,7 +3,7 @@
 import { CheckCircle2, CreditCard, Gift, Mail, Megaphone, MessageSquare, PauseCircle, PlayCircle, RefreshCw, Search, Users, X } from "lucide-react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { apiFetch, type ApiError } from "@/lib/auth-client";
+import { apiFetch, apiFetchBlob, type ApiError } from "@/lib/auth-client";
 import type { AdminAnalytics, FeatureUsagePoint, FeatureUsageTotal, RecentUsageEvent, UserGrowthPoint } from "@/components/admin/admin-analytics-types";
 import { AdminConfirmDialog, type AdminConfirmIntent } from "@/components/admin/admin-confirm-dialog";
 import { AdminStatusFilters, adminSectionPath, type AdminSection } from "@/components/admin/admin-navigation";
@@ -59,7 +59,45 @@ type FeedbackItem = {
   admin_note?: string;
   created_at: string;
   reviewed_at?: string | null;
+  attachment_name?: string;
+  attachment_mime?: string;
+  attachment_size?: number;
+  attachment_url?: string;
 };
+
+function FeedbackAttachmentPreview({ item }: { item: FeedbackItem }) {
+  const [source, setSource] = useState("");
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!item.attachment_url) return;
+    let objectUrl = "";
+    let cancelled = false;
+    apiFetchBlob(item.attachment_url)
+      .then((blob) => {
+        if (cancelled) return;
+        objectUrl = URL.createObjectURL(blob);
+        setSource(objectUrl);
+      })
+      .catch(() => !cancelled && setError("截图加载失败"));
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [item.attachment_url]);
+
+  if (!item.attachment_url) return null;
+  if (error) return <small>{error}</small>;
+  if (!source) return <small>正在加载截图...</small>;
+  return (
+    <a className="admin-feedback-attachment" href={source} rel="noreferrer" target="_blank">
+      {/* Authenticated blob URL; Next Image cannot attach the administrator bearer token. */}
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img alt={item.attachment_name || "反馈截图"} src={source} />
+      <span>查看原图 · {item.attachment_name || "反馈截图"}</span>
+    </a>
+  );
+}
 
 type OrderItem = {
   id: number;
@@ -815,6 +853,7 @@ export function AdminFeedbackPage() {
                     <span>{item.status === "accepted" ? "已采纳" : item.status === "rejected" ? "已拒绝" : "待处理"}</span>
                   </header>
                   <p>{item.content}</p>
+                  <FeedbackAttachmentPreview item={item} />
                   <small>{item.phone} · {formatDate(item.created_at)}</small>
                   {item.contact ? <small>联系方式：{item.contact}</small> : null}
                   {item.admin_note ? <small>处理说明：{item.admin_note}</small> : null}
