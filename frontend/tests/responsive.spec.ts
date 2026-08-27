@@ -636,6 +636,74 @@ test.describe("homepage guest acquisition", () => {
     await expect(startLink).toHaveAttribute("href", "/auction-strength");
   });
 
+  test("temporary auth API failure preserves the cached signed-in identity", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.addInitScript((user) => {
+      window.localStorage.setItem("ai_trade_token", "still-valid-token");
+      window.localStorage.setItem("ai_trade_user", JSON.stringify(user));
+    }, { ...fixtureUser, role: "user" });
+    await page.route("**/api/**", (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path === "/api/auth/me") {
+        return route.fulfill({ status: 502, contentType: "text/html", body: "<html><h1>Bad Gateway</h1></html>" });
+      }
+      if (path === "/api/update-notices/latest") return json(route, { notice: null });
+      if (path === "/api/auction-strength/performance") return json(route, { rows: [] });
+      return json(route, {});
+    });
+
+    await page.goto("/", { waitUntil: "domcontentloaded" });
+    await expect(page.locator(".home-user-pill")).toContainText("账号已保留 · responsive-test");
+    await expect.poll(() => page.evaluate(() => window.localStorage.getItem("ai_trade_token"))).toBe("still-valid-token");
+    await expect(page.locator(".nav-links").getByRole("link", { name: "登录" })).toHaveCount(0);
+  });
+
+  test("homepage navigation exposes the value investing feature", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.route("**/api/**", (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path === "/api/auth/me") return json(route, { user: null });
+      if (path === "/api/update-notices/latest") return json(route, { notice: null });
+      if (path === "/api/auction-strength/performance") return json(route, { rows: [] });
+      return json(route, {});
+    });
+    await page.goto("/", { waitUntil: "domcontentloaded" });
+    await expect(page.locator(".nav-links").getByRole("link", { name: "价值投资" })).toHaveAttribute("href", "/stock-research");
+  });
+
+  test("feedback form sends an optional screenshot as multipart data", async ({ page }) => {
+    let contentType = "";
+    let requestBody = "";
+    await page.addInitScript((user) => {
+      window.localStorage.setItem("ai_trade_token", "feedback-token");
+      window.localStorage.setItem("ai_trade_user", JSON.stringify(user));
+    }, { ...fixtureUser, role: "user" });
+    await page.route("**/api/**", (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path === "/api/auth/me") return json(route, { user: { ...fixtureUser, role: "user" } });
+      if (path === "/api/feedback") {
+        contentType = route.request().headers()["content-type"] || "";
+        requestBody = route.request().postData() || "";
+        return json(route, { feedback: { id: 1, status: "pending" }, user: fixtureUser });
+      }
+      if (path === "/api/update-notices/latest") return json(route, { notice: null });
+      if (path === "/api/auction-strength/performance") return json(route, { rows: [] });
+      return json(route, {});
+    });
+    await page.goto("/", { waitUntil: "domcontentloaded" });
+    await page.locator("#feedback textarea").fill("TOP5 页面无法加载，请查看截图");
+    await page.locator("#feedback input[type=file]").setInputFiles({
+      name: "top5-error.png",
+      mimeType: "image/png",
+      buffer: Buffer.from("89504e470d0a1a0a", "hex"),
+    });
+    await page.locator("#feedback button[type=submit]").click();
+    await expect(page.getByText("反馈已提交。若被采纳，管理员会为你发放 10 次免费机会。")).toBeVisible();
+    expect(contentType).toContain("multipart/form-data");
+    expect(requestBody).toContain("top5-error.png");
+    expect(requestBody).toContain("TOP5 页面无法加载，请查看截图");
+  });
+
   test("360px topbar keeps membership, registration and menu in the required order", async ({ page }) => {
     await page.setViewportSize({ width: 360, height: 800 });
     await page.route("**/api/update-notices/latest", (route) => json(route, { notice: null }));
@@ -1190,6 +1258,19 @@ test.describe("dated report access controls", () => {
     await expect(waitingButton).toBeDisabled();
     await expect(page.locator(".auction-waiting-panel .auction-confirm-actions span")).toHaveText("页面每 10 秒自动检查一次；无数据时不会扣除使用次数。");
     await expectNoGlobalHorizontalOverflow(page, "Daily TOP5 waiting action");
+  });
+
+  test("Daily TOP5 shows a retry action for an HTML 502 instead of a false empty state", async ({ page }) => {
+    await installStableApiFixtures(page);
+    await page.route("**/api/auction-strength?**", (route) =>
+      route.fulfill({ status: 502, contentType: "text/html", body: "<html><h1>Bad Gateway</h1></html>" }),
+    );
+    await page.goto("/auction-strength", { waitUntil: "domcontentloaded" });
+    const alert = page.locator(".auction-load-error");
+    await expect(alert).toContainText("每日 TOP5 暂时无法加载");
+    await expect(alert).toContainText("服务暂时不可用，请稍后重试。");
+    await expect(alert.getByRole("button", { name: "重新加载" })).toBeVisible();
+    await expect(page.locator(".auction-waiting-panel")).toHaveCount(0);
   });
 
   test("Daily TOP5 email links open the requested date without charging", async ({ page }) => {

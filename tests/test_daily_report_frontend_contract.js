@@ -47,6 +47,8 @@ const ticker = read("components/auction-strength-performance-ticker.tsx");
 assert.ok(fs.existsSync(path.join(frontend, "app", "auction-strength", "page.tsx")), "old /auction-strength route must remain");
 assert.match(sidebar, /href: "\/auction-strength", label: "每日 TOP5"/);
 assert.match(home, /href: "\/auction-strength",\s*title: "每日 TOP5",\s*label: "DAILY TOP 5"/);
+assert.match(home, /href: "\/stock-research",\s*title: "价值投资",\s*label: "VALUE INVESTING"/);
+assert.match(home, /<Link href="\/stock-research">价值投资<\/Link>/);
 assert.match(dailyTop5, />DAILY TOP 5<\/span>/);
 assert.match(dailyTop5, />每日 TOP5<\/b>/);
 

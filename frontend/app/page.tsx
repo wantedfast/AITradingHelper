@@ -3,11 +3,11 @@
 import Image from "next/image";
 import Link from "next/link";
 import { FormEvent, useEffect, useRef, useState } from "react";
-import { BellRing, ChevronDown, Copy, CreditCard, Crown, FileSearch, FileText, Gift, Info, LogOut, Menu, MessageSquare, ShieldCheck, Sparkles, TrendingUp, Trophy, UserRound, X } from "lucide-react";
+import { BellRing, Boxes, ChevronDown, Copy, CreditCard, Crown, FileSearch, FileText, Gift, ImagePlus, Info, LogOut, Menu, MessageSquare, ShieldCheck, Sparkles, TrendingUp, Trophy, UserRound, X } from "lucide-react";
 import { AuctionStrengthPerformanceTicker, useAuctionStrengthPerformance } from "@/components/auction-strength-performance-ticker";
 import { GoldMagicCube } from "@/components/gold-magic-cube";
 import { FinancialDisclaimer } from "@/components/financial-disclaimer";
-import { apiFetch, clearAuth, getStoredUser, hasActiveMembership, inviteUrl, membershipExpiryText, refreshCurrentUser, storeUser, userAccessLabel, userBalanceText, type UserProfile } from "@/lib/auth-client";
+import { ApiError, apiFetch, clearAuth, getStoredUser, hasActiveMembership, inviteUrl, membershipExpiryText, refreshCurrentUser, storeUser, userBalanceText, type UserProfile } from "@/lib/auth-client";
 import { copyTextToClipboard } from "@/lib/clipboard";
 
 const features = [
@@ -51,6 +51,14 @@ const features = [
     description: "每天 08:30（早上 8:30）汇总国内外重要消息，解释 CPI、黄金、原油和海外观点可能怎样影响 A 股。",
     points: ["国内外重要消息", "解释利好利空", "大宗商品影响", "海外观点影响"],
   },
+  {
+    href: "/stock-research",
+    title: "价值投资",
+    label: "VALUE INVESTING",
+    icon: Boxes,
+    description: "从竞争壁垒、盈利质量和成长确定性出发，读懂一家公司及其背后的产业链价值。",
+    points: ["看竞争壁垒", "看盈利质量", "看成长确定性", "看产业链价值"],
+  },
 ];
 
 export default function Page() {
@@ -59,6 +67,8 @@ export default function Page() {
   const [feedback, setFeedback] = useState("");
   const [feedbackCategory, setFeedbackCategory] = useState("产品建议");
   const [feedbackMessage, setFeedbackMessage] = useState("");
+  const [feedbackImage, setFeedbackImage] = useState<File | null>(null);
+  const [authUnavailable, setAuthUnavailable] = useState(false);
   const [showProductGuide, setShowProductGuide] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [showMobileMenu, setShowMobileMenu] = useState(false);
@@ -67,14 +77,29 @@ export default function Page() {
   const [savingEmailPreference, setSavingEmailPreference] = useState(false);
   const mobileMenuButtonRef = useRef<HTMLButtonElement>(null);
   const mobileMenuRef = useRef<HTMLElement>(null);
+  const feedbackImageRef = useRef<HTMLInputElement>(null);
   const auctionPerformance = useAuctionStrengthPerformance();
   const recentAuctionTop1Rows = auctionPerformance.rows.slice(-5).reverse();
 
   useEffect(() => {
     setHydrated(true);
-    setUser(getStoredUser());
-    refreshCurrentUser().then(setUser).catch(() => setUser(null));
+    const storedUser = getStoredUser();
+    setUser(storedUser);
+    refreshCurrentUser().then((currentUser) => {
+      setAuthUnavailable(false);
+      setUser(currentUser);
+    }).catch((error) => {
+      if (error instanceof ApiError && error.status === 401) {
+        setAuthUnavailable(false);
+        setUser(null);
+      } else if (storedUser) {
+        setAuthUnavailable(true);
+      } else {
+        setUser(null);
+      }
+    });
     function handleAuth(event: Event) {
+      setAuthUnavailable(false);
       setUser((event as CustomEvent<UserProfile | null>).detail || null);
     }
     window.addEventListener("ai-trade-auth", handleAuth);
@@ -154,6 +179,7 @@ export default function Page() {
 
   function logout() {
     clearAuth();
+    setAuthUnavailable(false);
     setUser(null);
     setShowUserMenu(false);
     setInviteCopied(false);
@@ -186,6 +212,7 @@ export default function Page() {
   }
 
   const currentInviteUrl = hydrated && user ? inviteUrl(user) : "";
+  const accountDisplay = user?.username || user?.email || user?.phone || "";
 
   async function submitFeedback(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -194,12 +221,22 @@ export default function Page() {
       setFeedbackMessage("请先登录后提交反馈。");
       return;
     }
+    if (feedbackImage && feedbackImage.size > 5 * 1024 * 1024) {
+      setFeedbackMessage("截图不能超过 5MB。");
+      return;
+    }
     try {
+      const form = new FormData();
+      form.set("category", feedbackCategory);
+      form.set("content", feedback);
+      if (feedbackImage) form.set("file", feedbackImage);
       await apiFetch("/api/feedback", {
         method: "POST",
-        body: JSON.stringify({ category: feedbackCategory, content: feedback }),
+        body: form,
       });
       setFeedback("");
+      setFeedbackImage(null);
+      if (feedbackImageRef.current) feedbackImageRef.current.value = "";
       setFeedbackMessage("反馈已提交。若被采纳，管理员会为你发放 10 次免费机会。");
     } catch (error) {
       setFeedbackMessage(error instanceof Error ? error.message : "提交失败，请稍后重试");
@@ -221,6 +258,7 @@ export default function Page() {
             <Link href="/watch">AI 盯盘</Link>
             <Link href="/market-day">AI当日行情</Link>
             <Link href="/ai-research">AI研报</Link>
+            <Link href="/stock-research">价值投资</Link>
             <button className="nav-action" type="button" onClick={scrollToFeedback}>
               反馈
             </button>
@@ -237,11 +275,12 @@ export default function Page() {
               <div className="home-user-menu">
                 <button className="login home-user-pill" type="button" onClick={() => setShowUserMenu((value) => !value)} aria-expanded={showUserMenu}>
                   <UserRound className="h-4 w-4" />
-                  {userAccessLabel(user)}
+                  <span className="home-user-pill-label">{authUnavailable ? "账号已保留" : "已登录"} · {accountDisplay}</span>
                   <ChevronDown className="h-4 w-4" />
                 </button>
                 {showUserMenu && (
                   <div className="home-user-popover">
+                    {authUnavailable ? <p className="home-auth-warning">服务器暂时不可用，登录信息已保留，无需重复登录。</p> : null}
                     <div className="home-user-head">
                       <span>
                         <UserRound className="h-4 w-4" />
@@ -311,8 +350,8 @@ export default function Page() {
               </>
             ) : hydrated && user ? (
               <Link className={`home-mobile-membership${hasActiveMembership(user) ? " is-active" : ""}`} href="/billing">
-                <Crown aria-hidden="true" />
-                {hasActiveMembership(user) ? "会员已开通" : "开通会员"}
+                <UserRound aria-hidden="true" />
+                {authUnavailable ? "账号已保留" : "已登录"}
               </Link>
             ) : null}
             <button
@@ -606,6 +645,16 @@ export default function Page() {
               placeholder="写下你的建议。越具体，越容易被采纳。"
               rows={5}
             />
+            <label className="home-feedback-upload">
+              <ImagePlus aria-hidden="true" />
+              <span>{feedbackImage ? feedbackImage.name : "添加截图（可选，最大 5MB）"}</span>
+              <input
+                accept="image/jpeg,image/png,image/webp,image/gif"
+                onChange={(event) => setFeedbackImage(event.target.files?.[0] || null)}
+                ref={feedbackImageRef}
+                type="file"
+              />
+            </label>
             <button type="submit">
               <MessageSquare className="h-4 w-4" />
               提交反馈

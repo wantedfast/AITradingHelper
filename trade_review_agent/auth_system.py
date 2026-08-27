@@ -534,6 +534,7 @@ def init_auth_db(db_path: Path) -> None:
         )
         _ensure_user_columns(conn)
         _ensure_order_columns(conn)
+        _ensure_feedback_columns(conn)
         _ensure_update_notice_columns(conn)
         _ensure_daily_top5_close_email_schema(conn)
         init_outlook_graph_schema(conn)
@@ -583,6 +584,19 @@ def _ensure_order_columns(conn: sqlite3.Connection) -> None:
         "admin_note": "ALTER TABLE orders ADD COLUMN admin_note TEXT",
         "confirmed_at": "ALTER TABLE orders ADD COLUMN confirmed_at TEXT",
         "rejected_at": "ALTER TABLE orders ADD COLUMN rejected_at TEXT",
+    }
+    for column, statement in migrations.items():
+        if column not in columns:
+            conn.execute(statement)
+
+
+def _ensure_feedback_columns(conn: sqlite3.Connection) -> None:
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(feedback)").fetchall()}
+    migrations = {
+        "attachment_name": "ALTER TABLE feedback ADD COLUMN attachment_name TEXT",
+        "attachment_path": "ALTER TABLE feedback ADD COLUMN attachment_path TEXT",
+        "attachment_mime": "ALTER TABLE feedback ADD COLUMN attachment_mime TEXT",
+        "attachment_size": "ALTER TABLE feedback ADD COLUMN attachment_size INTEGER NOT NULL DEFAULT 0",
     }
     for column, statement in migrations.items():
         if column not in columns:
@@ -1054,22 +1068,57 @@ def submit_feedback(
     category: str,
     content: str,
     contact: str = "",
+    attachment_name: str = "",
+    attachment_path: str = "",
+    attachment_mime: str = "",
+    attachment_size: int = 0,
 ) -> dict[str, Any]:
     category = (category or "建议").strip()[:40]
     content = content.strip()
     contact = contact.strip()[:120]
+    attachment_name = Path(attachment_name).name.strip()[:180]
+    attachment_path = attachment_path.strip()[:500]
+    attachment_mime = attachment_mime.strip()[:80]
+    attachment_size = max(0, int(attachment_size or 0))
     if len(content) < 5:
         raise AuthError("反馈内容至少需要 5 个字", 400)
     now = _now()
     with _connect(db_path) as conn:
         cursor = conn.execute(
             """
-            INSERT INTO feedback (user_id, category, content, contact, created_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO feedback (
+                user_id, category, content, contact, attachment_name,
+                attachment_path, attachment_mime, attachment_size, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (user_id, category, content, contact, now),
+            (
+                user_id, category, content, contact, attachment_name or None,
+                attachment_path or None, attachment_mime or None, attachment_size, now,
+            ),
         )
         return {"id": int(cursor.lastrowid), "status": "pending"}
+
+
+def get_feedback_attachment(db_path: Path, *, feedback_id: int) -> dict[str, Any] | None:
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT id, attachment_name, attachment_path, attachment_mime, attachment_size
+            FROM feedback
+            WHERE id = ?
+            """,
+            (feedback_id,),
+        ).fetchone()
+        if not row or not str(row["attachment_path"] or "").strip():
+            return None
+        return {
+            "id": int(row["id"]),
+            "name": str(row["attachment_name"] or "反馈截图"),
+            "path": str(row["attachment_path"]),
+            "mime": str(row["attachment_mime"] or "application/octet-stream"),
+            "size": int(row["attachment_size"] or 0),
+        }
 
 
 def credit_packages() -> list[dict[str, Any]]:
@@ -5602,6 +5651,8 @@ def _user_payload(conn: sqlite3.Connection, row: sqlite3.Row | dict[str, Any]) -
 
 
 def _feedback_payload(row: sqlite3.Row) -> dict[str, Any]:
+    attachment_name = row["attachment_name"] if "attachment_name" in row.keys() else ""
+    has_attachment = bool(str(attachment_name or "").strip())
     return {
         "id": row["id"],
         "user_id": row["user_id"],
@@ -5614,6 +5665,10 @@ def _feedback_payload(row: sqlite3.Row) -> dict[str, Any]:
         "admin_note": row["admin_note"],
         "created_at": row["created_at"],
         "reviewed_at": row["reviewed_at"],
+        "attachment_name": str(attachment_name or ""),
+        "attachment_mime": str(row["attachment_mime"] or "") if "attachment_mime" in row.keys() else "",
+        "attachment_size": int(row["attachment_size"] or 0) if "attachment_size" in row.keys() else 0,
+        "attachment_url": f"/api/admin/feedback/{int(row['id'])}/attachment" if has_attachment else "",
     }
 
 

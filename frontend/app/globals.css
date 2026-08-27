@@ -857,6 +857,24 @@
   cursor: pointer;
 }
 
+.home-user-pill-label {
+  max-width: 170px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.home-auth-warning {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(248, 113, 113, 0.28);
+  border-radius: 10px;
+  color: #fecaca;
+  background: rgba(127, 29, 29, 0.16);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 .home-auth-link {
   min-height: 56px;
   color: rgba(244, 240, 232, 0.82);
@@ -969,6 +987,68 @@
   min-height: 128px;
   padding: 13px;
   line-height: 1.6;
+}
+
+.home-feedback-upload {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 48px;
+  padding: 0 14px;
+  border: 1px dashed rgba(245, 215, 122, 0.32);
+  border-radius: 14px;
+  color: rgba(244, 240, 232, 0.78);
+  background: rgba(0, 0, 0, 0.2);
+  cursor: pointer;
+}
+
+.home-feedback-upload:hover {
+  border-color: rgba(245, 215, 122, 0.62);
+  color: var(--gold-light);
+}
+
+.home-feedback-upload svg {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+}
+
+.home-feedback-upload span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.home-feedback-upload input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.admin-feedback-attachment {
+  display: grid;
+  width: min(100%, 420px);
+  gap: 8px;
+  color: var(--gold-light);
+  text-decoration: none;
+}
+
+.admin-feedback-attachment img {
+  display: block;
+  width: 100%;
+  max-height: 280px;
+  border: 1px solid rgba(245, 215, 122, 0.24);
+  border-radius: 12px;
+  object-fit: contain;
+  background: rgba(0, 0, 0, 0.28);
+}
+
+.admin-feedback-attachment span {
+  font-size: 13px;
 }
 
 .home-feedback-form button,
@@ -15448,6 +15528,51 @@ button.radar-core,
   padding: 10px 12px;
   color: #fde68a;
   background: rgba(245, 199, 107, 0.08);
+}
+
+.auction-load-error {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  border-color: rgba(248, 113, 113, 0.42);
+  color: #fecaca;
+  background: rgba(127, 29, 29, 0.16);
+}
+
+.auction-load-error div {
+  display: grid;
+  gap: 5px;
+}
+
+.auction-load-error span {
+  color: rgba(254, 226, 226, 0.76);
+}
+
+.auction-load-error button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 0 16px;
+  border: 1px solid rgba(245, 199, 107, 0.38);
+  border-radius: 8px;
+  color: #17120a;
+  background: #f5c76b;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+@media (max-width: 720px) {
+  .auction-load-error {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .auction-load-error button {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
 }
 
 .auction-day-list-panel {

@@ -54,6 +54,7 @@ from trade_review_agent.auth_system import (
     get_order,
     get_order_by_order_no,
     get_current_user,
+    get_feedback_attachment,
     latest_credit_order,
     latest_membership_order,
     list_pending_update_notices,
@@ -145,6 +146,8 @@ from trade_review_agent.stock_research import (
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 UPLOAD_DIR = BASE_DIR / "work" / "api_uploads"
+FEEDBACK_UPLOAD_DIR = UPLOAD_DIR / "feedback"
+FEEDBACK_IMAGE_MAX_BYTES = 5 * 1024 * 1024
 REPORT_DIR = BASE_DIR / "outputs" / "api_reports"
 MARKET_DAY_REPORT_DIR = BASE_DIR / "outputs" / "market_day_reports"
 AI_RESEARCH_REPORT_DIR = BASE_DIR / "outputs" / "ai_research_reports"
@@ -352,6 +355,9 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/admin/feedback":
                 self._admin_feedback()
+                return
+            if re.fullmatch(r"/api/admin/feedback/\d+/attachment", path):
+                self._admin_feedback_attachment(path)
                 return
             if path == "/api/admin/stock-research/jobs":
                 self._admin_stock_research_jobs()
@@ -1280,16 +1286,67 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
 
     def _submit_feedback(self) -> None:
         user = self._require_user()
-        payload = self._read_json_body()
-        result = submit_feedback(
-            AUTH_DB,
-            user_id=int(user["id"]),
-            category=str(payload.get("category") or "建议"),
-            content=str(payload.get("content") or ""),
-            contact=str(payload.get("contact") or ""),
-        )
+        content_type = self.headers.get("content-type", "")
+        attachment_path: Path | None = None
+        if "multipart/form-data" in content_type:
+            content_length = int(self.headers.get("content-length", "0") or 0)
+            if content_length > FEEDBACK_IMAGE_MAX_BYTES + 256 * 1024:
+                raise AuthError("截图不能超过 5MB", 413)
+            filename, data, payload = self._read_multipart_form(content_type)
+            attachment_name = ""
+            attachment_mime = ""
+            attachment_size = 0
+            if data is not None:
+                if len(data) > FEEDBACK_IMAGE_MAX_BYTES:
+                    raise AuthError("截图不能超过 5MB", 413)
+                extension, attachment_mime = _feedback_image_metadata(data)
+                original_stem = Path(filename or "feedback").stem.strip()[:160] or "feedback"
+                attachment_name = f"{original_stem}{extension}"
+                FEEDBACK_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+                attachment_path = FEEDBACK_UPLOAD_DIR / f"{uuid4().hex}{extension}"
+                attachment_path.write_bytes(data)
+                attachment_size = len(data)
+            try:
+                result = submit_feedback(
+                    AUTH_DB,
+                    user_id=int(user["id"]),
+                    category=str(payload.get("category") or "建议"),
+                    content=str(payload.get("content") or ""),
+                    contact=str(payload.get("contact") or ""),
+                    attachment_name=attachment_name,
+                    attachment_path=str(attachment_path or ""),
+                    attachment_mime=attachment_mime,
+                    attachment_size=attachment_size,
+                )
+            except Exception:
+                if attachment_path is not None:
+                    attachment_path.unlink(missing_ok=True)
+                raise
+        else:
+            payload = self._read_json_body()
+            result = submit_feedback(
+                AUTH_DB,
+                user_id=int(user["id"]),
+                category=str(payload.get("category") or "建议"),
+                content=str(payload.get("content") or ""),
+                contact=str(payload.get("contact") or ""),
+            )
         refreshed = get_current_user(AUTH_DB, self._bearer_token())
         self._json({"feedback": result, "user": refreshed})
+
+    def _admin_feedback_attachment(self, path: str) -> None:
+        self._require_admin()
+        parts = path.split("/")
+        attachment = get_feedback_attachment(AUTH_DB, feedback_id=int(parts[4]))
+        if not attachment:
+            self._json({"error": "反馈截图不存在"}, status=404)
+            return
+        file_path = Path(str(attachment["path"])).resolve()
+        upload_root = FEEDBACK_UPLOAD_DIR.resolve()
+        if upload_root not in file_path.parents or not file_path.is_file():
+            self._json({"error": "反馈截图不存在"}, status=404)
+            return
+        self._serve_file(file_path)
 
     def _create_order(self) -> None:
         user = self._require_user()
@@ -2244,7 +2301,8 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                 continue
             header_bytes, content = raw_part.split(b"\r\n\r\n", 1)
             header_text = header_bytes.decode("utf-8", errors="ignore")
-            content = content.rstrip(b"\r\n")
+            if content.endswith(b"\r\n"):
+                content = content[:-2]
             name_match = re.search(r'name="(?P<name>[^"]*)"', header_text)
             field_name = name_match.group("name") if name_match else ""
             if field_name == "file" and b"filename=" in header_bytes:
@@ -2561,6 +2619,18 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
 
 def _plan_payload(plan: AlertPlan) -> dict:
     return asdict(plan)
+
+
+def _feedback_image_metadata(data: bytes) -> tuple[str, str]:
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png", "image/png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return ".jpg", "image/jpeg"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return ".gif", "image/gif"
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return ".webp", "image/webp"
+    raise AuthError("截图格式不支持，请上传 JPG、PNG、WebP 或 GIF 图片", 400)
 
 
 def _content_type_with_charset(filename: str) -> str:
