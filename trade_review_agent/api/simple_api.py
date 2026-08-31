@@ -280,6 +280,8 @@ BEGINNER_GENERIC_TOPIC_MARKERS = (
     "\u7a33\u4f4f",
     "\u9ad8\u5f00",
     "\u4f4e\u5f00",
+    "\u8fd9\u79cd",
+    "\u5171\u540c",
 )
 BEGINNER_STOCK_NAME_CONTEXT_RE = re.compile(
     r"(?:\u770b|\u76ef|\u5173\u6ce8|\u89c2\u5bdf|\u5148\u770b|\u53ea\u770b|"
@@ -288,10 +290,10 @@ BEGINNER_STOCK_NAME_CONTEXT_RE = re.compile(
     r"\u8d70\u5f31|\u4e0a\u6da8|\u4e0b\u8dcc)"
 )
 BEGINNER_SHORT_STOCK_ALIAS_RE = re.compile(
-    r"(?:\u660e\u5929|\u5982\u679c|\u8981\u662f|\u82e5|"
-    r"\u7b49|)([\u4e00-\u9fff]{2,4})(?:\u4f1a\u4e0d\u4f1a|\u80fd\u4e0d\u80fd|"
-    r"\u662f\u5426|\u7ee7\u7eed|\u8868\u73b0|\u8d70\u5f3a|\u8d70\u5f31|"
-    r"\u4e0a\u6da8|\u4e0b\u8dcc|\u51b2\u9ad8|\u56de\u843d)"
+    r"(?:(?:\u660e\u5929|\u5982\u679c|\u8981\u662f|\u82e5)\s*"
+    r"(?P<prefix>[\u4e00-\u9fff]{2,4})(?:\u4f1a\u4e0d\u4f1a|\u80fd\u4e0d\u80fd|\u662f\u5426))|"
+    r"(?:(?P<suffix>[\u4e00-\u9fff]{2,4})(?:\u5982\u679c|\u8981\u662f|\u82e5)"
+    r"(?:\u7ee7\u7eed)?(?:\u5f3a|\u5f31|\u8d70\u5f3a|\u8d70\u5f31|\u4e0a\u6da8|\u4e0b\u8dcc))"
 )
 
 def normalize_research_model_tier(value: object = None) -> str:
@@ -4374,7 +4376,7 @@ def _prohibited_beginner_stock_name(text: str) -> str:
             return candidate
     alias_match = BEGINNER_SHORT_STOCK_ALIAS_RE.search(text)
     if alias_match:
-        candidate = alias_match.group(1)
+        candidate = alias_match.group("prefix") or alias_match.group("suffix")
         if not any(marker in candidate for marker in BEGINNER_GENERIC_TOPIC_MARKERS):
             return candidate
     company_match = MARKET_DAY_BEGINNER_COMPANY_NAME_RE.search(text)

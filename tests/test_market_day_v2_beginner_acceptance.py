@@ -7,6 +7,7 @@ import tempfile
 import threading
 import unittest
 from contextlib import closing
+from datetime import datetime
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
@@ -26,9 +27,10 @@ def market_day_v2_sample_payload() -> dict:
 
 def market_day_v2_today_payload() -> dict:
     payload = copy.deepcopy(market_day_v2_sample_payload())
-    payload["run_id"] = "market-day-2026-08-13"
-    payload["market_date"] = "2026-08-13"
-    payload["report"]["marketDate"] = "2026-08-13"
+    market_date = datetime.now(simple_api.CN_TZ).strftime("%Y-%m-%d")
+    payload["run_id"] = f"market-day-{market_date}"
+    payload["market_date"] = market_date
+    payload["report"]["marketDate"] = market_date
     return payload
 
 
