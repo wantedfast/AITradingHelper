@@ -99,6 +99,27 @@ class MarketDayBeginnerDecisionTest(unittest.TestCase):
         self.assertEqual(report["report"]["beginner_decision"]["stance"], "cautious")
         self.assertEqual(report["report"]["beginner_decision"]["primary_focus"]["name"], "AI硬件")
 
+    def test_beginner_layer_allows_ordinary_market_phrases_from_august_31(self) -> None:
+        payload = valid_market_day_v2_payload()
+        decision = payload["report"]["beginner_decision"]
+        decision["headline"] = (
+            "\u4eca\u5929\u79d1\u6280\u76f8\u5173\u65b9\u5411\u96c6\u4e2d\u8d70\u5f3a\uff0c\u4f46\u9ad8\u4f4d\u80a1\u7968\u8868\u73b0\u4e0d\u7a33\uff1b"
+            "\u660e\u5929\u5148\u770b\u8fd9\u79cd\u5171\u540c\u8d70\u5f3a\u80fd\u5426\u5ef6\u7eed\u3002"
+        )
+        decision["what_changed"] = [
+            "\u4e0a\u5468\u4e94\u76f8\u5bf9\u504f\u5f3a\u7684\u519c\u4e1a\u548c\u8d35\u91d1\u5c5e\u56de\u843d\uff0c\u79d1\u6280\u65b9\u5411\u8f6c\u5f3a\u3002"
+        ]
+        decision["stop_conditions"][0]["observation"] = (
+            "\u76d8\u4e2d\u51b2\u9ad8\u540e\u672a\u80fd\u4fdd\u6301\u5f3a\u52bf\uff0c\u6216\u8005\u80a1\u7968\u540c\u6b65\u8d70\u5f3a\u7684\u6570\u91cf\u660e\u663e\u51cf\u5c11\u3002"
+        )
+
+        report = simple_api._market_day_report_from_push_payload(
+            payload,
+            request_id="ordinary-market-phrases",
+        )
+
+        self.assertEqual(report["schema_version"], 2)
+
     def test_v1_payload_remains_compatible(self) -> None:
         payload = {
             "run_id": "legacy-market-day-run",
