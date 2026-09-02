@@ -535,7 +535,7 @@ class CreditPurchaseApiTest(unittest.TestCase):
         latest_status, latest_payload = self.request("/api/pay/credits/orders/latest", method="GET", token="api-user-token", payload=None)
         self.assertEqual(latest_status, 200)
         self.assertIn("payment_assets", latest_payload)
-        self.assertTrue(latest_payload["payment_assets"]["alipay_qr_url"].startswith("data:image/"))
+        self.assertNotIn("alipay_qr_url", latest_payload["payment_assets"])
         self.assertTrue(latest_payload["payment_assets"]["wechat_qr_url"].startswith("data:image/"))
         self.assertIsNone(latest_payload["order"])
 
@@ -547,7 +547,7 @@ class CreditPurchaseApiTest(unittest.TestCase):
         self.assertEqual(create_status, 200)
         self.assertEqual(create_payload["order"]["credits"], 5)
         self.assertIn("payment_assets", create_payload)
-        self.assertTrue(create_payload["payment_assets"]["alipay_qr_url"].startswith("data:image/"))
+        self.assertNotIn("alipay_qr_url", create_payload["payment_assets"])
         self.assertTrue(create_payload["payment_assets"]["wechat_qr_url"].startswith("data:image/"))
 
     def test_admin_adjustment_requires_request_id_and_rejects_admin_target(self) -> None:
