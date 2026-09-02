@@ -32,8 +32,8 @@ const shellRoutes = [
 const featureRoutes = ["/auction-strength", "/review", "/watch", "/market-day", "/ai-research", "/stock-research"];
 
 const membershipPlans = [
-  { id: "monthly_membership", plan_name: "月度会员", amount_cents: 5900, duration_days: 31, alipay_qr_url: "/pay/alipay-qr.jpg", wechat_qr_url: "/pay/wechat-qr.jpg" },
-  { id: "annual_membership", plan_name: "年度会员", amount_cents: 39900, duration_days: 365, alipay_qr_url: "/pay/alipay-qr.jpg", wechat_qr_url: "/pay/wechat-qr.jpg" },
+  { id: "monthly_membership", plan_name: "月度会员", amount_cents: 5900, duration_days: 31, wechat_qr_url: "/pay/wechat-qr.jpg" },
+  { id: "annual_membership", plan_name: "年度会员", amount_cents: 39900, duration_days: 365, wechat_qr_url: "/pay/wechat-qr.jpg" },
 ];
 
 const creditCatalog = {
@@ -53,7 +53,6 @@ const creditCatalog = {
 };
 
 const creditPaymentAssets = {
-  alipay_qr_url: "/pay/alipay-qr.jpg",
   wechat_qr_url: "/pay/wechat-qr.jpg",
 };
 
@@ -766,8 +765,9 @@ test.describe("homepage guest acquisition", () => {
 test.describe("membership plan selection", () => {
   test.use({ viewport: { width: 390, height: 844 } });
 
-  test("shows monthly then annual, recommends annual and locks the API-selected order", async ({ page }) => {
+  test("shows monthly then annual and uses only WeChat for the selected order", async ({ page }) => {
     let submittedPlanId = "";
+    let submittedPaymentMethod = "";
     await page.addInitScript((user) => {
       window.localStorage.setItem("ai_trade_token", "membership-test-token");
       window.localStorage.setItem("ai_trade_user", JSON.stringify(user));
@@ -793,6 +793,20 @@ test.describe("membership plan selection", () => {
           user: fixtureUser,
         });
       }
+      if (path === "/api/pay/membership/orders/88/submit" && route.request().method() === "POST") {
+        submittedPaymentMethod = String(route.request().postDataJSON()?.payment_method || "");
+        return json(route, {
+          order: {
+            id: 88,
+            order_no: "YMRESPONSIVE",
+            plan_name: "年度会员",
+            amount_cents: 39900,
+            status: "submitted",
+            package_id: "annual_membership",
+          },
+          user: fixtureUser,
+        });
+      }
       if (path === "/api/orders/88") return json(route, { order: { id: 88, order_no: "YMRESPONSIVE", plan_name: "年度会员", amount_cents: 39900, status: "pending" }, user: fixtureUser });
       return json(route, {});
     });
@@ -809,7 +823,12 @@ test.describe("membership plan selection", () => {
     await expect.poll(() => submittedPlanId).toBe("annual_membership");
     await expect(planCards.nth(0)).toBeDisabled();
     await expect(planCards.nth(1)).toBeDisabled();
-    await expect(page.locator('.billing-payment-form input').nth(2)).toHaveValue("399.00");
+    await expect(page.getByText("支付宝", { exact: false })).toHaveCount(0);
+    await expect(page.getByAltText("微信收款二维码")).toBeVisible();
+    await expect(page.getByLabel("付款方式")).toHaveValue("微信支付");
+    await expect(page.getByLabel("实付金额")).toHaveValue("399.00");
+    await page.getByRole("button", { name: "我已付款，通知管理员" }).click();
+    await expect.poll(() => submittedPaymentMethod).toBe("wechat");
     await expectNoGlobalHorizontalOverflow(page, "annual membership checkout");
   });
 
@@ -1181,7 +1200,7 @@ test.describe("public pricing and mandatory notices", () => {
     expect(decodeURIComponent(authUrl.searchParams.get("redirect") || "")).toContain("/credits?credits=12");
   });
 
-  test("authenticated credits order renders the configured payment QR codes", async ({ page }) => {
+  test("authenticated credits order renders only the configured WeChat payment QR code", async ({ page }) => {
     await page.addInitScript((user) => {
       window.localStorage.setItem("ai_trade_token", "credits-order-token");
       window.localStorage.setItem("ai_trade_user", JSON.stringify(user));
@@ -1207,20 +1226,14 @@ test.describe("public pricing and mandatory notices", () => {
       return json(route, {});
     });
     await page.goto("/credits", { waitUntil: "domcontentloaded" });
-    const alipayQr = page.getByAltText("支付宝收款二维码");
     const wechatQr = page.getByAltText("微信收款二维码");
-    await expect(alipayQr).toBeVisible();
+    await expect(page.getByText("支付宝", { exact: false })).toHaveCount(0);
     await expect(wechatQr).toBeVisible();
-    const alipayBox = await alipayQr.evaluate((node) => {
-      const rect = node.getBoundingClientRect();
-      return { width: rect.width, height: rect.height };
-    });
+    await expect(page.getByLabel("付款方式")).toHaveValue("微信支付");
     const wechatBox = await wechatQr.evaluate((node) => {
       const rect = node.getBoundingClientRect();
       return { width: rect.width, height: rect.height };
     });
-    expect(alipayBox.width).toBeGreaterThanOrEqual(300);
-    expect(alipayBox.height / alipayBox.width).toBeCloseTo(2560 / 1708, 2);
     expect(wechatBox.width).toBeGreaterThanOrEqual(300);
     expect(wechatBox.height / wechatBox.width).toBeCloseTo(1124 / 828, 2);
     await expect(page.getByText("收款码暂未配置")).toHaveCount(0);

@@ -1171,7 +1171,6 @@ def membership_plans() -> list[dict[str, Any]]:
     return [
         {
             **plan,
-            "alipay_qr_url": _payment_qr_data_uri("PAYMENT_ALIPAY_QR_FILE", "alipay-qr.jpg"),
             "wechat_qr_url": _payment_qr_data_uri("PAYMENT_WECHAT_QR_FILE", "wechat-qr.jpg"),
             "manual_checkout": checkout,
         }
@@ -1197,7 +1196,7 @@ def public_membership_catalog(*, include_payment_assets: bool = False) -> dict[s
     plans = membership_plans()
     if not include_payment_assets:
         plans = [
-            {key: value for key, value in plan.items() if key not in {"alipay_qr_url", "wechat_qr_url"}}
+            {key: value for key, value in plan.items() if key != "wechat_qr_url"}
             for plan in plans
         ]
     return {
@@ -1222,7 +1221,6 @@ def public_credit_catalog(*, include_payment_assets: bool = False) -> dict[str, 
     }
     if include_payment_assets:
         catalog["payment_assets"] = {
-            "alipay_qr_url": _payment_qr_data_uri("PAYMENT_ALIPAY_QR_FILE", "alipay-qr.jpg"),
             "wechat_qr_url": _payment_qr_data_uri("PAYMENT_WECHAT_QR_FILE", "wechat-qr.jpg"),
         }
     return catalog
@@ -4603,7 +4601,7 @@ def notify_admin_membership_payment(*, order: dict[str, Any], user: dict[str, An
         admin_url = os.getenv("ADMIN_DASHBOARD_URL", "").strip() or "/admin"
         user_label = user.get("username") or user.get("email") or user.get("phone") or f"用户 {user.get('id')}"
         text = (
-            "有用户提交了会员付款信息，请核对支付宝/微信到账后再开通。\n\n"
+            "有用户提交了会员付款信息，请核对微信到账后再开通。\n\n"
             f"订单号：{order.get('order_no')}\n"
             f"用户：{user_label}\n"
             f"手机号/账号：{user.get('phone') or ''}\n"
@@ -4619,7 +4617,7 @@ def notify_admin_membership_payment(*, order: dict[str, Any], user: dict[str, An
         )
         html = _light_email_document(f"""
           <h1 style="margin:0 0 20px;color:#1f2328;font-size:24px;line-height:1.35;">用户已付款待确认</h1>
-          <p style="margin:0 0 20px;color:#1f2328;line-height:1.7;">请核对支付宝/微信到账后，再到管理台确认开通会员。</p>
+          <p style="margin:0 0 20px;color:#1f2328;line-height:1.7;">请核对微信到账后，再到管理台确认开通会员。</p>
           <p style="margin:8px 0;color:#1f2328;"><strong>订单号：</strong>{_html_escape(str(order.get('order_no') or ''))}</p>
           <p style="margin:8px 0;color:#1f2328;"><strong>用户：</strong>{_html_escape(str(user_label))}</p>
           <p style="margin:8px 0;color:#1f2328;"><strong>账号：</strong>{_html_escape(str(user.get('phone') or ''))}</p>

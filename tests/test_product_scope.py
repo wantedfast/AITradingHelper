@@ -165,14 +165,14 @@ class ProductScopeTest(unittest.TestCase):
         private = public_membership_catalog(include_payment_assets=True)
         self.assertNotIn("alipay_qr_url", public["plans"][0])
         self.assertNotIn("wechat_qr_url", public["plans"][0])
-        self.assertTrue(private["plans"][0]["alipay_qr_url"].startswith("data:image/"))
+        self.assertNotIn("alipay_qr_url", private["plans"][0])
         self.assertTrue(private["plans"][0]["wechat_qr_url"].startswith("data:image/"))
         self.assertNotIn("/pay/", json.dumps(private))
 
         public_credits = public_credit_catalog()
         private_credits = public_credit_catalog(include_payment_assets=True)
         self.assertNotIn("payment_assets", public_credits)
-        self.assertTrue(private_credits["payment_assets"]["alipay_qr_url"].startswith("data:image/"))
+        self.assertNotIn("alipay_qr_url", private_credits["payment_assets"])
         self.assertTrue(private_credits["payment_assets"]["wechat_qr_url"].startswith("data:image/"))
         self.assertNotIn("/pay/", json.dumps(private_credits))
 

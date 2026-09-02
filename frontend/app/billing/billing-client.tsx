@@ -19,7 +19,6 @@ export type MembershipPlan = {
   plan_name: string;
   amount_cents: number;
   duration_days: number;
-  alipay_qr_url?: string;
   wechat_qr_url?: string;
   manual_checkout?: CheckoutInfo;
 };
@@ -50,7 +49,6 @@ export type CatalogPayload = {
 };
 
 type PaymentDraft = {
-  payment_method: "alipay" | "wechat";
   payer_name: string;
   payer_paid_at: string;
   submitted_amount_yuan: string;
@@ -99,7 +97,6 @@ function BillingPageContent({ initialCatalog }: { initialCatalog: CatalogPayload
   const [message, setMessage] = useState("");
   const [paymentMessage, setPaymentMessage] = useState("");
   const [draft, setDraft] = useState<PaymentDraft>({
-    payment_method: "alipay",
     payer_name: "",
     payer_paid_at: "",
     submitted_amount_yuan: initialPreferredPlan ? (initialPreferredPlan.amount_cents / 100).toFixed(2) : "59.00",
@@ -238,7 +235,7 @@ function BillingPageContent({ initialCatalog }: { initialCatalog: CatalogPayload
       const payload = await apiFetch<CatalogPayload>(`/api/pay/membership/orders/${order.id}/submit`, {
         method: "POST",
         body: JSON.stringify({
-          payment_method: draft.payment_method,
+          payment_method: "wechat",
           payer_name: draft.payer_name,
           payer_paid_at: draft.payer_paid_at,
           submitted_amount_cents: Math.round(Number(draft.submitted_amount_yuan || "0") * 100),
@@ -359,7 +356,6 @@ function BillingPageContent({ initialCatalog }: { initialCatalog: CatalogPayload
             {order ? (
               <>
                 <div className="billing-qr-row">
-                  <QrBox title="支付宝" src={selectedPlan?.alipay_qr_url || ""} />
                   <QrBox title="微信" src={selectedPlan?.wechat_qr_url || ""} />
                 </div>
                 <div className="billing-order">
@@ -381,10 +377,7 @@ function BillingPageContent({ initialCatalog }: { initialCatalog: CatalogPayload
                     {order.status === "submitted" ? <div className="billing-inline-message">付款信息已提交，等待管理员人工确认到账。</div> : null}
                     <label>
                       <span>付款方式</span>
-                      <select value={draft.payment_method} onChange={(event) => setDraft((current) => ({ ...current, payment_method: event.target.value as PaymentDraft["payment_method"] }))}>
-                        <option value="alipay">支付宝</option>
-                        <option value="wechat">微信</option>
-                      </select>
+                      <input value="微信支付" readOnly aria-readonly="true" />
                     </label>
                     <label>
                       <span>付款人昵称或姓名</span>
@@ -452,10 +445,9 @@ function membershipAnnualSavings(plans: MembershipPlan[], annualPlan: Membership
 }
 
 function QrBox({ title, src }: { title: string; src: string }) {
-  const dimensions = title === "支付宝" ? { width: 1708, height: 2560 } : { width: 828, height: 1124 };
   return (
     <div className="billing-qr">
-      {src ? <Image src={src} alt={`${title}收款二维码`} {...dimensions} sizes="(max-width: 920px) 100vw, 420px" unoptimized /> : <span>收款码暂未配置</span>}
+      {src ? <Image src={src} alt={`${title}收款二维码`} width={828} height={1124} sizes="(max-width: 920px) 100vw, 420px" unoptimized /> : <span>收款码暂未配置</span>}
       <code>{title}收款码</code>
     </div>
   );
