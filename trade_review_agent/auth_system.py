@@ -6010,11 +6010,12 @@ def _has_complete_daily_top5_stocks(value: object) -> bool:
 
 
 def _has_complete_daily_top5_conclusion(conclusion: dict[str, Any]) -> bool:
+    # Capacity confirmation may legitimately be unknown; preserve that value
+    # rather than requiring invented evidence to create either email campaign.
     fields = (
         "strongest_stock_at_925",
         "strongest_theme_cluster",
         "most_over_expected_stock",
-        "best_capacity_confirmation",
         "biggest_negative_feedback",
         "one_sentence_for_930",
     )

@@ -4711,10 +4711,11 @@ def _auction_strength_report_is_complete(report: dict) -> bool:
         "strongest_stock_at_925",
         "strongest_theme_cluster",
         "most_over_expected_stock",
-        "best_capacity_confirmation",
         "biggest_negative_feedback",
         "one_sentence_for_930",
     )
+    # Capacity confirmation is optional when auction turnover is unavailable.
+    # An honest unknown must not silently suppress otherwise complete reports.
     conclusion_complete = isinstance(conclusion, dict) and all(
         str(conclusion.get(field) or "").strip() for field in conclusion_fields
     )

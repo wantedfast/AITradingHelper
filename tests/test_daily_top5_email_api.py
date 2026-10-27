@@ -111,6 +111,31 @@ class DailyTop5EmailApiTest(unittest.TestCase):
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM daily_top5_email_deliveries").fetchone()[0], 1)
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM daily_top5_close_email_deliveries").fetchone()[0], 0)
 
+    def test_unknown_capacity_confirmation_does_not_block_email_campaigns(self) -> None:
+        report = complete_report(trade_date=self.trade_date, report_id="capacity-unknown")
+        report["global_conclusion"]["best_capacity_confirmation"] = None
+        report["data_limit"] = ["Capacity cannot be confirmed without auction turnover."]
+
+        status, first = self.request("/api/auction-strength", method="POST", payload=report, webhook=True)
+        self.assertEqual(status, 202)
+        self.assertIsNotNone(first["email_campaign"])
+        self.assertIsNotNone(first["close_email_campaign"])
+        _, second = self.request("/api/auction-strength", method="POST", payload=report, webhook=True)
+        self.assertEqual(first["close_email_campaign"]["id"], second["close_email_campaign"]["id"])
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            saved = json.loads(conn.execute(
+                "SELECT report_json FROM daily_top5_close_email_campaigns"
+            ).fetchone()[0])
+        self.assertFalse(saved["global_conclusion"]["best_capacity_confirmation"])
+
+    def test_missing_required_conclusion_still_blocks_email_campaigns(self) -> None:
+        report = complete_report(trade_date=self.trade_date)
+        report["global_conclusion"]["one_sentence_for_930"] = None
+        status, payload = self.request("/api/auction-strength", method="POST", payload=report, webhook=True)
+        self.assertEqual(status, 202)
+        self.assertIsNone(payload["email_campaign"])
+        self.assertIsNone(payload["close_email_campaign"])
+
     def test_close_campaign_is_created_when_morning_campaign_creation_fails(self) -> None:
         complete = complete_report(trade_date=self.trade_date, report_id="close-independent-run")
         with patch.object(
