@@ -1,12 +1,30 @@
 version: "3.3"
 
 services:
+  market-breadth:
+    build:
+      context: ./market_breadth
+    image: ${BREADTH_IMAGE:-aitrading/market-breadth:local}
+    container_name: market-breadth
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3211/health').then(r=>{if(!r.ok)process.exit(1)})"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    volumes:
+      - ./work/market_breadth:/app/runtime/data
+    environment:
+      - TZ=Asia/Shanghai
+
   trade-review-api:
     build: .
     image: ${API_IMAGE:-aitrading/trade-review-api:local}
     container_name: trade-review-api
     restart: unless-stopped
     command: ["python", "-m", "trade_review_agent.api.simple_api"]
+    depends_on:
+      - market-breadth
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
@@ -23,6 +41,7 @@ services:
       - .env
     environment:
       - TZ=Asia/Shanghai
+      - MARKET_BREADTH_INTERNAL_URL=http://market-breadth:3211
 
   trade-review-frontend:
     build:

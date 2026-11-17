@@ -19,6 +19,7 @@ const shellRoutes = [
   { name: "review", path: "/review" },
   { name: "watch", path: "/watch" },
   { name: "market-day", path: "/market-day" },
+  { name: "market-breadth", path: "/market-breadth" },
   { name: "ai-research", path: "/ai-research" },
   { name: "stock-research", path: "/stock-research" },
   { name: "review-report", path: "/review/report/responsive-smoke" },
@@ -29,7 +30,7 @@ const shellRoutes = [
   { name: "webhook", path: "/webhook" },
 ] as const;
 
-const featureRoutes = ["/auction-strength", "/review", "/watch", "/market-day", "/ai-research", "/stock-research"];
+const featureRoutes = ["/auction-strength", "/review", "/watch", "/market-day", "/market-breadth", "/ai-research", "/stock-research"];
 
 const membershipPlans = [
   { id: "monthly_membership", plan_name: "月度会员", amount_cents: 5900, duration_days: 31, wechat_qr_url: "/pay/wechat-qr.jpg" },
@@ -69,6 +70,41 @@ const fixtureUser = {
   credits: 100,
   referral_count: 0,
   created_at: "2026-07-15T00:00:00Z",
+};
+
+const marketBreadthState = {
+  updated: "2026-07-15 10:36",
+  error: null,
+  trading: true,
+  snap: {
+    n: 5572, up: 1454, down: 3931, flat: 187,
+    upAmt: 186489128100, downAmt: 452813849400, amt: 646922632600,
+    upCountPct: 26.09, upAmtPct: 28.83, spread: 2.73, arms: 0.898, median: -0.73,
+    big: { n: 300, upCountPct: 23.67, median: -0.54, amtShare: 31.92, upAmtShare: 24.25 },
+    small: { n: 5272, upCountPct: 26.23, median: -0.75, amtShare: 68.08, upAmtShare: 75.75 },
+  },
+  indexes: [
+    { code: "000001", name: "上证指数", price: 3570.51, pct: -0.89 },
+    { code: "399001", name: "深证成指", price: 11231.2, pct: 0.23 },
+    { code: "000300", name: "沪深300", price: 4012.3, pct: -0.44 },
+    { code: "000016", name: "上证50", price: 2701.4, pct: -0.61 },
+    { code: "000905", name: "中证500", price: 6123.5, pct: 0.12 },
+    { code: "000852", name: "中证1000", price: 6501.6, pct: 0 },
+  ],
+  intraday: [
+    { t: "10:34", c: 25.45, a: 28.62, sp: 3.17, ar: .874, sh: -.87 },
+    { t: "10:35", c: 26.15, a: 29.06, sp: 2.92, ar: .888, sh: -.85 },
+    { t: "10:36", c: 26.09, a: 28.83, sp: 2.73, ar: .898, sh: -.89 },
+  ],
+  mcl: { days: 520, value: -50.78, rising: false, series: [{ d: "2026-07-14", v: -44.1 }, { d: "2026-07-15", v: -50.78 }] },
+  verdict: {
+    key: "selloff", level: "bad", title: "真下跌：资金全面撤退",
+    money: "多数股票在跌，没有资金托底", sustain: "下跌是真实的，不是指数失真", next: "未见止跌信号",
+    evidence: ["上证指数 -0.89%，全市场股票涨跌幅中位数 -0.73%", "上涨股票只占全市场约 26%"],
+    hist: { n: 120, d5: { n: 117, mean: .19, median: .35, downRate: 45.3 }, d20: { n: 112, mean: .81, median: .95, downRate: 38.4 } },
+  },
+  histBase: { n: 519, d5: { n: 514, mean: .2, median: .3, downRate: 44.1 }, d20: { n: 499, mean: .7, median: .8, downRate: 41 } },
+  cfg: { upCountBelow: 45, spreadAbove: 15, armsBelow: .6 },
 };
 
 const wideMarkdownTable = [
@@ -222,6 +258,9 @@ async function installStableApiFixtures(
 
     if (path === "/api/auth/me") return json(route, { user: fixtureUser });
     if (path === "/api/auth/email-preferences") return json(route, { user: fixtureUser });
+    if (path === "/api/market-breadth/access") return json(route, { billing_status: "admin_free", billing_cost: 2, billing_date: "2026-07-15", user: fixtureUser });
+    if (path === "/api/market-breadth/state") return json(route, marketBreadthState);
+    if (path === "/api/market-breadth/ack") return json(route, { billing_status: "admin_free", billing_cost: 2, billing_date: "2026-07-15", user: fixtureUser });
     if (path === "/api/update-notices/pending") return json(route, { notices: [] });
     if (path === "/api/public/membership/plans") return json(route, { plans: membershipPlans, checkout: {} });
     if (path === "/api/pay/membership/orders/latest") return json(route, { order: null, plans: membershipPlans, user: fixtureUser });
@@ -383,7 +422,7 @@ async function expectFeatureNavigationInViewport(page: Page, viewportHeight: num
   // only the breakpoint-appropriate navigation participates in layout.
   const nav = page.locator(":is(.review-workbench-nav, .mobile-only-feature-nav):visible");
   await expect(nav).toBeVisible();
-  await expect(nav.locator("a")).toHaveCount(6);
+  await expect(nav.locator("a")).toHaveCount(7);
 
   const box = await nav.boundingBox();
   expect(box, "feature navigation should have a measurable layout box").not.toBeNull();
@@ -435,7 +474,7 @@ for (const viewport of viewports) {
       }
     });
 
-    test("six core features expose an unobstructed unified navigation", async ({ page }) => {
+    test("seven core features expose an unobstructed unified navigation", async ({ page }) => {
       await installStableApiFixtures(page);
 
       for (const path of featureRoutes) {
@@ -509,6 +548,62 @@ for (const viewport of viewports) {
     }
   });
 }
+
+test.describe("market breadth access and states", () => {
+  test.use({ viewport: { width: 390, height: 844 } });
+
+  test("requires login before requesting paid market data", async ({ page }) => {
+    await page.goto("/market-breadth", { waitUntil: "domcontentloaded" });
+    await expect(page).toHaveURL(/\/auth\?redirect=%2Fmarket-breadth/);
+  });
+
+  test("charges through the confirmation endpoint and then renders the live conclusion", async ({ page }) => {
+    let unlocked = false;
+    let acknowledgementCount = 0;
+    const paidUser = { ...fixtureUser, role: "user", credits: 8 };
+    await page.addInitScript((user) => {
+      window.localStorage.setItem("ai_trade_token", "market-breadth-test-token");
+      window.localStorage.setItem("ai_trade_user", JSON.stringify(user));
+    }, paidUser);
+    await page.route("**/api/**", async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path === "/api/market-breadth/access") return json(route, { billing_status: unlocked ? "charged" : "pending_view", billing_cost: 2, billing_date: "2026-07-15", user: paidUser });
+      if (path === "/api/market-breadth/ack") {
+        acknowledgementCount += 1;
+        unlocked = true;
+        return json(route, { billing_status: "charged", billing_cost: 2, billing_date: "2026-07-15", user: { ...paidUser, credits: 6 } });
+      }
+      if (path === "/api/market-breadth/state") return json(route, marketBreadthState);
+      return json(route, { error: "not found" }, 404);
+    });
+
+    await page.goto("/market-breadth", { waitUntil: "domcontentloaded" });
+    const confirm = page.getByRole("button", { name: "确认查看并扣除 2 次" });
+    await expect(confirm).toBeVisible();
+    await confirm.click();
+    await expect(page.getByRole("heading", { name: "真下跌：资金全面撤退" })).toBeVisible();
+    await expect(page.getByText("之后 20 日下跌比例")).toBeVisible();
+    expect(acknowledgementCount).toBe(1);
+    await expectNoGlobalHorizontalOverflow(page, "market breadth paid result");
+  });
+
+  test("shows a preparation state when the source has no snapshot", async ({ page }) => {
+    await page.addInitScript((user) => {
+      window.localStorage.setItem("ai_trade_token", "market-breadth-empty-token");
+      window.localStorage.setItem("ai_trade_user", JSON.stringify(user));
+    }, fixtureUser);
+    await page.route("**/api/**", async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path === "/api/market-breadth/access") return json(route, { billing_status: "admin_free", billing_cost: 2, billing_date: "2026-07-15", user: fixtureUser });
+      if (path === "/api/market-breadth/state") return json(route, { ...marketBreadthState, snap: null, verdict: null, error: "行情源暂时没有完整数据" });
+      return json(route, { error: "not found" }, 404);
+    });
+
+    await page.goto("/market-breadth", { waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("heading", { name: "实时数据正在准备" })).toBeVisible();
+    await expect(page.getByText("行情源暂时没有完整数据")).toBeVisible();
+  });
+});
 
 test.describe("AI research beginner decision layer", () => {
   test.use({ viewport: { width: 390, height: 844 } });
