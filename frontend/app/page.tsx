@@ -3,7 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { FormEvent, useEffect, useRef, useState } from "react";
-import { BellRing, Boxes, ChevronDown, Copy, CreditCard, Crown, FileSearch, FileText, Gift, ImagePlus, Info, LogOut, Menu, MessageSquare, ShieldCheck, Sparkles, TrendingUp, Trophy, UserRound, X } from "lucide-react";
+import { Activity, BellRing, Boxes, ChevronDown, Copy, CreditCard, Crown, FileSearch, FileText, Gift, ImagePlus, Info, LogOut, Menu, MessageSquare, ShieldCheck, Sparkles, TrendingUp, Trophy, UserRound, X } from "lucide-react";
 import { AuctionStrengthPerformanceTicker, useAuctionStrengthPerformance } from "@/components/auction-strength-performance-ticker";
 import { GoldMagicCube } from "@/components/gold-magic-cube";
 import { FinancialDisclaimer } from "@/components/financial-disclaimer";
@@ -42,6 +42,14 @@ const features = [
     icon: TrendingUp,
     description: "每天 19:00（晚上 7 点）总结市场在炒什么、哪些板块强弱，并给出第二天关注重点。",
     points: ["市场在炒什么", "板块强弱", "当天行情总结", "明天关注重点"],
+  },
+  {
+    href: "/market-breadth",
+    title: "市场真实强弱",
+    label: "MARKET BREADTH",
+    icon: Activity,
+    description: "汇总全市场涨跌家数和成交额，看清指数是真涨真跌，还是少数权重股造成的假象。",
+    points: ["识别真假涨跌", "观察资金去向", "对比大盘与中小盘", "每分钟更新"],
   },
   {
     href: "/ai-research",
@@ -257,6 +265,7 @@ export default function Page() {
             <Link href="/review">AI 复盘</Link>
             <Link href="/watch">AI 盯盘</Link>
             <Link href="/market-day">AI当日行情</Link>
+            <Link href="/market-breadth">市场强弱</Link>
             <Link href="/ai-research">AI研报</Link>
             <Link href="/stock-research">价值投资</Link>
             <button className="nav-action" type="button" onClick={scrollToFeedback}>
@@ -677,9 +686,9 @@ export default function Page() {
               <Info className="h-4 w-4" />
               产品使用说明
             </div>
-            <h2 id="product-guide-title">五个功能，帮你把每天的交易想清楚。</h2>
+            <h2 id="product-guide-title">七个功能，帮你把每天的交易想清楚。</h2>
             <p>
-              开盘前看每日 TOP5 和 AI 研报，收盘后看 AI 当日行情；自己的交易可以用 AI 复盘检查，再用 AI 盯盘整理明天的计划。
+              开盘前看每日 TOP5 和 AI 研报，盘中用市场真实强弱判断指数是否失真，收盘后看 AI 当日行情；自己的交易可以用 AI 复盘检查，再用 AI 盯盘整理明天的计划。
             </p>
             <div className="product-guide-grid">
               {features.map((feature) => {

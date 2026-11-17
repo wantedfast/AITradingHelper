@@ -57,6 +57,7 @@ FEATURE_CREDIT_COSTS = {
     "ai_research_view": 2,
     "auction_strength_view": 2,
     "stock_reverse_research": 3,
+    "market_breadth_view": 2,
 }
 SMS_CODE_TTL_MINUTES = 5
 SMS_RESEND_SECONDS = 60

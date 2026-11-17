@@ -93,6 +93,7 @@ def build_archive(tag: str, output_dir: Path) -> Path:
             "RELEASE_TAG": tag,
             "API_IMAGE": f"aitrading/trade-review-api:{tag}",
             "FRONTEND_IMAGE": f"aitrading/trade-review-frontend:{tag}",
+            "BREADTH_IMAGE": f"aitrading/market-breadth:{tag}",
         }
     )
     print(f"Building immutable images locally ({LOCAL_BUILD_DESCRIPTION})")
@@ -106,6 +107,7 @@ def build_archive(tag: str, output_dir: Path) -> Path:
     images = [
         f"aitrading/trade-review-api:{tag}",
         f"aitrading/trade-review-frontend:{tag}",
+        f"aitrading/market-breadth:{tag}",
     ]
     for image in images:
         subprocess.run(["docker", "image", "inspect", image], check=True, stdout=subprocess.DEVNULL)

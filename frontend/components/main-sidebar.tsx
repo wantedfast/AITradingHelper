@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import type { ReactNode } from "react";
-import { BarChart3, Boxes, FileText, FileUp, Info, TrendingUp, Trophy } from "lucide-react";
+import { Activity, BarChart3, Boxes, FileText, FileUp, Info, TrendingUp, Trophy } from "lucide-react";
 import {
   Article as PhArticle,
   ChartBar as PhChartBar,
@@ -12,7 +12,7 @@ import {
   Trophy as PhTrophy,
 } from "@phosphor-icons/react";
 
-type MainSidebarKey = "review" | "watch" | "market-day" | "ai-research" | "auction-strength" | "stock-research";
+type MainSidebarKey = "review" | "watch" | "market-day" | "ai-research" | "auction-strength" | "stock-research" | "market-breadth";
 
 type MainSidebarProps = {
   activeKey: MainSidebarKey;
@@ -33,6 +33,7 @@ const navItems: Array<{
   { key: "review", href: "/review", label: "AI 复盘", shortLabel: "复盘", icon: FileUp, prototypeIcon: PhArticle },
   { key: "watch", href: "/watch", label: "AI 盯盘", shortLabel: "盯盘", icon: BarChart3, prototypeIcon: PhChartBar },
   { key: "market-day", href: "/market-day", label: "AI 当日行情", shortLabel: "行情", icon: TrendingUp, prototypeIcon: PhTrendUp },
+  { key: "market-breadth", href: "/market-breadth", label: "市场真实强弱", shortLabel: "强弱", icon: Activity, prototypeIcon: PhChartBar },
   { key: "ai-research", href: "/ai-research", label: "AI 研报", shortLabel: "研报", icon: FileText, prototypeIcon: PhFileText },
   { key: "stock-research", href: "/stock-research", label: "A股研究", shortLabel: "个股", icon: Boxes, prototypeIcon: PhFileText },
 ];
