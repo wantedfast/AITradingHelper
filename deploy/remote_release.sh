@@ -12,9 +12,10 @@ COMPOSE_FILE="$RELEASE_DIR/docker-compose.release.yml"
 LOCK_FILE="$STATE_DIR/deploy.lock"
 API_IMAGE="aitrading/trade-review-api:$RELEASE_TAG"
 FRONTEND_IMAGE="aitrading/trade-review-frontend:$RELEASE_TAG"
+BREADTH_IMAGE="aitrading/market-breadth:$RELEASE_TAG"
 CURL_BIN="${CURL_BIN:-curl}"
 
-mkdir -p "$RELEASE_DIR" "$DEPLOY_ROOT/work" "$DEPLOY_ROOT/outputs"
+mkdir -p "$RELEASE_DIR" "$DEPLOY_ROOT/work" "$DEPLOY_ROOT/work/market_breadth" "$DEPLOY_ROOT/outputs"
 exec 9>"$LOCK_FILE"
 if ! flock -n 9; then
   echo "ERROR: another deployment is already running" >&2
@@ -57,8 +58,11 @@ current_tag="$(cat "$STATE_DIR/current-release" 2>/dev/null || true)"
 if [[ "$current_tag" == "$RELEASE_TAG" ]] \
   && docker image inspect "$API_IMAGE" >/dev/null 2>&1 \
   && docker image inspect "$FRONTEND_IMAGE" >/dev/null 2>&1 \
+  && docker image inspect "$BREADTH_IMAGE" >/dev/null 2>&1 \
   && [[ "$(docker inspect -f '{{.State.Running}}' trade-review-api 2>/dev/null || true)" == true ]] \
   && [[ "$(docker inspect -f '{{.State.Running}}' trade-review-frontend 2>/dev/null || true)" == true ]] \
+  && [[ "$(docker inspect -f '{{.State.Running}}' market-breadth 2>/dev/null || true)" == true ]] \
+  && [[ "$(docker inspect -f '{{.State.Health.Status}}' market-breadth 2>/dev/null || true)" == healthy ]] \
   && "$CURL_BIN" -fsS --max-time 5 http://127.0.0.1:8600/api/health >/dev/null \
   && "$CURL_BIN" -fsS --max-time 5 http://127.0.0.1:3000/ >/dev/null; then
   echo "Release $RELEASE_TAG is already healthy; skipping container recreation"
@@ -76,20 +80,26 @@ fi
 
 old_api="$(docker inspect -f '{{.Config.Image}}' trade-review-api 2>/dev/null || true)"
 old_frontend="$(docker inspect -f '{{.Config.Image}}' trade-review-frontend 2>/dev/null || true)"
+old_breadth="$(docker inspect -f '{{.Config.Image}}' market-breadth 2>/dev/null || true)"
 old_tag="$(cat "$STATE_DIR/current-release" 2>/dev/null || true)"
 if [[ -n "$old_api" && -n "$old_frontend" ]]; then
   rollback_tag="rollback-$RELEASE_TAG"
   docker image tag "$old_api" "aitrading/trade-review-api:$rollback_tag"
   docker image tag "$old_frontend" "aitrading/trade-review-frontend:$rollback_tag"
-  printf 'API_IMAGE=%s\nFRONTEND_IMAGE=%s\n' "$old_api" "$old_frontend" > "$STATE_DIR/rollback-images.env"
+  if [[ -n "$old_breadth" ]]; then
+    docker image tag "$old_breadth" "aitrading/market-breadth:$rollback_tag"
+  fi
+  printf 'API_IMAGE=%s\nFRONTEND_IMAGE=%s\nBREADTH_IMAGE=%s\n' "$old_api" "$old_frontend" "$old_breadth" > "$STATE_DIR/rollback-images.env"
 fi
 
 echo "Loading immutable release images: $RELEASE_TAG"
 api_exists=0
 frontend_exists=0
+breadth_exists=0
 docker image inspect "$API_IMAGE" >/dev/null 2>&1 && api_exists=1
 docker image inspect "$FRONTEND_IMAGE" >/dev/null 2>&1 && frontend_exists=1
-if (( api_exists != frontend_exists )); then
+docker image inspect "$BREADTH_IMAGE" >/dev/null 2>&1 && breadth_exists=1
+if (( api_exists + frontend_exists + breadth_exists != 0 && api_exists + frontend_exists + breadth_exists != 3 )); then
   echo "ERROR: immutable release tag is only partially present; refusing to overwrite it" >&2
   exit 17
 fi
@@ -100,6 +110,14 @@ else
 fi
 docker image inspect "$API_IMAGE" >/dev/null
 docker image inspect "$FRONTEND_IMAGE" >/dev/null
+docker image inspect "$BREADTH_IMAGE" >/dev/null
+
+# The first three-service release has no previous breadth image. Reuse the
+# newly loaded sidecar only for that rollback while restoring the previous API
+# and frontend pair.
+if [[ -n "${rollback_tag:-}" && -z "$old_breadth" ]]; then
+  docker image tag "$BREADTH_IMAGE" "aitrading/market-breadth:$rollback_tag"
+fi
 
 export DEPLOY_ROOT RELEASE_TAG
 compose_up() {
@@ -130,7 +148,8 @@ health_check() {
   local attempt
   for attempt in $(seq 1 60); do
     if "$CURL_BIN" -fsS --max-time 5 http://127.0.0.1:8600/api/health >/dev/null \
-      && "$CURL_BIN" -fsS --max-time 5 http://127.0.0.1:3000/ >/dev/null; then
+      && "$CURL_BIN" -fsS --max-time 5 http://127.0.0.1:3000/ >/dev/null \
+      && [[ "$(docker inspect -f '{{.State.Health.Status}}' market-breadth 2>/dev/null || true)" == healthy ]]; then
       return 0
     fi
     sleep 2
@@ -181,12 +200,12 @@ if [[ -f "$STATE_DIR/current-images.env" ]]; then
 elif [[ -n "$old_api" && -n "$old_frontend" ]]; then
   # First migration from the legacy online-build deployment still records its
   # image pair, so operators retain one known-good predecessor.
-  printf 'API_IMAGE=%s\nFRONTEND_IMAGE=%s\n' "$old_api" "$old_frontend" > "$STATE_DIR/previous-images.env"
+  printf 'API_IMAGE=%s\nFRONTEND_IMAGE=%s\nBREADTH_IMAGE=%s\n' "$old_api" "$old_frontend" "$old_breadth" > "$STATE_DIR/previous-images.env"
 fi
 if [[ -n "$old_tag" ]]; then
   printf '%s\n' "$old_tag" > "$STATE_DIR/previous-release"
 fi
-printf 'API_IMAGE=%s\nFRONTEND_IMAGE=%s\n' "$API_IMAGE" "$FRONTEND_IMAGE" > "$STATE_DIR/current-images.env"
+printf 'API_IMAGE=%s\nFRONTEND_IMAGE=%s\nBREADTH_IMAGE=%s\n' "$API_IMAGE" "$FRONTEND_IMAGE" "$BREADTH_IMAGE" > "$STATE_DIR/current-images.env"
 printf '%s\n' "$RELEASE_TAG" > "$STATE_DIR/current-release"
 rm -f -- "$ARCHIVE_PATH" "$STATE_DIR/rollback-images.env"
 
@@ -224,4 +243,5 @@ fi
 if [[ -n "${rollback_tag:-}" ]]; then
   docker image rm "aitrading/trade-review-api:$rollback_tag" >/dev/null 2>&1 || true
   docker image rm "aitrading/trade-review-frontend:$rollback_tag" >/dev/null 2>&1 || true
+  docker image rm "aitrading/market-breadth:$rollback_tag" >/dev/null 2>&1 || true
 fi

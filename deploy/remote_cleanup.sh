@@ -15,7 +15,7 @@ for state_file in "$STATE_DIR/current-images.env" "$STATE_DIR/previous-images.en
   if [[ -f "$state_file" ]]; then
     while IFS='=' read -r key value; do
       case "$key" in
-        API_IMAGE|FRONTEND_IMAGE) [[ -n "$value" ]] && keep["$value"]=1 ;;
+        API_IMAGE|FRONTEND_IMAGE|BREADTH_IMAGE) [[ -n "$value" ]] && keep["$value"]=1 ;;
       esac
     done < "$state_file"
   fi
@@ -24,7 +24,7 @@ done
 while IFS= read -r image_ref; do
   [[ -z "$image_ref" ]] && continue
   case "$image_ref" in
-    aitrading/trade-review-api:*|aitrading/trade-review-frontend:*) ;;
+    aitrading/trade-review-api:*|aitrading/trade-review-frontend:*|aitrading/market-breadth:*) ;;
     *) continue ;;
   esac
   if [[ -z "${keep[$image_ref]+x}" ]]; then

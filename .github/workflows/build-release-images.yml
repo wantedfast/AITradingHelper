@@ -17,6 +17,7 @@ jobs:
       DEPLOY_ROOT: /opt/trade-review-agent
       API_IMAGE: aitrading/trade-review-api:${{ github.sha }}
       FRONTEND_IMAGE: aitrading/trade-review-frontend:${{ github.sha }}
+      BREADTH_IMAGE: aitrading/market-breadth:${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
 
@@ -30,6 +31,7 @@ jobs:
           docker save \
             "aitrading/trade-review-api:${GITHUB_SHA}" \
             "aitrading/trade-review-frontend:${GITHUB_SHA}" \
+            "aitrading/market-breadth:${GITHUB_SHA}" \
             | gzip -6 > "aitrading-${GITHUB_SHA}.tar.gz"
           sha256sum "aitrading-${GITHUB_SHA}.tar.gz" > "aitrading-${GITHUB_SHA}.tar.gz.sha256"
 

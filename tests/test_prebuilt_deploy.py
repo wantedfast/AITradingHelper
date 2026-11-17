@@ -301,6 +301,7 @@ class PrebuiltDeployContractTest(unittest.TestCase):
 
         self.assertRegex(source, r"docker(?:\s+compose|-compose).*build")
         self.assertIn("docker save", source)
+        self.assertIn("aitrading/market-breadth", source)
         self.assertTrue(
             "put(" in source or "scp" in source,
             "release archive must be uploaded by the local orchestrator",
@@ -318,7 +319,7 @@ class PrebuiltDeployContractTest(unittest.TestCase):
         compose = read("docker-compose.release.yml")
 
         self.assertNotRegex(compose, r"image:\s*[^\n]*:latest(?:\s|$)")
-        self.assertEqual(compose.count("${RELEASE_TAG}"), 2)
+        self.assertEqual(compose.count("${RELEASE_TAG}"), 3)
         self.assertRegex(local, r"RELEASE_TAG")
         self.assertRegex(local, r"(?:git|rev-parse|sha)")
 
@@ -327,6 +328,7 @@ class PrebuiltDeployContractTest(unittest.TestCase):
         self.assertNotRegex(compose, r"(?m)^\s*build\s*:")
         self.assertIn('LABEL com.aitrading.managed="true"', read("Dockerfile"))
         self.assertIn('LABEL com.aitrading.managed="true"', read("frontend/Dockerfile"))
+        self.assertIn('LABEL com.aitrading.managed="true"', read("market_breadth/Dockerfile"))
 
     def test_remote_release_only_loads_and_switches_prebuilt_images(self) -> None:
         source = executable_shell(read("deploy/remote_release.sh")).lower()
@@ -437,6 +439,7 @@ class PrebuiltDeployContractTest(unittest.TestCase):
         self.assertRegex(source, r"github\.sha|GITHUB_SHA")
         self.assertRegex(source, r"docker (?:compose .*build|build)")
         self.assertIn("docker save", source)
+        self.assertIn("aitrading/market-breadth", source)
         self.assertRegex(source, r"upload-artifact")
         for forbidden in ("DEPLOY_PASSWORD", "DEPLOY_HOST", "ssh", "scp"):
             self.assertNotIn(forbidden, source)

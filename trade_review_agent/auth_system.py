@@ -57,6 +57,7 @@ FEATURE_CREDIT_COSTS = {
     "ai_research_view": 2,
     "auction_strength_view": 2,
     "stock_reverse_research": 3,
+    "market_breadth_view": 2,
 }
 SMS_CODE_TTL_MINUTES = 5
 SMS_RESEND_SECONDS = 60
@@ -6010,11 +6011,12 @@ def _has_complete_daily_top5_stocks(value: object) -> bool:
 
 
 def _has_complete_daily_top5_conclusion(conclusion: dict[str, Any]) -> bool:
+    # Capacity confirmation may legitimately be unknown; preserve that value
+    # rather than requiring invented evidence to create either email campaign.
     fields = (
         "strongest_stock_at_925",
         "strongest_theme_cluster",
         "most_over_expected_stock",
-        "best_capacity_confirmation",
         "biggest_negative_feedback",
         "one_sentence_for_930",
     )

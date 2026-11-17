@@ -3,6 +3,22 @@ version: "3.3"
 # Production release manifest. Images are built on the operator workstation and
 # loaded on the server before this file is used. Never add `build:` here.
 services:
+  market-breadth:
+    image: aitrading/market-breadth:${RELEASE_TAG}
+    container_name: market-breadth
+    labels:
+      com.aitrading.managed: "true"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3211/health').then(r=>{if(!r.ok)process.exit(1)})"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    volumes:
+      - ${DEPLOY_ROOT:-/opt/trade-review-agent}/work/market_breadth:/app/runtime/data
+    environment:
+      - TZ=Asia/Shanghai
+
   trade-review-api:
     image: aitrading/trade-review-api:${RELEASE_TAG}
     container_name: trade-review-api
@@ -10,6 +26,8 @@ services:
       com.aitrading.managed: "true"
     restart: unless-stopped
     command: ["python", "-m", "trade_review_agent.api.simple_api"]
+    depends_on:
+      - market-breadth
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
@@ -26,6 +44,7 @@ services:
       - ${DEPLOY_ROOT:-/opt/trade-review-agent}/.env
     environment:
       - TZ=Asia/Shanghai
+      - MARKET_BREADTH_INTERNAL_URL=http://market-breadth:3211
 
   trade-review-frontend:
     image: aitrading/trade-review-frontend:${RELEASE_TAG}

@@ -164,6 +164,8 @@ UPDATE_EMAIL_QUEUE_WAKE = threading.Event()
 UPDATE_EMAIL_WORKER_COUNT = 4
 AUTH_DB = BASE_DIR / "work" / "auth.sqlite"
 CN_TZ = ZoneInfo("Asia/Shanghai")
+MARKET_BREADTH_INTERNAL_URL = os.getenv("MARKET_BREADTH_INTERNAL_URL", "http://market-breadth:3211").rstrip("/")
+MARKET_BREADTH_BILLING_COST = 2
 MAX_SEEN_EVENTS = 2048
 REPORT_MANIFEST_NAME = "report_manifest.json"
 REPORT_STATUS_NAME = "report_status.json"
@@ -427,6 +429,12 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             if path == "/api/stock-research/reports":
                 self._stock_research_reports()
                 return
+            if path == "/api/market-breadth/access":
+                self._market_breadth_access()
+                return
+            if path == "/api/market-breadth/state":
+                self._market_breadth_state()
+                return
             if re.fullmatch(r"/api/stock-research/jobs/sr-[a-f0-9]+/status", path):
                 self._stock_research_job_status(path)
                 return
@@ -611,6 +619,9 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/auction-strength/ack":
                 self._ack_auction_strength_report()
+                return
+            if path == "/api/market-breadth/ack":
+                self._ack_market_breadth()
                 return
             if path == "/api/webhooks":
                 self._receive_webhook()
@@ -1116,6 +1127,39 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             related_id=trade_date,
         )
         self._json({"ok": True, "billing_status": "charged", "billing_trade_date": trade_date, "user": updated_user})
+
+    def _market_breadth_access(self) -> None:
+        user = self._require_user()
+        billing_date = datetime.now(CN_TZ).date().isoformat()
+        self._json(_market_breadth_access_payload(user=user, billing_date=billing_date))
+
+    def _ack_market_breadth(self) -> None:
+        user = self._require_user()
+        billing_date = datetime.now(CN_TZ).date().isoformat()
+        # Availability is checked before the idempotent charge. A stopped or
+        # not-yet-ready breadth service must never consume a user's credits.
+        _fetch_market_breadth_state()
+        updated_user = consume_feature_credit_once(
+            AUTH_DB,
+            user_id=int(user["id"]),
+            feature="market_breadth_view",
+            ip=self._client_ip(),
+            related_id=f"market-breadth:{billing_date}",
+        )
+        self._json(_market_breadth_access_payload(user=updated_user, billing_date=billing_date))
+
+    def _market_breadth_state(self) -> None:
+        user = self._require_user()
+        billing_date = datetime.now(CN_TZ).date().isoformat()
+        related_id = f"market-breadth:{billing_date}"
+        if not has_feature_access(
+            AUTH_DB,
+            user_id=int(user["id"]),
+            feature="market_breadth_view",
+            related_id=related_id,
+        ):
+            raise AuthError("请先确认查看市场真实强弱，本次需要 2 次使用机会", 402)
+        self._json(_fetch_market_breadth_state(), cache_control="no-store")
 
     def _receive_auction_strength_report(self) -> None:
         _assert_webhook_secret(
@@ -4711,10 +4755,11 @@ def _auction_strength_report_is_complete(report: dict) -> bool:
         "strongest_stock_at_925",
         "strongest_theme_cluster",
         "most_over_expected_stock",
-        "best_capacity_confirmation",
         "biggest_negative_feedback",
         "one_sentence_for_930",
     )
+    # Capacity confirmation is optional when auction turnover is unavailable.
+    # An honest unknown must not silently suppress otherwise complete reports.
     conclusion_complete = isinstance(conclusion, dict) and all(
         str(conclusion.get(field) or "").strip() for field in conclusion_fields
     )
@@ -4895,6 +4940,41 @@ def _auction_strength_report_count(path: Path, *, trade_date: str = "") -> int:
 
 def _is_today_trade_date(trade_date: str) -> bool:
     return str(trade_date or "").strip() == datetime.now(CN_TZ).date().isoformat()
+
+
+def _market_breadth_access_payload(*, user: dict, billing_date: str) -> dict:
+    related_id = f"market-breadth:{billing_date}"
+    if str(user.get("role") or "") == "admin":
+        billing_status = "admin_free"
+    elif bool(user.get("membership_active")):
+        billing_status = "membership_free"
+    elif has_feature_access(
+        AUTH_DB,
+        user_id=int(user["id"]),
+        feature="market_breadth_view",
+        related_id=related_id,
+    ):
+        billing_status = "charged"
+    else:
+        billing_status = "pending_view"
+    return {
+        "billing_status": billing_status,
+        "billing_cost": MARKET_BREADTH_BILLING_COST,
+        "billing_date": billing_date,
+        "user": user,
+    }
+
+
+def _fetch_market_breadth_state() -> dict:
+    try:
+        response = requests.get(f"{MARKET_BREADTH_INTERNAL_URL}/api/state", timeout=(2, 8))
+        response.raise_for_status()
+        payload = response.json()
+    except (requests.RequestException, ValueError) as exc:
+        raise AuthError("市场实时数据暂不可用，请稍后重试；本次不会扣除使用次数", 503) from exc
+    if not isinstance(payload, dict) or not isinstance(payload.get("snap"), dict) or not payload["snap"]:
+        raise AuthError("市场实时数据仍在准备中，请稍后重试；本次不会扣除使用次数", 503)
+    return payload
 
 
 def _auction_strength_public_report(report: dict) -> dict:
