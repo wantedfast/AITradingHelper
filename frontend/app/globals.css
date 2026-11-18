@@ -2666,6 +2666,83 @@
   font-weight: 900;
 }
 
+.billing-steps {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: billing-step;
+}
+
+.billing-steps li {
+  counter-increment: billing-step;
+  border: 1px solid rgba(244, 240, 232, 0.12);
+  border-radius: 8px;
+  padding: 8px 6px;
+  color: #8f9893;
+  font-size: 12px;
+  line-height: 1.35;
+  text-align: center;
+}
+
+.billing-steps li::before {
+  content: counter(billing-step) ". ";
+}
+
+.billing-steps li.done {
+  border-color: rgba(134, 239, 172, 0.35);
+  color: #86efac;
+}
+
+.billing-steps li.current {
+  border-color: rgba(245, 199, 107, 0.55);
+  color: #fde68a;
+  font-weight: 800;
+}
+
+.billing-pay-hint {
+  display: grid;
+  gap: 4px;
+  border: 1px solid rgba(245, 199, 107, 0.35);
+  border-radius: 8px;
+  padding: 10px 12px;
+  color: #f4f0e8;
+  background: rgba(245, 199, 107, 0.06);
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+.billing-pay-hint p {
+  margin: 0;
+  font-weight: 800;
+}
+
+.billing-pay-hint small {
+  color: #aeb6b1;
+}
+
+.billing-plan-locked {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.billing-plan-locked .billing-secondary {
+  min-height: 40px;
+}
+
+#billing-payment-form {
+  scroll-margin-top: 16px;
+}
+
+@media (max-width: 480px) {
+  .billing-steps {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 /* Membership entry points and selectable membership plans. */
 .home-membership-nav {
   display: inline-flex !important;
@@ -16810,4 +16887,50 @@ button.radar-core,
     min-width: 108px;
     padding: 10px 11px;
   }
+}
+
+/* Payment reconciliation: order details, tags, audit trail and manual grant. */
+.admin-order-table .admin-list-item { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+.admin-order-status-filters .admin-filter-count { margin-left: 6px; padding: 0 7px; border-radius: 999px; background: rgba(255,255,255,.08); color: inherit; font-size: 12px; }
+.admin-order-legend { margin: -4px 0 14px; color: #8d948f; font-size: 13px; line-height: 1.6; }
+.admin-order-status--submitted { color: #f5d77a !important; }
+.admin-order-status--pending { color: #f3b27a !important; }
+.admin-order-status--rejected { color: #f39a72 !important; }
+.admin-order-status--paid { color: #86efac !important; }
+.admin-order-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.admin-order-tags:empty { display: none; }
+.admin-order-tags em { padding: 2px 8px; border: 1px solid rgba(244,240,232,.14); border-radius: 999px; color: #c9cfcb; font-size: 12px; font-style: normal; }
+.admin-order-tags em.is-warning { border-color: rgba(243,154,114,.45); color: #f3b27a; }
+.admin-order-times { margin: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 4px 12px; color: #9ca3a0; font-size: 12px; }
+.admin-order-times dt { color: #7f8882; }
+.admin-order-times dd { margin: 0 0 4px; color: #d5d9d6; overflow-wrap: anywhere; }
+.admin-order-events summary { cursor: pointer; color: #9ca3a0; font-size: 13px; }
+.admin-order-events ol { margin: 8px 0 0; padding-left: 18px; display: grid; gap: 6px; color: #d5d9d6; font-size: 13px; }
+.admin-order-events li { display: grid; gap: 2px; }
+.admin-order-events time, .admin-order-events small { color: #8d948f; font-size: 12px; overflow-wrap: anywhere; }
+.admin-manual-grant { margin-bottom: 14px; }
+.admin-manual-grant .admin-panel-head { justify-content: space-between; }
+.admin-manual-grant-hint { margin: 0 0 12px; color: #f3b27a; font-size: 13px; }
+.admin-manual-grant-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-bottom: 12px; }
+.admin-manual-grant-grid label { display: grid; gap: 6px; }
+.admin-manual-grant-grid label span { color: #9ca3a0; font-size: 13px; }
+.admin-manual-grant-grid input, .admin-manual-grant-grid select, .admin-manual-grant-grid textarea { width: 100%; min-height: 40px; padding: 8px 10px; border: 1px solid rgba(244,240,232,.12); border-radius: 8px; color: #f4f0e8; background: rgba(255,255,255,.04); font: inherit; }
+.admin-manual-grant-user { grid-column: 1 / -1; display: grid; gap: 8px; }
+.admin-manual-grant-user > button { justify-self: start; }
+.admin-manual-grant-reason { grid-column: 1 / -1; }
+.admin-manual-grant-candidates { display: grid; gap: 6px; }
+.admin-manual-grant-candidates button { display: grid; gap: 2px; padding: 8px 10px; border: 1px solid rgba(244,240,232,.12); border-radius: 8px; color: #d5d9d6; background: rgba(255,255,255,.025); text-align: left; }
+.admin-manual-grant-candidates button.active { border-color: rgba(245,215,122,.45); background: rgba(245,215,122,.08); }
+.admin-manual-grant-candidates small { color: #8d948f; }
+
+.billing-copy-order {
+  justify-self: start;
+  min-height: 36px !important;
+  padding: 0 14px;
+  font-size: 13px;
+}
+
+.billing-payment-form input[aria-invalid="true"] {
+  border-color: rgba(243, 154, 114, 0.85);
+  box-shadow: 0 0 0 2px rgba(243, 154, 114, 0.25);
 }

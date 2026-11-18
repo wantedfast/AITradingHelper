@@ -1,0 +1,63 @@
+/*
+ * 盈航 design tokens (Apple-style). Light by default, follows the system into
+ * dark mode. Shared by the homepage (.yh) and the checkout pages (.yh-billing).
+ */
+
+.yh,
+.yh-billing {
+  --bg: #ffffff;
+  --bg-alt: #f5f5f7;
+  --surface: #ffffff;
+  --surface-alt: #fbfbfd;
+  --text: #1d1d1f;
+  --text-2: #424245;
+  --text-3: #6e6e73;
+  --line: rgba(0, 0, 0, 0.08);
+  --line-strong: rgba(0, 0, 0, 0.16);
+  --accent: #0071e3;
+  --accent-hover: #0077ed;
+  --accent-link: #0066cc;
+  --accent-soft: rgba(0, 113, 227, 0.08);
+  --on-accent: #ffffff;
+  --now: #bf4800;
+  --on-now: #ffffff;
+  --now-soft: rgba(191, 72, 0, 0.1);
+  --up: #d70015;
+  --down: #1a7f37;
+  --bar: rgba(251, 251, 253, 0.8);
+  --shadow: 0 2px 6px rgba(0, 0, 0, 0.04), 0 12px 32px rgba(0, 0, 0, 0.06);
+  --shadow-lift: 0 4px 12px rgba(0, 0, 0, 0.06), 0 24px 56px rgba(0, 0, 0, 0.1);
+  --sans: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "PingFang SC", "HarmonyOS Sans SC", "MiSans", "Microsoft YaHei UI", "Microsoft YaHei", "Helvetica Neue", "Segoe UI", sans-serif;
+  --radius: 18px;
+  --radius-lg: 28px;
+  --ease: cubic-bezier(0.25, 0.1, 0.25, 1);
+  --gutter: clamp(20px, 5vw, 56px);
+  --max: 1120px;
+}
+
+@media (prefers-color-scheme: dark) {
+  .yh,
+  .yh-billing {
+    --bg: #000000;
+    --bg-alt: #101012;
+    --surface: #1c1c1e;
+    --surface-alt: #161618;
+    --text: #f5f5f7;
+    --text-2: #d2d2d7;
+    --text-3: #98989d;
+    --line: rgba(255, 255, 255, 0.1);
+    --line-strong: rgba(255, 255, 255, 0.2);
+    --accent: #0a84ff;
+    --accent-hover: #409cff;
+    --accent-link: #2997ff;
+    --accent-soft: rgba(10, 132, 255, 0.16);
+    --now: #ff9f0a;
+    --on-now: #1d1d1f;
+    --now-soft: rgba(255, 159, 10, 0.14);
+    --up: #ff453a;
+    --down: #30d158;
+    --bar: rgba(22, 22, 23, 0.8);
+    --shadow: 0 0 0 1px rgba(255, 255, 255, 0.06);
+    --shadow-lift: 0 0 0 1px rgba(255, 255, 255, 0.12), 0 24px 56px rgba(0, 0, 0, 0.6);
+  }
+}

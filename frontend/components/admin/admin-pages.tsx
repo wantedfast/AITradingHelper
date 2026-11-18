@@ -1,6 +1,6 @@
 "use client";
 
-import { CheckCircle2, CreditCard, Gift, Mail, Megaphone, MessageSquare, PauseCircle, PlayCircle, RefreshCw, Search, Users, X } from "lucide-react";
+import { CheckCircle2, CreditCard, Gift, Mail, Megaphone, MessageSquare, PauseCircle, PlayCircle, RefreshCw, Search, ShieldCheck, Users, X } from "lucide-react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { apiFetch, apiFetchBlob, type ApiError } from "@/lib/auth-client";
@@ -8,6 +8,7 @@ import type { AdminAnalytics, FeatureUsagePoint, FeatureUsageTotal, RecentUsageE
 import { AdminConfirmDialog, type AdminConfirmIntent } from "@/components/admin/admin-confirm-dialog";
 import { AdminStatusFilters, adminSectionPath, type AdminSection } from "@/components/admin/admin-navigation";
 import { AdminOverviewSection } from "@/components/admin/admin-overview-section";
+import { AdminManualGrantPanel, type ManualGrantPrefill } from "@/components/admin/admin-manual-grant";
 
 type PagedResult<T> = {
   items: T[];
@@ -117,7 +118,46 @@ type OrderItem = {
   submitted_amount_cents?: number | null;
   admin_note?: string;
   created_at: string;
+  user_id?: number;
+  package_id?: string;
+  submitted_at?: string;
+  paid_at?: string | null;
+  confirmed_at?: string;
+  rejected_at?: string;
+  cancelled_at?: string;
+  order_source?: string;
+  admin_notify_status?: string;
+  admin_notify_error?: string;
+  unreported_payment?: boolean;
+  user_membership_active?: boolean;
+  user_membership_expires_at?: string;
+  events?: OrderEvent[];
 };
+
+type OrderEvent = {
+  event: string;
+  from_status: string;
+  to_status: string;
+  actor_role: string;
+  note: string;
+  created_at: string;
+};
+
+type OrderCounts = {
+  all: number;
+  attention: number;
+  pending: number;
+  pending_recent: number;
+  submitted: number;
+  paid: number;
+  rejected: number;
+  cancelled: number;
+  notify_failed: number;
+};
+
+type OrdersResponse = PagedResult<OrderItem> & { status_counts?: OrderCounts };
+
+const ORDER_STATUS_FILTERS = ["attention", "submitted", "pending", "rejected", "paid", "cancelled", "all"] as const;
 
 type EmailCampaign = {
   id: number;
@@ -158,6 +198,7 @@ type DashboardPayload = {
   analytics?: AdminAnalytics;
   feedback: Array<{ status: string }>;
   orders: Array<{ status: string }>;
+  order_counts?: OrderCounts;
   update_notices: UpdateNotice[];
   daily_top5_email_failed_count?: number;
   daily_top5_close_email_failed_count?: number;
@@ -333,16 +374,21 @@ export function AdminOverviewPage() {
   const dashboard = useAdminData<DashboardPayload>(`/api/admin/dashboard?days=${days}`);
 
   const analytics = useMemo(() => (dashboard.data ? normalizeDashboardAnalytics(dashboard.data) : null), [dashboard.data]);
-  const pendingOrders = (dashboard.data?.orders || []).filter((item) => item.status === "submitted").length;
+  // Counts come from the server over all orders; the `orders` list is only
+  // the latest 50 rows and must not be used for to-do numbers.
+  const orderCounts = dashboard.data?.order_counts;
+  const pendingOrders = orderCounts?.submitted ?? (dashboard.data?.orders || []).filter((item) => item.status === "submitted").length;
+  const unreportedOrders = orderCounts?.pending_recent ?? (dashboard.data?.orders || []).filter((item) => item.status === "pending").length;
+  const rejectedOrders = orderCounts?.rejected ?? (dashboard.data?.orders || []).filter((item) => item.status === "rejected").length;
   const pendingFeedback = (dashboard.data?.feedback || []).filter((item) => item.status === "pending").length;
   const failedAnnouncementEmails = (dashboard.data?.update_notices || []).filter((item) => (item.email_campaign?.failed || 0) > 0).length;
   const failedDailyTop5Emails = dashboard.data?.daily_top5_email_failed_count || 0;
   const failedDailyTop5CloseEmails = dashboard.data?.daily_top5_close_email_failed_count || 0;
   const failedAiReportEmails = dashboard.data?.ai_report_email_failed_count || 0;
 
-  function handleNavigate(section: AdminSection, emailKind?: "daily_top5" | "daily_top5_close") {
+  function handleNavigate(section: AdminSection, emailKind?: "daily_top5" | "daily_top5_close", orderStatus?: string) {
     const target = new URL(adminSectionPath(section), window.location.origin);
-    if (section === "orders") target.searchParams.set("status", "submitted");
+    if (section === "orders") target.searchParams.set("status", orderStatus || "submitted");
     if (section === "feedback") target.searchParams.set("status", "pending");
     if (section === "updates") target.searchParams.set("status", "published");
     if (section === "emails") {
@@ -394,6 +440,10 @@ export function AdminOverviewPage() {
             userGrowth={analytics.userGrowth}
             days={days}
             pendingOrders={pendingOrders}
+            unreportedOrders={unreportedOrders}
+            rejectedOrders={rejectedOrders}
+            notifyFailedOrders={orderCounts?.notify_failed || 0}
+            onNavigateOrders={(status) => handleNavigate("orders", undefined, status)}
             pendingFeedback={pendingFeedback}
             failedAnnouncementEmails={failedAnnouncementEmails}
             failedDailyTop5Emails={failedDailyTop5Emails}
@@ -664,11 +714,33 @@ export function AdminOrdersPage() {
   const query = params.get("q") || "";
   const status = params.get("status") || "all";
   const page = parsePage(params.get("page"));
-  const orders = useAdminData<PagedResult<OrderItem>>(`/api/admin/orders?${buildQuery({ q: query, status, page, page_size: 20 })}`);
+  const orders = useAdminData<OrdersResponse>(`/api/admin/orders?${buildQuery({ q: query, status, page, page_size: 20 })}`);
   const [searchDraft, setSearchDraft] = useState(query);
   const [message, setMessage] = useState("");
   const [confirmIntent, setConfirmIntent] = useState<AdminConfirmIntent | null>(null);
   const [confirmSubmitting, setConfirmSubmitting] = useState(false);
+  const [grantPanel, setGrantPanel] = useState<{ key: string; prefill: ManualGrantPrefill | null } | null>(null);
+  const counts = orders.data?.status_counts;
+
+  function openManualGrant(item: OrderItem | null) {
+    setMessage("");
+    if (!item) {
+      setGrantPanel({ key: `new-${Date.now()}`, prefill: null });
+      return;
+    }
+    setGrantPanel({
+      key: `order-${item.id}-${Date.now()}`,
+      prefill: {
+        userId: Number(item.user_id),
+        userLabel: displayOrderUser(item),
+        orderId: item.id,
+        orderNo: item.order_no,
+        planId: item.package_id || undefined,
+        payerName: item.payer_name || "",
+        payerPaidAt: item.payer_paid_at || "",
+      },
+    });
+  }
 
   useEffect(() => setSearchDraft(query), [query]);
 
@@ -686,6 +758,9 @@ export function AdminOrdersPage() {
         await orders.reload();
         setMessage("订单已更新。");
         setConfirmIntent(null);
+      } catch (error) {
+        setConfirmIntent(null);
+        setMessage(error instanceof Error ? `操作失败：${error.message}` : "操作失败，请刷新后重试。");
       } finally {
         setConfirmSubmitting(false);
       }
@@ -704,18 +779,51 @@ export function AdminOrdersPage() {
               onChange={setSearchDraft}
               onSubmit={() => replaceQuery({ q: searchDraft || null, status, page: "1" })}
               onClear={() => replaceQuery({ q: null, page: "1" })}
-              placeholder="搜索订单号、用户、邮箱或手机号"
-              meta={orders.data ? `共 ${orders.data.total} 条订单` : ""}
+              placeholder="搜索订单号、付款昵称、付款备注、用户、邮箱或手机号"
+              meta={orders.data ? `当前筛选 ${orders.data.total} 条` : ""}
             />
             <button type="button" onClick={orders.reload} disabled={orders.loading}>
               <RefreshCw aria-hidden="true" />
               刷新
             </button>
+            <button type="button" onClick={() => openManualGrant(null)}>
+              <ShieldCheck aria-hidden="true" />
+              人工补录会员
+            </button>
           </>
         )}
       />
-      <AdminStatusFilters value={status} onChange={(value) => replaceQuery({ status: value, page: "1" })} options={["all", "pending", "submitted", "paid", "rejected"]} />
+      <div className="admin-status-filters admin-order-status-filters" role="tablist" aria-label="订单状态">
+        {ORDER_STATUS_FILTERS.map((option) => (
+          <button
+            key={option}
+            type="button"
+            role="tab"
+            aria-selected={status === option}
+            className={status === option ? "active" : ""}
+            onClick={() => replaceQuery({ status: option, page: "1" })}
+          >
+            {orderFilterLabel(option)}
+            {counts ? <b className="admin-filter-count">{counts[option] ?? 0}</b> : null}
+          </button>
+        ))}
+      </div>
+      <p className="admin-order-legend">
+        “未报告付款”= 用户已创建订单但没有提交付款信息，不代表已付款；如微信收款记录里确有对应款项，请使用“核实到账后人工补录”。
+      </p>
       {message ? <div className="admin-alert">{message}</div> : null}
+      {grantPanel ? (
+        <AdminManualGrantPanel
+          key={grantPanel.key}
+          prefill={grantPanel.prefill}
+          onClose={() => setGrantPanel(null)}
+          onDone={(doneMessage) => {
+            setGrantPanel(null);
+            setMessage(doneMessage);
+            void orders.reload();
+          }}
+        />
+      ) : null}
       <PageState loading={orders.loading} error={orders.error} hasData={Boolean(orders.data)} onRetry={orders.reload}>
         {orders.data ? (
           <section className="admin-panel">
@@ -728,12 +836,40 @@ export function AdminOrdersPage() {
                 <article className="admin-list-item" key={item.id}>
                   <header>
                     <b>{item.plan_name}</b>
-                    <span>{orderStatusLabel(item.status)}</span>
+                    <span className={`admin-order-status admin-order-status--${item.status}`}>{orderStatusLabel(item.status)}</span>
                   </header>
+                  <div className="admin-order-tags">
+                    {item.unreported_payment ? <em className="is-warning">未报告付款</em> : null}
+                    {item.status === "submitted" && item.admin_notify_status === "failed" ? <em className="is-warning" title={item.admin_notify_error || ""}>提醒邮件发送失败</em> : null}
+                    {item.order_source === "admin_manual" ? <em>人工补录</em> : null}
+                  </div>
                   <p>{describeOrder(item)}</p>
                   <small>{displayOrderUser(item)} · {item.order_no}</small>
                   <p>{paymentSummary(item)}</p>
+                  <dl className="admin-order-times">
+                    <dt>创建</dt><dd>{formatOrderTime(item.created_at)}</dd>
+                    <dt>用户付款时间</dt><dd>{formatOrderTime(item.payer_paid_at)}</dd>
+                    <dt>提交</dt><dd>{formatOrderTime(item.submitted_at)}</dd>
+                    {item.confirmed_at || item.paid_at ? (<><dt>确认</dt><dd>{formatOrderTime(item.confirmed_at || item.paid_at)}</dd></>) : null}
+                    {item.rejected_at ? (<><dt>驳回</dt><dd>{formatOrderTime(item.rejected_at)}</dd></>) : null}
+                    {item.cancelled_at ? (<><dt>取消</dt><dd>{formatOrderTime(item.cancelled_at)}</dd></>) : null}
+                  </dl>
                   {item.admin_note ? <small>备注：{item.admin_note}</small> : null}
+                  {item.events?.length ? (
+                    <details className="admin-order-events">
+                      <summary>状态变化（{item.events.length}）</summary>
+                      <ol>
+                        {item.events.map((event, index) => (
+                          <li key={`${event.created_at}-${index}`}>
+                            <time>{formatOrderTime(event.created_at)}</time>
+                            <span>{orderEventLabel(event.event)}</span>
+                            {event.from_status || event.to_status ? <small>{orderStatusLabel(event.from_status) || "—"} → {orderStatusLabel(event.to_status) || "—"}</small> : null}
+                            {event.note ? <small>{event.note}</small> : null}
+                          </li>
+                        ))}
+                      </ol>
+                    </details>
+                  ) : null}
                   <div className="admin-order-actions">
                     {item.product_type === "membership" && item.status === "submitted" ? (
                       <>
@@ -756,6 +892,12 @@ export function AdminOrdersPage() {
                           驳回本次提交
                         </button>
                       </>
+                    ) : null}
+                    {item.product_type === "membership" && ["pending", "rejected", "cancelled"].includes(item.status) && item.user_id ? (
+                      <button type="button" className="admin-secondary-button" onClick={() => openManualGrant(item)}>
+                        <ShieldCheck aria-hidden="true" />
+                        核实到账后人工补录
+                      </button>
                     ) : null}
                     {item.product_type !== "membership" && item.product_type !== "credits" && item.status !== "paid" ? (
                       <button type="button" onClick={() => requestOrderAction(item, "paid")}>
@@ -1929,6 +2071,7 @@ function featureLabel(value: string) {
   if (value === "market_day_report") return "AI 当日行情";
   if (value === "ai_research_view") return "AI 研报";
   if (value === "stock_reverse_research") return "A股逆向研究";
+  if (value === "market_breadth_view") return "市场宽度";
   if (value === "membership_free") return "会员免扣";
   return value;
 }
@@ -1955,8 +2098,14 @@ function buildOrderConfirmIntent(item: OrderItem, action: "paid" | "confirm-memb
       actionLabel: "确认到账并开通会员？",
       confirmLabel: "确认开通",
       busyLabel: "正在开通...",
-      description: "提交后会把该会员订单标记为已完成，并为用户写入会员权益。",
-      details: commonDetails,
+      description: "提交后会把该会员订单标记为已完成，并为用户写入会员权益。请先在微信收款记录中核实到账。",
+      details: [
+        ...commonDetails,
+        item.payer_name ? `付款人：${item.payer_name} · ${item.payer_paid_at || "未填时间"}` : "付款人：未填写",
+        item.user_membership_active
+          ? `当前会员有效至 ${String(item.user_membership_expires_at || "").slice(0, 10)}，确认后从到期日顺延`
+          : `当前${item.user_membership_expires_at ? `会员已于 ${String(item.user_membership_expires_at).slice(0, 10)} 到期` : "不是会员"}，确认后从现在起算`,
+      ],
       danger: true,
       onConfirm,
     };
@@ -2067,11 +2216,40 @@ function campaignDeliverySummary(campaign: Pick<EmailCampaign, "sent" | "pending
 }
 
 function orderStatusLabel(value: string) {
-  if (value === "pending") return "待付款";
-  if (value === "submitted") return "待确认";
+  if (value === "pending") return "未报告付款";
+  if (value === "submitted") return "待核款";
   if (value === "paid") return "已完成";
-  if (value === "rejected") return "异常";
+  if (value === "rejected") return "异常/驳回";
+  if (value === "cancelled") return "已取消";
   return value;
+}
+
+function orderFilterLabel(value: string) {
+  if (value === "attention") return "需处理";
+  if (value === "all") return "全部订单";
+  return orderStatusLabel(value);
+}
+
+function orderEventLabel(value: string) {
+  const labels: Record<string, string> = {
+    created: "用户创建订单",
+    payment_submitted: "用户提交付款信息",
+    payment_resubmitted: "用户更新付款信息",
+    payment_resubmitted_after_reject: "驳回后重新提交",
+    payment_submitted_after_cancel: "取消后提交付款信息",
+    cancelled_by_user: "用户取消订单",
+    confirmed: "管理员确认开通",
+    rejected: "管理员标记异常",
+    admin_manual_submit: "管理员人工补录付款",
+    admin_manual_created: "管理员人工补录建单",
+    admin_notify_failed: "管理员提醒发送失败",
+  };
+  return labels[value] || value;
+}
+
+function formatOrderTime(value?: string | null) {
+  if (!value) return "—";
+  return String(value).slice(0, 19).replace("T", " ");
 }
 
 function paymentMethodLabel(value: string) {
