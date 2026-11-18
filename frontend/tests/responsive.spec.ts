@@ -922,6 +922,9 @@ test.describe("membership plan selection", () => {
     await expect(page.getByAltText("微信收款二维码")).toBeVisible();
     await expect(page.getByLabel("付款方式")).toHaveValue("微信支付");
     await expect(page.getByLabel("实付金额")).toHaveValue("399.00");
+    // The payer nickname is required (the server always rejected it empty;
+    // the page now validates it before sending).
+    await page.getByLabel("付款人昵称或姓名").fill("微信昵称");
     await page.getByRole("button", { name: "我已付款，通知管理员" }).click();
     await expect.poll(() => submittedPaymentMethod).toBe("wechat");
     await expectNoGlobalHorizontalOverflow(page, "annual membership checkout");

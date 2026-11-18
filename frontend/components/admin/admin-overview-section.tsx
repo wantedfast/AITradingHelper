@@ -14,6 +14,10 @@ type OverviewProps = {
   userGrowth: { startingUsers: number; totalUsers: number; byDay: UserGrowthPoint[] };
   days: number;
   pendingOrders: number;
+  unreportedOrders: number;
+  rejectedOrders: number;
+  notifyFailedOrders: number;
+  onNavigateOrders: (status: string) => void;
   pendingFeedback: number;
   failedAnnouncementEmails: number;
   failedDailyTop5Emails: number;
@@ -50,7 +54,19 @@ export function AdminOverviewSection(props: OverviewProps) {
   return (
     <section className={`admin-section admin-section--overview${props.active ? " is-active" : ""}`}>
       <section className="admin-priority-grid">
-        <PriorityCard label="待确认会员订单" count={props.pendingOrders} onClick={() => props.onNavigate("orders")} />
+        <PriorityCard
+          label="待核款订单（用户已报告付款）"
+          count={props.pendingOrders}
+          note={props.notifyFailedOrders ? `其中 ${props.notifyFailedOrders} 笔提醒邮件失败` : undefined}
+          onClick={() => props.onNavigateOrders("submitted")}
+        />
+        <PriorityCard
+          label="未报告付款订单（近 7 天）"
+          count={props.unreportedOrders}
+          note={props.unreportedOrders ? "用户未提交付款信息，需对账，不代表已付款" : undefined}
+          onClick={() => props.onNavigateOrders("pending")}
+        />
+        <PriorityCard label="异常 / 驳回订单" count={props.rejectedOrders} onClick={() => props.onNavigateOrders("rejected")} />
         <PriorityCard label="待处理反馈" count={props.pendingFeedback} onClick={() => props.onNavigate("feedback")} />
         <PriorityCard label="失败公告邮件" count={props.failedAnnouncementEmails} onClick={() => props.onNavigate("updates")} />
         <PriorityCard label="失败 TOP5 邮件" count={props.failedDailyTop5Emails} onClick={() => props.onNavigate("emails", "daily_top5")} />
@@ -163,8 +179,8 @@ function formatUsageTime(value: string) {
   }).format(date);
 }
 
-function PriorityCard({ label, count, onClick }: { label: string; count: number; onClick: () => void }) {
-  return <button className={count ? "has-items" : ""} type="button" onClick={onClick}><span>{label}</span><b>{count}</b><small>{count ? "立即处理" : "当前无待办"}</small></button>;
+function PriorityCard({ label, count, note, onClick }: { label: string; count: number; note?: string; onClick: () => void }) {
+  return <button className={count ? "has-items" : ""} type="button" onClick={onClick}><span>{label}</span><b>{count}</b><small>{note || (count ? "立即处理" : "当前无待办")}</small></button>;
 }
 
 function Metric({ icon: Icon, label, value }: { icon: typeof Users; label: string; value: number }) {
