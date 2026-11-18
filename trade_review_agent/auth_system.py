@@ -535,6 +535,7 @@ def init_auth_db(db_path: Path) -> None:
         )
         _ensure_user_columns(conn)
         _ensure_order_columns(conn)
+        _ensure_membership_payment_schema(conn)
         _ensure_feedback_columns(conn)
         _ensure_update_notice_columns(conn)
         _ensure_daily_top5_close_email_schema(conn)
@@ -585,10 +586,73 @@ def _ensure_order_columns(conn: sqlite3.Connection) -> None:
         "admin_note": "ALTER TABLE orders ADD COLUMN admin_note TEXT",
         "confirmed_at": "ALTER TABLE orders ADD COLUMN confirmed_at TEXT",
         "rejected_at": "ALTER TABLE orders ADD COLUMN rejected_at TEXT",
+        "client_request_id": "ALTER TABLE orders ADD COLUMN client_request_id TEXT",
+        "order_source": "ALTER TABLE orders ADD COLUMN order_source TEXT",
+        "cancelled_at": "ALTER TABLE orders ADD COLUMN cancelled_at TEXT",
+        "admin_notify_status": "ALTER TABLE orders ADD COLUMN admin_notify_status TEXT",
+        "admin_notify_error": "ALTER TABLE orders ADD COLUMN admin_notify_error TEXT",
     }
     for column, statement in migrations.items():
         if column not in columns:
             conn.execute(statement)
+
+
+def _ensure_membership_payment_schema(conn: sqlite3.Connection) -> None:
+    """Audit + idempotency structures for the manual-verification payment flow.
+
+    All statements are additive. The unique index on membership_ledger(order_id)
+    is only created when existing rows are already unique so that a legacy
+    duplicate can never block service start-up; the transactional guards in
+    the confirm path still prevent new duplicates either way.
+    """
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS order_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id INTEGER NOT NULL,
+            event TEXT NOT NULL,
+            from_status TEXT,
+            to_status TEXT,
+            actor_id INTEGER,
+            actor_role TEXT NOT NULL DEFAULT 'system',
+            note TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (order_id) REFERENCES orders(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_order_events_order ON order_events(order_id, id);
+
+        CREATE TABLE IF NOT EXISTS admin_membership_grants (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            request_id TEXT NOT NULL UNIQUE,
+            admin_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            order_id INTEGER NOT NULL,
+            ledger_id INTEGER,
+            plan_id TEXT NOT NULL,
+            amount_cents INTEGER NOT NULL,
+            payment_method TEXT NOT NULL,
+            payer_name TEXT NOT NULL DEFAULT '',
+            payer_paid_at TEXT NOT NULL DEFAULT '',
+            reason TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (admin_id) REFERENCES users(id),
+            FOREIGN KEY (user_id) REFERENCES users(id),
+            FOREIGN KEY (order_id) REFERENCES orders(id)
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_user_client_request
+            ON orders(user_id, client_request_id)
+            WHERE client_request_id IS NOT NULL AND client_request_id != '';
+        CREATE INDEX IF NOT EXISTS idx_orders_user_product ON orders(user_id, product_type, status, id);
+        """
+    )
+    duplicate = conn.execute(
+        "SELECT order_id FROM membership_ledger GROUP BY order_id HAVING COUNT(*) > 1 LIMIT 1"
+    ).fetchone()
+    if duplicate is None:
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_membership_ledger_order ON membership_ledger(order_id)"
+        )
 
 
 def _ensure_feedback_columns(conn: sqlite3.Connection) -> None:
@@ -918,14 +982,81 @@ def login_user(db_path: Path, *, phone: str, code: str = "", password: str = "",
         return {"token": token, "user": _user_payload(conn, user)}
 
 
+LOGIN_FAILURE_WINDOW = timedelta(minutes=15)
+LOGIN_FAILURE_LIMIT = 10
+ADMIN_LOGIN_FAILURE_LIMIT = 5
+
+
+def _login_throttle_key(scope: str, account: str) -> str:
+    return f"{scope}:{(account or '').strip().lower()[:160]}"
+
+
+def _ensure_login_failure_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS login_failures (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            throttle_key TEXT NOT NULL,
+            ip TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_login_failures_key ON login_failures(throttle_key, created_at)")
+
+
+def _assert_login_not_throttled(db_path: Path, key: str, limit: int) -> None:
+    """Brute-force guard: too many recent failures lock the account briefly.
+
+    Keyed per account, not per IP: behind the production reverse proxy all
+    clients may share one address, and an IP limit would lock out everyone.
+    """
+    cutoff = (datetime.now(CN_TZ) - LOGIN_FAILURE_WINDOW).isoformat()
+    with _connect(db_path) as conn:
+        _ensure_login_failure_table(conn)
+        count = int(
+            conn.execute(
+                "SELECT COUNT(*) AS count FROM login_failures WHERE throttle_key = ? AND created_at >= ?",
+                (key, cutoff),
+            ).fetchone()["count"]
+        )
+    if count >= limit:
+        minutes = int(LOGIN_FAILURE_WINDOW.total_seconds() // 60)
+        raise AuthError(f"登录失败次数过多，请 {minutes} 分钟后再试或联系客服", 429)
+
+
+def _record_login_failure(db_path: Path, key: str, ip: str) -> None:
+    # Separate connection: the login transaction itself rolls back on failure.
+    cutoff = (datetime.now(CN_TZ) - LOGIN_FAILURE_WINDOW * 4).isoformat()
+    with _connect(db_path) as conn:
+        _ensure_login_failure_table(conn)
+        conn.execute(
+            "INSERT INTO login_failures (throttle_key, ip, created_at) VALUES (?, ?, ?)",
+            (key, (ip or "")[:64], _now()),
+        )
+        conn.execute("DELETE FROM login_failures WHERE created_at < ?", (cutoff,))
+
+
+def _clear_login_failures(conn: sqlite3.Connection, key: str) -> None:
+    _ensure_login_failure_table(conn)
+    conn.execute("DELETE FROM login_failures WHERE throttle_key = ?", (key,))
+
+
 def login_password_user(db_path: Path, *, account: str, password: str, ip: str = "") -> dict[str, Any]:
     account = (account or "").strip()
     if not account or not password:
         raise AuthError("请输入账号/邮箱和密码", 400)
+    throttle_key = _login_throttle_key("user", account)
+    _assert_login_not_throttled(db_path, throttle_key, LOGIN_FAILURE_LIMIT)
     with _connect(db_path) as conn:
         user = _fetch_user_by_login_account(conn, account)
-        if not user or not _verify_password(password, user["password_salt"], user["password_hash"]):
-            raise AuthError("账号/邮箱或密码错误", 401)
+        verified = bool(user and _verify_password(password, user["password_salt"], user["password_hash"]))
+    if not verified:
+        _record_login_failure(db_path, throttle_key, ip)
+        raise AuthError("账号/邮箱或密码错误", 401)
+    with _connect(db_path) as conn:
+        user = _fetch_user_by_login_account(conn, account)
+        _clear_login_failures(conn, throttle_key)
         if user["role"] == "admin":
             raise AuthError("管理员账号请使用运营后台入口登录", 403)
         if user["status"] != "active":
@@ -941,12 +1072,21 @@ def login_admin_password_user(db_path: Path, *, account: str, password: str, ip:
     account = (account or "").strip()
     if not account or not password:
         raise AuthError("管理员账号或权限错误", 401)
+    throttle_key = _login_throttle_key("admin", account)
+    _assert_login_not_throttled(db_path, throttle_key, ADMIN_LOGIN_FAILURE_LIMIT)
     with _connect(db_path) as conn:
         user = _fetch_user_by_login_account(conn, account)
-        if not user or not _verify_password(password, user["password_salt"], user["password_hash"]):
-            raise AuthError("管理员账号或权限错误", 401)
-        if user["role"] != "admin":
-            raise AuthError("管理员账号或权限错误", 401)
+        verified = bool(
+            user
+            and user["role"] == "admin"
+            and _verify_password(password, user["password_salt"], user["password_hash"])
+        )
+    if not verified:
+        _record_login_failure(db_path, throttle_key, ip)
+        raise AuthError("管理员账号或权限错误", 401)
+    with _connect(db_path) as conn:
+        user = _fetch_user_by_login_account(conn, account)
+        _clear_login_failures(conn, throttle_key)
         if user["status"] != "active":
             raise AuthError("账号已被停用，请联系管理员", 403)
         now = _now()
@@ -1280,22 +1420,237 @@ def create_credit_order(db_path: Path, *, user_id: int, credits: int) -> dict[st
         return _order_payload(conn.execute("SELECT * FROM orders WHERE id = ?", (cursor.lastrowid,)).fetchone())
 
 
-def create_membership_order(db_path: Path, *, user_id: int, plan_id: str = "monthly_membership") -> dict[str, Any]:
+MEMBERSHIP_OPEN_STATUSES = ("pending", "submitted", "rejected")
+MEMBERSHIP_MANUAL_GRANT_COOLDOWN = timedelta(minutes=10)
+
+
+def _normalize_client_request_id(value: object) -> str:
+    request_id = str(value or "").strip()
+    if not request_id:
+        return ""
+    if not CREDIT_GRANT_REQUEST_ID_RE.fullmatch(request_id):
+        raise AuthError("client_request_id 格式无效", 400)
+    return request_id
+
+
+def _parse_cn_datetime(value: object) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=CN_TZ)
+    return parsed
+
+
+def _record_order_event(
+    conn: sqlite3.Connection,
+    *,
+    order_id: int,
+    event: str,
+    from_status: str | None,
+    to_status: str | None,
+    actor_id: int | None = None,
+    actor_role: str = "system",
+    note: str = "",
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO order_events (order_id, event, from_status, to_status, actor_id, actor_role, note, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (order_id, event, from_status, to_status, actor_id, actor_role, (note or "")[:300], _now()),
+    )
+
+
+def _order_events(conn: sqlite3.Connection, order_ids: list[int]) -> dict[int, list[dict[str, Any]]]:
+    if not order_ids:
+        return {}
+    placeholders = ",".join("?" for _ in order_ids)
+    rows = conn.execute(
+        f"SELECT * FROM order_events WHERE order_id IN ({placeholders}) ORDER BY id ASC",
+        tuple(order_ids),
+    ).fetchall()
+    grouped: dict[int, list[dict[str, Any]]] = {order_id: [] for order_id in order_ids}
+    for row in rows:
+        grouped.setdefault(int(row["order_id"]), []).append(
+            {
+                "event": row["event"],
+                "from_status": row["from_status"] or "",
+                "to_status": row["to_status"] or "",
+                "actor_id": row["actor_id"],
+                "actor_role": row["actor_role"] or "",
+                "note": row["note"] or "",
+                "created_at": row["created_at"],
+            }
+        )
+    return grouped
+
+
+def _membership_order_row(conn: sqlite3.Connection, order_id: int, *, user_id: int | None = None) -> sqlite3.Row:
+    if user_id is None:
+        order = conn.execute("SELECT * FROM orders WHERE id = ?", (order_id,)).fetchone()
+    else:
+        order = conn.execute("SELECT * FROM orders WHERE id = ? AND user_id = ?", (order_id, user_id)).fetchone()
+    if not order:
+        raise AuthError("订单不存在", 404)
+    if (order["product_type"] if "product_type" in order.keys() else "") != "membership":
+        raise AuthError("该订单不是会员订单", 400)
+    return order
+
+
+def _membership_start(user: sqlite3.Row, now_dt: datetime) -> datetime:
+    """Extend an unexpired membership from its expiry; otherwise start now."""
+    if not _has_active_membership(user):
+        return now_dt
+    current_expiry = _parse_cn_datetime(user["membership_expires_at"] if "membership_expires_at" in user.keys() else "")
+    if current_expiry and current_expiry > now_dt:
+        return current_expiry
+    return now_dt
+
+
+def _deliver_membership_in_txn(
+    conn: sqlite3.Connection,
+    *,
+    order: sqlite3.Row,
+    admin_id: int,
+    admin_note: str,
+    now_dt: datetime,
+) -> tuple[sqlite3.Row, int]:
+    """Mark a submitted membership order paid and write exactly one ledger row.
+
+    Caller must hold a write transaction (BEGIN IMMEDIATE).
+    """
+    order_id = int(order["id"])
+    now = now_dt.isoformat()
+    user = _require_manageable_user(conn, int(order["user_id"]))
+    existing_ledger = conn.execute("SELECT id FROM membership_ledger WHERE order_id = ? LIMIT 1", (order_id,)).fetchone()
+    if existing_ledger:
+        raise AuthError("该订单已存在会员流水，请刷新后核对", 409)
+    start_dt = _membership_start(user, now_dt)
+    duration_days = int(
+        order["duration_days"] if "duration_days" in order.keys() and order["duration_days"] else _membership_plan()["duration_days"]
+    )
+    expires_dt = start_dt + timedelta(days=duration_days)
+    updated_order_count = conn.execute(
+        """
+        UPDATE orders
+        SET status = 'paid',
+            paid_at = ?,
+            confirmed_at = ?,
+            admin_id = ?,
+            admin_note = ?
+        WHERE id = ? AND status = 'submitted'
+        """,
+        (now, now, admin_id, admin_note, order_id),
+    ).rowcount
+    if updated_order_count != 1:
+        raise AuthError("订单状态已变化，请刷新后重试", 409)
+    conn.execute(
+        """
+        UPDATE users
+        SET membership_plan = ?,
+            membership_status = 'active',
+            membership_expires_at = ?
+        WHERE id = ?
+        """,
+        (order["plan_name"], expires_dt.isoformat(), int(order["user_id"])),
+    )
+    ledger_id = int(
+        conn.execute(
+            """
+            INSERT INTO membership_ledger (user_id, order_id, plan_name, started_at, expires_at, created_at, admin_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (int(order["user_id"]), order_id, order["plan_name"], start_dt.isoformat(), expires_dt.isoformat(), now, admin_id),
+        ).lastrowid
+    )
+    expiry_note = f"会员有效期 {start_dt.isoformat()} 至 {expires_dt.isoformat()}"
+    _record_order_event(
+        conn,
+        order_id=order_id,
+        event="confirmed",
+        from_status="submitted",
+        to_status="paid",
+        actor_id=admin_id,
+        actor_role="admin",
+        note=f"{admin_note}；{expiry_note}" if admin_note else expiry_note,
+    )
+    return conn.execute("SELECT * FROM orders WHERE id = ?", (order_id,)).fetchone(), ledger_id
+
+
+def create_membership_order(
+    db_path: Path,
+    *,
+    user_id: int,
+    plan_id: str = "monthly_membership",
+    client_request_id: str = "",
+) -> dict[str, Any]:
+    """Create (or reuse) a pending membership order.
+
+    Idempotency rules, evaluated inside one write transaction:
+    1. The same client_request_id for the same user returns the original order.
+    2. An unfinished (pending/submitted) order for the same plan and price is
+       reused, so double clicks, retries and refreshes never pile up orders.
+    """
     plan = _membership_plan(plan_id)
-    order_no = f"YM{datetime.now(CN_TZ).strftime('%Y%m%d%H%M%S')}{secrets.token_hex(3).upper()}"
-    now = _now()
+    client_request_id = _normalize_client_request_id(client_request_id)
     with _connect(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        _require_manageable_user(conn, user_id)
+        if client_request_id:
+            existing = conn.execute(
+                "SELECT * FROM orders WHERE user_id = ? AND client_request_id = ?",
+                (user_id, client_request_id),
+            ).fetchone()
+            if existing:
+                if (existing["package_id"] or "") != plan["id"]:
+                    raise AuthError("client_request_id 已用于其他套餐订单", 409)
+                return _order_payload(existing) | {"reused": True}
+        reusable = conn.execute(
+            """
+            SELECT *
+            FROM orders
+            WHERE user_id = ?
+              AND COALESCE(product_type, '') = 'membership'
+              AND COALESCE(package_id, '') = ?
+              AND amount_cents = ?
+              AND status IN ('pending', 'submitted')
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (user_id, plan["id"], int(plan["amount_cents"])),
+        ).fetchone()
+        if reusable:
+            return _order_payload(reusable) | {"reused": True}
+        order_no = f"YM{datetime.now(CN_TZ).strftime('%Y%m%d%H%M%S')}{secrets.token_hex(3).upper()}"
+        now = _now()
         cursor = conn.execute(
             """
             INSERT INTO orders (
                 user_id, order_no, plan_name, credits, amount_cents, status, created_at,
-                product_type, package_id, duration_days, payment_submit_status
+                product_type, package_id, duration_days, payment_submit_status,
+                client_request_id, order_source
             )
-            VALUES (?, ?, ?, 0, ?, 'pending', ?, 'membership', ?, ?, 'none')
+            VALUES (?, ?, ?, 0, ?, 'pending', ?, 'membership', ?, ?, 'none', ?, 'user')
             """,
-            (user_id, order_no, plan["plan_name"], int(plan["amount_cents"]), now, plan["id"], int(plan["duration_days"])),
+            (
+                user_id,
+                order_no,
+                plan["plan_name"],
+                int(plan["amount_cents"]),
+                now,
+                plan["id"],
+                int(plan["duration_days"]),
+                client_request_id or None,
+            ),
         )
-        return _order_payload(conn.execute("SELECT * FROM orders WHERE id = ?", (cursor.lastrowid,)).fetchone())
+        order_id = int(cursor.lastrowid)
+        _record_order_event(conn, order_id=order_id, event="created", from_status=None, to_status="pending", actor_id=user_id, actor_role="user")
+        return _order_payload(conn.execute("SELECT * FROM orders WHERE id = ?", (order_id,)).fetchone()) | {"reused": False}
 
 
 def latest_membership_order(db_path: Path, *, user_id: int) -> dict[str, Any] | None:
@@ -1311,6 +1666,52 @@ def latest_membership_order(db_path: Path, *, user_id: int) -> dict[str, Any] | 
             (user_id,),
         ).fetchone()
         return _order_payload(row) if row else None
+
+
+def latest_open_membership_order(db_path: Path, *, user_id: int) -> dict[str, Any] | None:
+    """The order the checkout page should resume, or None to offer a new order.
+
+    A paid order closes the checkout: an expired member who renews must get a
+    fresh order instead of last month's paid order (which showed the QR code
+    with no submit form, leaving the admin nothing to find).
+    """
+    with _connect(db_path) as conn:
+        latest = conn.execute(
+            """
+            SELECT *
+            FROM orders
+            WHERE user_id = ? AND COALESCE(product_type, '') = 'membership'
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (user_id,),
+        ).fetchone()
+        if not latest:
+            return None
+        if latest["status"] in MEMBERSHIP_OPEN_STATUSES:
+            return _order_payload(latest)
+        if latest["status"] == "cancelled":
+            last_paid = conn.execute(
+                """
+                SELECT COALESCE(MAX(id), 0) AS id
+                FROM orders
+                WHERE user_id = ? AND COALESCE(product_type, '') = 'membership' AND status = 'paid'
+                """,
+                (user_id,),
+            ).fetchone()["id"]
+            fallback = conn.execute(
+                """
+                SELECT *
+                FROM orders
+                WHERE user_id = ? AND COALESCE(product_type, '') = 'membership'
+                  AND status IN ('pending', 'submitted') AND id > ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (user_id, int(last_paid)),
+            ).fetchone()
+            return _order_payload(fallback) if fallback else None
+        return None
 
 
 def latest_credit_order(db_path: Path, *, user_id: int) -> dict[str, Any] | None:
@@ -1339,6 +1740,43 @@ def get_order(db_path: Path, *, order_id: int, user_id: int | None = None, admin
         return _order_payload(row)
 
 
+def _payment_fields_match(order: sqlite3.Row, *, payment_method: str, payer_name: str, payer_paid_at: str, submitted_amount_cents: int, payer_note: str) -> bool:
+    return (
+        str(order["payment_method"] or "") == payment_method
+        and str(order["payer_name"] or "") == payer_name
+        and str(order["payer_paid_at"] or "") == payer_paid_at
+        and int(order["submitted_amount_cents"] or 0) == submitted_amount_cents
+        and str(order["payer_note"] or "") == payer_note
+    )
+
+
+def _record_admin_notification(db_path: Path, *, order_id: int, result: dict[str, Any]) -> None:
+    """Best effort: persist the reminder outcome without touching order status."""
+    if result.get("sent"):
+        status = "sent"
+    elif result.get("skipped"):
+        status = "skipped"
+    else:
+        status = "failed"
+    try:
+        with _connect(db_path) as conn:
+            conn.execute(
+                "UPDATE orders SET admin_notify_status = ?, admin_notify_error = ? WHERE id = ?",
+                (status, str(result.get("error") or "")[:300], order_id),
+            )
+            if status == "failed":
+                _record_order_event(
+                    conn,
+                    order_id=order_id,
+                    event="admin_notify_failed",
+                    from_status=None,
+                    to_status=None,
+                    note=str(result.get("error") or "")[:300],
+                )
+    except Exception:
+        pass
+
+
 def submit_membership_payment(
     db_path: Path,
     *,
@@ -1350,29 +1788,51 @@ def submit_membership_payment(
     submitted_amount_cents: int,
     payer_note: str = "",
 ) -> dict[str, Any]:
+    """Record the user's payment report. Safe to retry.
+
+    - Re-sending identical information returns the stored order unchanged and
+      does not re-notify the admin.
+    - A failed admin reminder never rolls back the saved `submitted` state.
+    - A cancelled order still accepts a payment report so a user who paid is
+      never locked out; the admin then verifies it like any other submission.
+    """
     payment_method = _normalize_payment_method(payment_method)
     payer_name = (payer_name or "").strip()[:80]
     payer_note = (payer_note or "").strip()[:240]
     payer_paid_at = (payer_paid_at or "").strip()[:60]
-    submitted_amount_cents = int(submitted_amount_cents or 0)
+    if isinstance(submitted_amount_cents, bool):
+        raise AuthError("请填写实付金额", 400)
+    try:
+        submitted_amount_cents = int(submitted_amount_cents or 0)
+    except (TypeError, ValueError):
+        raise AuthError("请填写实付金额", 400) from None
     if not payer_name:
         raise AuthError("请填写付款人昵称或姓名", 400)
     if not payer_paid_at:
         raise AuthError("请填写付款时间", 400)
     if submitted_amount_cents <= 0:
         raise AuthError("请填写实付金额", 400)
+    fields = {
+        "payment_method": payment_method,
+        "payer_name": payer_name,
+        "payer_paid_at": payer_paid_at,
+        "submitted_amount_cents": submitted_amount_cents,
+        "payer_note": payer_note,
+    }
     now = _now()
-    notify_result: dict[str, Any]
     with _connect(db_path) as conn:
-        order = conn.execute("SELECT * FROM orders WHERE id = ? AND user_id = ?", (order_id, user_id)).fetchone()
-        if not order:
-            raise AuthError("订单不存在", 404)
-        if (order["product_type"] if "product_type" in order.keys() else "") != "membership":
-            raise AuthError("该订单不是会员订单", 400)
-        if order["status"] == "paid":
-            raise AuthError("该订单已开通，无需重复提交", 409)
+        conn.execute("BEGIN IMMEDIATE")
+        order = _membership_order_row(conn, order_id, user_id=user_id)
         if int(order["amount_cents"]) != submitted_amount_cents:
             raise AuthError("实付金额与订单金额不一致，请核对后再提交", 400)
+        previous_status = str(order["status"])
+        if previous_status in {"paid", "submitted"} and _payment_fields_match(order, **fields):
+            order_payload = _order_payload(order)
+            order_payload["admin_notification"] = {"sent": False, "skipped": True, "duplicate": True}
+            order_payload["duplicate_submission"] = True
+            return order_payload
+        if previous_status == "paid":
+            raise AuthError("该订单已开通，无需重复提交", 409)
         conn.execute(
             """
             UPDATE orders
@@ -1384,84 +1844,80 @@ def submit_membership_payment(
                 payer_paid_at = ?,
                 submitted_amount_cents = ?,
                 submitted_at = ?,
-                rejected_at = NULL
-            WHERE id = ?
+                rejected_at = NULL,
+                admin_notify_status = 'pending',
+                admin_notify_error = ''
+            WHERE id = ? AND status != 'paid'
             """,
             (payment_method, payer_name, payer_note, payer_paid_at, submitted_amount_cents, now, order_id),
+        )
+        event = {
+            "pending": "payment_submitted",
+            "submitted": "payment_resubmitted",
+            "rejected": "payment_resubmitted_after_reject",
+            "cancelled": "payment_submitted_after_cancel",
+        }.get(previous_status, "payment_submitted")
+        _record_order_event(
+            conn,
+            order_id=order_id,
+            event=event,
+            from_status=previous_status,
+            to_status="submitted",
+            actor_id=user_id,
+            actor_role="user",
+            note=f"付款人 {payer_name} · 付款时间 {payer_paid_at} · 金额 ¥{submitted_amount_cents / 100:.2f}",
         )
         updated = conn.execute("SELECT * FROM orders WHERE id = ?", (order_id,)).fetchone()
         user = _fetch_user_by_id(conn, user_id)
         order_payload = _order_payload(updated)
         user_payload = _user_payload(conn, user)
-    notify_result = notify_admin_membership_payment(order=order_payload, user=user_payload)
+    # The write above is committed before any network I/O so that an SMTP
+    # failure or timeout can never lose the user's payment report.
+    try:
+        notify_result = notify_admin_membership_payment(order=order_payload, user=user_payload)
+    except Exception as exc:  # defensive: the helper already swallows errors
+        notify_result = {"sent": False, "error": str(exc)}
+    _record_admin_notification(db_path, order_id=order_id, result=notify_result)
     order_payload["admin_notification"] = notify_result
     return order_payload
 
 
+def cancel_membership_order(db_path: Path, *, order_id: int, user_id: int) -> dict[str, Any]:
+    """Let a user abandon an unpaid order (e.g. to switch plans).
+
+    `pending` orders and admin-`rejected` orders can be cancelled (otherwise a
+    rejected order would block switching plans forever). A `submitted` order
+    awaits admin verification and can only be resolved by the admin.
+    """
+    with _connect(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        order = _membership_order_row(conn, order_id, user_id=user_id)
+        if order["status"] == "cancelled":
+            return _order_payload(order)
+        previous_status = str(order["status"])
+        if previous_status not in {"pending", "rejected"}:
+            raise AuthError("该订单已提交付款信息或已处理，不能取消；如需帮助请联系客服", 409)
+        conn.execute(
+            "UPDATE orders SET status = 'cancelled', cancelled_at = ? WHERE id = ? AND status IN ('pending', 'rejected')",
+            (_now(), order_id),
+        )
+        _record_order_event(conn, order_id=order_id, event="cancelled_by_user", from_status=previous_status, to_status="cancelled", actor_id=user_id, actor_role="user")
+        return _order_payload(conn.execute("SELECT * FROM orders WHERE id = ?", (order_id,)).fetchone())
+
+
 def confirm_membership_order(db_path: Path, *, order_id: int, admin_id: int, admin_note: str = "") -> dict[str, Any]:
     now_dt = datetime.now(CN_TZ)
-    now = now_dt.isoformat()
     admin_note = (admin_note or "").strip()[:300]
     with _connect(db_path) as conn:
         # Serialize entitlement delivery so double-clicks and concurrent admin retries
         # cannot create duplicate membership ledger rows.
         conn.execute("BEGIN IMMEDIATE")
-        order = conn.execute("SELECT * FROM orders WHERE id = ?", (order_id,)).fetchone()
-        if not order:
-            raise AuthError("订单不存在", 404)
-        if (order["product_type"] if "product_type" in order.keys() else "") != "membership":
-            raise AuthError("该订单不是会员订单", 400)
+        order = _membership_order_row(conn, order_id)
         if order["status"] == "paid":
             return _order_payload(order)
         if order["status"] != "submitted":
-            raise AuthError("用户尚未提交付款信息，不能确认开通", 400)
-        user = _fetch_user_by_id(conn, int(order["user_id"]))
-        start_dt = now_dt
-        current_expiry = str(user["membership_expires_at"] if "membership_expires_at" in user.keys() else "").strip()
-        if current_expiry:
-            try:
-                parsed = datetime.fromisoformat(current_expiry)
-                if parsed > start_dt:
-                    start_dt = parsed
-            except ValueError:
-                start_dt = now_dt
-        duration_days = int(order["duration_days"] if "duration_days" in order.keys() and order["duration_days"] else _membership_plan()["duration_days"])
-        expires_dt = start_dt + timedelta(days=duration_days)
-        updated_order_count = conn.execute(
-            """
-            UPDATE orders
-            SET status = 'paid',
-                paid_at = ?,
-                confirmed_at = ?,
-                admin_id = ?,
-                admin_note = ?
-            WHERE id = ? AND status = 'submitted'
-            """,
-            (now, now, admin_id, admin_note, order_id),
-        ).rowcount
-        if updated_order_count != 1:
-            refreshed_order = conn.execute("SELECT * FROM orders WHERE id = ?", (order_id,)).fetchone()
-            if refreshed_order and refreshed_order["status"] == "paid":
-                return _order_payload(refreshed_order)
-            raise AuthError("订单状态已变化，请刷新后重试", 409)
-        conn.execute(
-            """
-            UPDATE users
-            SET membership_plan = ?,
-                membership_status = 'active',
-                membership_expires_at = ?
-            WHERE id = ?
-            """,
-            (order["plan_name"], expires_dt.isoformat(), int(order["user_id"])),
-        )
-        conn.execute(
-            """
-            INSERT INTO membership_ledger (user_id, order_id, plan_name, started_at, expires_at, created_at, admin_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (int(order["user_id"]), order_id, order["plan_name"], start_dt.isoformat(), expires_dt.isoformat(), now, admin_id),
-        )
-        updated = conn.execute("SELECT * FROM orders WHERE id = ?", (order_id,)).fetchone()
+            raise AuthError("用户尚未提交付款信息，不能确认开通；如已人工核实到账，请使用人工补录", 400)
+        updated, _ledger_id = _deliver_membership_in_txn(conn, order=order, admin_id=admin_id, admin_note=admin_note, now_dt=now_dt)
         return _order_payload(updated)
 
 
@@ -1471,27 +1927,237 @@ def reject_membership_order(db_path: Path, *, order_id: int, admin_id: int, admi
         raise AuthError("请填写驳回或异常原因", 400)
     now = _now()
     with _connect(db_path) as conn:
-        order = conn.execute("SELECT * FROM orders WHERE id = ?", (order_id,)).fetchone()
-        if not order:
-            raise AuthError("订单不存在", 404)
-        if (order["product_type"] if "product_type" in order.keys() else "") != "membership":
-            raise AuthError("该订单不是会员订单", 400)
+        conn.execute("BEGIN IMMEDIATE")
+        order = _membership_order_row(conn, order_id)
         if order["status"] == "paid":
             raise AuthError("已开通订单不能驳回", 409)
-        conn.execute(
+        previous_status = str(order["status"])
+        updated_count = conn.execute(
             """
             UPDATE orders
             SET status = 'rejected',
                 rejected_at = ?,
                 admin_id = ?,
                 admin_note = ?
-            WHERE id = ?
+            WHERE id = ? AND status != 'paid'
             """,
             (now, admin_id, admin_note, order_id),
-        )
+        ).rowcount
+        if updated_count != 1:
+            raise AuthError("订单状态已变化，请刷新后重试", 409)
+        _record_order_event(conn, order_id=order_id, event="rejected", from_status=previous_status, to_status="rejected", actor_id=admin_id, actor_role="admin", note=admin_note)
         updated = conn.execute("SELECT * FROM orders WHERE id = ?", (order_id,)).fetchone()
         return _order_payload(updated)
 
+
+def manual_grant_membership(
+    db_path: Path,
+    *,
+    admin_id: int,
+    user_id: int,
+    plan_id: str,
+    payment_method: str,
+    amount_cents: int,
+    payer_name: str,
+    payer_paid_at: str,
+    reason: str,
+    request_id: str,
+    order_id: int | None = None,
+) -> dict[str, Any]:
+    """Admin back-office entry for a verified payment that has no usable order.
+
+    Always goes through an order + the normal delivery path so every grant
+    has an order, one membership_ledger row, an operator, a reason and an
+    idempotency key. Retries with the same request_id return the original
+    result; one write transaction covers lookup, order and ledger so
+    concurrent requests cannot extend the membership twice.
+    """
+    request_id = (request_id or "").strip()
+    reason = (reason or "").strip()
+    payer_name = (payer_name or "").strip()[:80]
+    payer_paid_at = (payer_paid_at or "").strip()[:60]
+    if not CREDIT_GRANT_REQUEST_ID_RE.fullmatch(request_id):
+        raise AuthError("request_id 格式无效", 400)
+    if len(reason) < 2:
+        raise AuthError("请填写人工补录原因", 400)
+    if len(reason) > 300:
+        raise AuthError("人工补录原因不能超过 300 字", 400)
+    if isinstance(amount_cents, bool) or not isinstance(amount_cents, int):
+        raise AuthError("金额必须是整数（分）", 400)
+    if isinstance(user_id, bool) or not isinstance(user_id, int) or user_id <= 0:
+        raise AuthError("请选择用户", 400)
+    if order_id is not None and (isinstance(order_id, bool) or not isinstance(order_id, int) or order_id <= 0):
+        raise AuthError("订单编号无效", 400)
+    payment_method = _normalize_payment_method(payment_method)
+    if not payer_name:
+        raise AuthError("请填写付款人", 400)
+    if not payer_paid_at:
+        raise AuthError("请填写付款时间", 400)
+    plan = _membership_plan(plan_id)
+    if amount_cents != int(plan["amount_cents"]):
+        raise AuthError(f"补录金额与套餐金额 ¥{int(plan['amount_cents']) / 100:.2f} 不一致", 400)
+    now_dt = datetime.now(CN_TZ)
+    now = now_dt.isoformat()
+    with _connect(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        existing = conn.execute("SELECT * FROM admin_membership_grants WHERE request_id = ?", (request_id,)).fetchone()
+        if existing:
+            if (
+                int(existing["user_id"]) != user_id
+                or str(existing["plan_id"]) != plan["id"]
+                or (order_id is not None and int(existing["order_id"]) != order_id)
+            ):
+                raise AuthError("request_id 已用于其他补录请求", 409)
+            order_row = conn.execute("SELECT * FROM orders WHERE id = ?", (int(existing["order_id"]),)).fetchone()
+            user_row = _fetch_user_by_id(conn, user_id)
+            return {
+                "order": _order_payload(order_row),
+                "user": _user_payload(conn, user_row),
+                "ledger_id": existing["ledger_id"],
+                "request_id": request_id,
+                "idempotent": True,
+            }
+        admin = _fetch_user_by_id(conn, admin_id)
+        if admin["role"] != "admin":
+            raise AuthError("需要管理员权限", 403)
+        _require_manageable_user(conn, user_id)
+        recent = conn.execute(
+            """
+            SELECT g.created_at, o.order_no
+            FROM admin_membership_grants g
+            JOIN orders o ON o.id = g.order_id
+            WHERE g.user_id = ?
+            ORDER BY g.id DESC
+            LIMIT 1
+            """,
+            (user_id,),
+        ).fetchone()
+        recent_at = _parse_cn_datetime(recent["created_at"]) if recent else None
+        if recent_at and now_dt - recent_at < MEMBERSHIP_MANUAL_GRANT_COOLDOWN:
+            raise AuthError(f"该用户刚刚已人工补录（订单 {recent['order_no']}），为防止重复开通请稍后核对再操作", 409)
+
+        if order_id is not None:
+            order = _membership_order_row(conn, order_id)
+            if int(order["user_id"]) != user_id:
+                raise AuthError("订单不属于所选用户", 400)
+            if order["status"] == "paid":
+                raise AuthError("该订单已开通，无需补录", 409)
+            order_plan_id = str(order["package_id"] or "")
+            if order_plan_id and order_plan_id != plan["id"]:
+                raise AuthError("所选套餐与订单套餐不一致", 400)
+            if int(order["amount_cents"]) != amount_cents:
+                raise AuthError("补录金额与订单金额不一致", 400)
+            previous_status = str(order["status"])
+            # A user's own submitted payment report is evidence; keep it and
+            # only fill in the admin's verified details for unreported orders.
+            if previous_status != "submitted":
+                conn.execute(
+                    """
+                    UPDATE orders
+                    SET status = 'submitted',
+                        payment_method = ?,
+                        payment_submit_status = 'submitted',
+                        payer_name = ?,
+                        payer_paid_at = ?,
+                        submitted_amount_cents = ?,
+                        payer_note = CASE WHEN COALESCE(payer_note, '') = '' THEN ? ELSE payer_note END,
+                        submitted_at = COALESCE(submitted_at, ?),
+                        rejected_at = NULL
+                    WHERE id = ? AND status != 'paid'
+                    """,
+                    (payment_method, payer_name, payer_paid_at, amount_cents, f"人工补录 {request_id}", now, order_id),
+                )
+            _record_order_event(
+                conn,
+                order_id=order_id,
+                event="admin_manual_submit",
+                from_status=previous_status,
+                to_status="submitted",
+                actor_id=admin_id,
+                actor_role="admin",
+                note=reason,
+            )
+        else:
+            open_order = conn.execute(
+                """
+                SELECT order_no, status
+                FROM orders
+                WHERE user_id = ? AND COALESCE(product_type, '') = 'membership' AND status IN ('pending', 'submitted')
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (user_id,),
+            ).fetchone()
+            if open_order:
+                raise AuthError(
+                    f"该用户已有未完成订单 {open_order['order_no']}（{open_order['status']}），请在补录时关联该订单，避免重复开通",
+                    409,
+                )
+            order_no = f"YM{now_dt.strftime('%Y%m%d%H%M%S')}{secrets.token_hex(3).upper()}"
+            order_id = int(
+                conn.execute(
+                    """
+                    INSERT INTO orders (
+                        user_id, order_no, plan_name, credits, amount_cents, status, created_at,
+                        product_type, package_id, duration_days, payment_submit_status,
+                        payment_method, payer_name, payer_paid_at, submitted_amount_cents,
+                        payer_note, submitted_at, order_source
+                    )
+                    VALUES (?, ?, ?, 0, ?, 'submitted', ?, 'membership', ?, ?, 'submitted', ?, ?, ?, ?, ?, ?, 'admin_manual')
+                    """,
+                    (
+                        user_id,
+                        order_no,
+                        plan["plan_name"],
+                        amount_cents,
+                        now,
+                        plan["id"],
+                        int(plan["duration_days"]),
+                        payment_method,
+                        payer_name,
+                        payer_paid_at,
+                        amount_cents,
+                        f"人工补录 {request_id}",
+                        now,
+                    ),
+                ).lastrowid
+            )
+            _record_order_event(
+                conn,
+                order_id=order_id,
+                event="admin_manual_created",
+                from_status=None,
+                to_status="submitted",
+                actor_id=admin_id,
+                actor_role="admin",
+                note=reason,
+            )
+        order = conn.execute("SELECT * FROM orders WHERE id = ?", (order_id,)).fetchone()
+        updated, ledger_id = _deliver_membership_in_txn(
+            conn,
+            order=order,
+            admin_id=admin_id,
+            admin_note=f"人工补录：{reason}"[:300],
+            now_dt=now_dt,
+        )
+        conn.execute(
+            """
+            INSERT INTO admin_membership_grants (
+                request_id, admin_id, user_id, order_id, ledger_id, plan_id, amount_cents,
+                payment_method, payer_name, payer_paid_at, reason, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (request_id, admin_id, user_id, order_id, ledger_id, plan["id"], amount_cents, payment_method, payer_name, payer_paid_at, reason, now),
+        )
+        user_row = _fetch_user_by_id(conn, user_id)
+        return {
+            "order": _order_payload(updated),
+            "user": _user_payload(conn, user_row),
+            "ledger_id": ledger_id,
+            "request_id": request_id,
+            "idempotent": False,
+        }
 
 
 def submit_credit_payment(
@@ -1527,6 +2193,20 @@ def submit_credit_payment(
         if (order["product_type"] if "product_type" in order.keys() else "credits") != "credits":
             raise AuthError("该订单不是次数订单", 400)
         _require_manageable_user(conn, int(order["user_id"]))
+        # Retry after a lost response (timeout / 5xx) with the same details:
+        # report success instead of a confusing 409.
+        if order["status"] in {"submitted", "paid"} and _payment_fields_match(
+            order,
+            payment_method=payment_method,
+            payer_name=payer_name,
+            payer_paid_at=payer_paid_at,
+            submitted_amount_cents=submitted_amount_cents,
+            payer_note=payer_note,
+        ):
+            duplicate = _order_payload(order)
+            duplicate["admin_notification"] = {"sent": False, "skipped": True, "duplicate": True}
+            duplicate["duplicate_submission"] = True
+            return duplicate
         if order["status"] == "paid":
             raise AuthError("该订单已到账，无需重复提交", 409)
         if order["status"] not in {"pending", "rejected"}:
@@ -1674,6 +2354,7 @@ def admin_dashboard(db_path: Path, days: int = 14) -> dict[str, Any]:
             "feedback_pending": conn.execute("SELECT COUNT(*) AS count FROM feedback WHERE status = 'pending'").fetchone()["count"],
             "orders_paid": conn.execute("SELECT COUNT(*) AS count FROM orders WHERE status = 'paid'").fetchone()["count"],
         }
+        order_counts = _admin_order_counts(conn)
         usage_rows = conn.execute(
             """
             SELECT substr(created_at, 1, 10) AS day, feature, COUNT(*) AS count, COALESCE(SUM(credits_spent), 0) AS credits
@@ -2034,6 +2715,7 @@ def admin_dashboard(db_path: Path, days: int = 14) -> dict[str, Any]:
             "new_users_by_day": [dict(row) for row in user_rows],
             "feedback": [_feedback_payload(row) for row in feedback_rows],
             "orders": [_order_payload(row) | {"phone": row["phone"], "username": row["username"], "email": row["email"]} for row in orders],
+            "order_counts": order_counts,
             "managed_users": [dict(row) for row in managed_users],
             "top_users": [dict(row) for row in top_users],
             "analytics": {
@@ -2100,6 +2782,7 @@ def list_admin_users(
         rows = conn.execute(
             f"""
             SELECT u.id, u.phone, u.username, u.email, u.role, u.status, u.created_at, u.last_login_at,
+                   u.membership_plan, u.membership_status, u.membership_expires_at,
                    COALESCE(usage.used_count, 0) AS used_count,
                    COALESCE(ledger.credits, 0) AS credits
             FROM users u
@@ -2127,10 +2810,53 @@ def list_admin_users(
         ]
         return {
             **_admin_page_payload(page=page, page_size=page_size, total=total),
-            "items": [dict(row) for row in rows],
+            "items": [
+                dict(row)
+                | {
+                    "membership_active": _has_active_membership(row),
+                    "membership_status": _membership_display_status(row),
+                }
+                for row in rows
+            ],
             "campaigns": campaigns,
             "filters": {"query": normalized_query, "status": normalized_status},
         }
+
+
+ADMIN_ORDER_STATUS_FILTERS = {"all", "attention", "pending", "submitted", "paid", "rejected", "cancelled"}
+# A pending order older than this without a payment report is flagged as
+# "未报告付款" for the admin. It is a hint only; it never implies payment.
+PENDING_UNREPORTED_AFTER = timedelta(minutes=30)
+
+
+def _is_unreported_pending(row: sqlite3.Row, now_dt: datetime) -> bool:
+    if row["status"] != "pending":
+        return False
+    created = _parse_cn_datetime(row["created_at"])
+    return bool(created and now_dt - created >= PENDING_UNREPORTED_AFTER)
+
+
+def _admin_order_counts(conn: sqlite3.Connection) -> dict[str, int]:
+    statuses = ("pending", "submitted", "paid", "rejected", "cancelled")
+    counts = {status: 0 for status in statuses}
+    for row in conn.execute("SELECT status, COUNT(*) AS count FROM orders GROUP BY status").fetchall():
+        if row["status"] in counts:
+            counts[row["status"]] = int(row["count"])
+    recent_cutoff = (datetime.now(CN_TZ) - timedelta(days=7)).isoformat()
+    counts["pending_recent"] = int(
+        conn.execute(
+            "SELECT COUNT(*) AS count FROM orders WHERE status = 'pending' AND created_at >= ?",
+            (recent_cutoff,),
+        ).fetchone()["count"]
+    )
+    counts["notify_failed"] = int(
+        conn.execute(
+            "SELECT COUNT(*) AS count FROM orders WHERE status = 'submitted' AND COALESCE(admin_notify_status, '') = 'failed'"
+        ).fetchone()["count"]
+    )
+    counts["attention"] = counts["pending"] + counts["submitted"] + counts["rejected"]
+    counts["all"] = sum(counts[status] for status in statuses)
+    return counts
 
 
 def list_admin_orders(
@@ -2141,13 +2867,15 @@ def list_admin_orders(
     page: int = 1,
     page_size: int = 20,
 ) -> dict[str, Any]:
-    normalized_status = _normalize_admin_choice(status, allowed={"all", "pending", "submitted", "paid", "rejected"})
+    normalized_status = _normalize_admin_choice(status, allowed=ADMIN_ORDER_STATUS_FILTERS)
     normalized_query = _normalize_admin_query(query)
     page = _normalize_admin_page(page)
     page_size = _normalize_admin_page_size(page_size, default=20, maximum=100)
     where = ["1 = 1"]
     params: list[Any] = []
-    if normalized_status != "all":
+    if normalized_status == "attention":
+        where.append("o.status IN ('submitted', 'pending', 'rejected')")
+    elif normalized_status != "all":
         where.append("o.status = ?")
         params.append(normalized_status)
     if normalized_query:
@@ -2156,12 +2884,15 @@ def list_admin_orders(
             "("
             "LOWER(COALESCE(o.order_no, '')) LIKE ? OR "
             "LOWER(COALESCE(o.plan_name, '')) LIKE ? OR "
+            "LOWER(COALESCE(o.payer_name, '')) LIKE ? OR "
+            "LOWER(COALESCE(o.payer_note, '')) LIKE ? OR "
             "LOWER(COALESCE(u.username, '')) LIKE ? OR "
             "LOWER(COALESCE(u.email, '')) LIKE ? OR "
-            "LOWER(COALESCE(u.phone, '')) LIKE ?"
+            "LOWER(COALESCE(u.phone, '')) LIKE ? OR "
+            "CAST(u.id AS TEXT) = ?"
             ")"
         )
-        params.extend([like, like, like, like, like])
+        params.extend([like, like, like, like, like, like, like, normalized_query])
     where_sql = " AND ".join(where)
     offset = (page - 1) * page_size
     with _connect(db_path) as conn:
@@ -2178,7 +2909,8 @@ def list_admin_orders(
         )
         rows = conn.execute(
             f"""
-            SELECT o.*, u.phone, u.username, u.email
+            SELECT o.*, u.phone, u.username, u.email,
+                   u.membership_status, u.membership_expires_at
             FROM orders o
             JOIN users u ON u.id = o.user_id
             WHERE {where_sql}
@@ -2187,13 +2919,26 @@ def list_admin_orders(
             """,
             (*params, page_size, offset),
         ).fetchall()
+        events = _order_events(conn, [int(row["id"]) for row in rows])
+        now_dt = datetime.now(CN_TZ)
         return {
             **_admin_page_payload(page=page, page_size=page_size, total=total),
             "items": [
                 _order_payload(row)
-                | {"phone": row["phone"], "username": row["username"], "email": row["email"]}
+                | {
+                    "phone": row["phone"],
+                    "username": row["username"],
+                    "email": row["email"],
+                    "events": events.get(int(row["id"]), []),
+                    "unreported_payment": _is_unreported_pending(row, now_dt),
+                    # Shown in the confirm dialog so the admin sees what the
+                    # grant will do (extend vs. start now) before clicking.
+                    "user_membership_active": _has_active_membership(row),
+                    "user_membership_expires_at": row["membership_expires_at"] or "",
+                }
                 for row in rows
             ],
+            "status_counts": _admin_order_counts(conn),
             "filters": {"query": normalized_query, "status": normalized_status},
         }
 
@@ -4744,10 +5489,18 @@ def _has_active_membership(user: sqlite3.Row | dict[str, Any]) -> bool:
     expires_at = str(user["membership_expires_at"] if "membership_expires_at" in user.keys() else "").strip()
     if status != "active" or not expires_at:
         return False
-    try:
-        return datetime.fromisoformat(expires_at) > datetime.now(CN_TZ)
-    except ValueError:
-        return False
+    expires = _parse_cn_datetime(expires_at)
+    return bool(expires and expires > datetime.now(CN_TZ))
+
+
+def _membership_display_status(user: sqlite3.Row | dict[str, Any]) -> str:
+    """Authoritative status for every API: an elapsed `active` row is `expired`."""
+    if _has_active_membership(user):
+        return "active"
+    raw = str(user["membership_status"] if "membership_status" in user.keys() else "").strip()
+    if raw == "active":
+        return "expired"
+    return raw
 
 
 def _require_manageable_user(conn: sqlite3.Connection, user_id: int) -> sqlite3.Row:
@@ -5641,7 +6394,7 @@ def _user_payload(conn: sqlite3.Connection, row: sqlite3.Row | dict[str, Any]) -
         "invite_code": row["invite_code"],
         "credits": _credit_balance(conn, user_id),
         "membership_plan": row["membership_plan"] if "membership_plan" in row.keys() else "",
-        "membership_status": "active" if membership_active else (row["membership_status"] if "membership_status" in row.keys() else ""),
+        "membership_status": _membership_display_status(row),
         "membership_expires_at": membership_expires_at,
         "membership_active": membership_active,
         "referral_count": int(referral_count),
@@ -6756,6 +7509,10 @@ def _order_payload(row: sqlite3.Row) -> dict[str, Any]:
         "admin_note": row["admin_note"] if "admin_note" in row.keys() else "",
         "confirmed_at": row["confirmed_at"] if "confirmed_at" in row.keys() else "",
         "rejected_at": row["rejected_at"] if "rejected_at" in row.keys() else "",
+        "cancelled_at": row["cancelled_at"] if "cancelled_at" in row.keys() else "",
+        "order_source": (row["order_source"] if "order_source" in row.keys() else "") or "user",
+        "admin_notify_status": (row["admin_notify_status"] if "admin_notify_status" in row.keys() else "") or "",
+        "admin_notify_error": (row["admin_notify_error"] if "admin_notify_error" in row.keys() else "") or "",
     }
 
 

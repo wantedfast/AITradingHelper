@@ -37,6 +37,7 @@ from trade_review_agent.auth_system import (
     list_admin_users,
     bind_user_email,
     confirm_credit_order,
+    cancel_membership_order,
     confirm_membership_order,
     consume_feature_credit,
     consume_feature_credit_once,
@@ -57,6 +58,8 @@ from trade_review_agent.auth_system import (
     get_feedback_attachment,
     latest_credit_order,
     latest_membership_order,
+    latest_open_membership_order,
+    manual_grant_membership,
     list_pending_update_notices,
     grant_credits_to_all_users,
     init_auth_db,
@@ -556,6 +559,9 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                 return
             if path.startswith("/api/admin/orders/"):
                 self._admin_order_action(path)
+                return
+            if path == "/api/admin/memberships/manual-grant":
+                self._admin_manual_grant_membership()
                 return
             if path == "/api/admin/credits/grant-all":
                 self._admin_grant_all_user_credits()
@@ -1446,9 +1452,20 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
 
     def _latest_membership_order(self) -> None:
         user = self._require_user()
-        order = latest_membership_order(AUTH_DB, user_id=int(user["id"]))
+        # `order` is the checkout to resume (pending/submitted/rejected) or
+        # null so a renewing member is offered a new order; `last_order` keeps
+        # the most recent order of any status for display.
+        order = latest_open_membership_order(AUTH_DB, user_id=int(user["id"]))
+        last_order = latest_membership_order(AUTH_DB, user_id=int(user["id"]))
         refreshed = get_current_user(AUTH_DB, self._bearer_token())
-        self._json({"order": order, "user": refreshed, **public_membership_catalog(include_payment_assets=True)})
+        self._json(
+            {
+                "order": order,
+                "last_order": last_order,
+                "user": refreshed,
+                **public_membership_catalog(include_payment_assets=True),
+            }
+        )
 
     def _create_membership_order(self) -> None:
         user = self._require_user()
@@ -1457,6 +1474,7 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             AUTH_DB,
             user_id=int(user["id"]),
             plan_id=str(payload.get("plan_id") or "monthly_membership"),
+            client_request_id=str(payload.get("client_request_id") or ""),
         )
         refreshed = get_current_user(AUTH_DB, self._bearer_token())
         self._json({"order": order, "user": refreshed, **public_membership_catalog(include_payment_assets=True)})
@@ -1495,8 +1513,13 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
     def _submit_membership_payment(self, path: str) -> None:
         user = self._require_user()
         parts = path.split("/")
-        if len(parts) != 7 or parts[6] != "submit":
+        if len(parts) != 7 or parts[6] not in {"submit", "cancel"} or not parts[5].isdigit() or len(parts[5]) > 12:
             self._json({"error": "not found"}, status=404)
+            return
+        if parts[6] == "cancel":
+            order = cancel_membership_order(AUTH_DB, order_id=int(parts[5]), user_id=int(user["id"]))
+            refreshed = get_current_user(AUTH_DB, self._bearer_token())
+            self._json({"order": order, "user": refreshed})
             return
         payload = self._read_json_body()
         order = submit_membership_payment(
@@ -1506,11 +1529,30 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
             payment_method=str(payload.get("payment_method") or ""),
             payer_name=str(payload.get("payer_name") or ""),
             payer_paid_at=str(payload.get("payer_paid_at") or ""),
-            submitted_amount_cents=int(payload.get("submitted_amount_cents") or 0),
+            submitted_amount_cents=payload.get("submitted_amount_cents"),
             payer_note=str(payload.get("payer_note") or ""),
         )
         refreshed = get_current_user(AUTH_DB, self._bearer_token())
         self._json({"order": order, "user": refreshed})
+
+    def _admin_manual_grant_membership(self) -> None:
+        admin = self._require_admin()
+        payload = self._read_json_body()
+        raw_order_id = payload.get("order_id")
+        result = manual_grant_membership(
+            AUTH_DB,
+            admin_id=int(admin["id"]),
+            user_id=payload.get("user_id"),
+            plan_id=str(payload.get("plan_id") or ""),
+            payment_method=str(payload.get("payment_method") or ""),
+            amount_cents=payload.get("amount_cents"),
+            payer_name=str(payload.get("payer_name") or ""),
+            payer_paid_at=str(payload.get("payer_paid_at") or ""),
+            reason=str(payload.get("reason") or ""),
+            request_id=str(payload.get("request_id") or ""),
+            order_id=None if raw_order_id in (None, "", 0) else raw_order_id,
+        )
+        self._json(result)
 
     def _alipay_precreate(self) -> None:
         user = self._require_user()

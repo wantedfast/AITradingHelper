@@ -358,9 +358,11 @@ export default function Page() {
                 </Link>
               </>
             ) : hydrated && user ? (
+              // This button links to checkout, so on phones it must say what it
+              // does: expired or non-members need an obvious way to (re)subscribe.
               <Link className={`home-mobile-membership${hasActiveMembership(user) ? " is-active" : ""}`} href="/billing">
-                <UserRound aria-hidden="true" />
-                {authUnavailable ? "账号已保留" : "已登录"}
+                {hasActiveMembership(user) ? <Crown aria-hidden="true" /> : <UserRound aria-hidden="true" />}
+                {authUnavailable ? "账号已保留" : hasActiveMembership(user) ? "会员已开通" : "开通会员"}
               </Link>
             ) : null}
             <button

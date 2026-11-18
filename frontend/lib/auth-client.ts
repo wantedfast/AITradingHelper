@@ -52,13 +52,43 @@ function requestHeaders(init: RequestInit) {
   return { token, headers };
 }
 
-async function request(path: string, init: RequestInit) {
-  const { token, headers } = requestHeaders(init);
+export type ApiRequestInit = RequestInit & {
+  /** Abort and fail with a retryable 408 after this many ms (opt-in). */
+  timeoutMs?: number;
+};
+
+async function request(path: string, init: ApiRequestInit) {
+  const { timeoutMs, ...fetchInit } = init;
+  const { token, headers } = requestHeaders(fetchInit);
+  const callerSignal = fetchInit.signal || null;
+  let timedOut = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let signal = callerSignal;
+  let forwardAbort: (() => void) | undefined;
+  if (timeoutMs && timeoutMs > 0) {
+    const controller = new AbortController();
+    forwardAbort = () => controller.abort();
+    if (callerSignal?.aborted) controller.abort();
+    callerSignal?.addEventListener("abort", forwardAbort, { once: true });
+    timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
+    signal = controller.signal;
+  }
   try {
-    const response = await fetch(`${API_BASE}${path}`, { ...init, headers, cache: "no-store" });
+    const response = await fetch(`${API_BASE}${path}`, { ...fetchInit, signal, headers, cache: "no-store" });
     return { response, token };
-  } catch {
+  } catch (error) {
+    if (timedOut) throw new ApiError("请求超时，服务器暂时没有响应，请稍后重试。", 408);
+    // A deliberate cancellation (navigation, effect cleanup) is not a network
+    // failure; rethrow it so callers can ignore it instead of showing
+    // "网络连接失败" over data that loaded fine.
+    if (callerSignal?.aborted || (error as Error)?.name === "AbortError") throw error;
     throw new ApiError("网络连接失败，请检查网络后重试。", 0);
+  } finally {
+    if (timer) clearTimeout(timer);
+    if (forwardAbort) callerSignal?.removeEventListener("abort", forwardAbort);
   }
 }
 
@@ -150,7 +180,7 @@ export function usageBillingText(user: AccessUser | null | undefined) {
   return typeof user.credits === "number" ? `剩余 ${user.credits} 次。` : "";
 }
 
-export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
+export async function apiFetch<T>(path: string, init: ApiRequestInit = {}): Promise<T> {
   const { response, token } = await request(path, init);
   const text = await response.text();
   if (!response.ok) {
@@ -178,7 +208,7 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
   }
 }
 
-export async function apiFetchBlob(path: string, init: RequestInit = {}): Promise<Blob> {
+export async function apiFetchBlob(path: string, init: ApiRequestInit = {}): Promise<Blob> {
   const { response, token } = await request(path, init);
   if (!response.ok) throw await errorFromResponse(response, token);
   return response.blob();
