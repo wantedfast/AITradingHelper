@@ -67,9 +67,6 @@ type SubmitFailure = { retryable: boolean; message: string } | null;
 // checkout so a renewing member is offered a fresh order (showing last
 // month's paid order with a QR code but no submit form caused real losses).
 const OPEN_ORDER_STATUSES = new Set(["pending", "submitted", "rejected"]);
-// A rejected order must be cancellable too, otherwise the page resumes it
-// forever and the user can never switch plan (e.g. monthly -> annual).
-const CANCELLABLE_STATUSES = new Set(["pending", "rejected"]);
 // Payment calls must fail fast and visibly during an outage so the user is
 // told not to pay twice, instead of watching a spinner indefinitely.
 const PAYMENT_TIMEOUT_MS = 20_000;
@@ -186,6 +183,43 @@ function buildAuthRedirect(planId: string, source: string, feature: string) {
   return `/auth?mode=register&redirect=${encodeURIComponent(redirect)}&plan_id=${encodeURIComponent(planId)}&source=${encodeURIComponent(source)}&feature=${encodeURIComponent(feature)}`;
 }
 
+function MembershipHistory({ busy, onOpen, onCancel }: {
+  busy: boolean;
+  onOpen: (id: number) => void;
+  onCancel: (order: OrderPayload) => void;
+}) {
+  const [cursors, setCursors] = useState([0]);
+  const [result, setResult] = useState<{ orders: OrderPayload[]; next_before: number | null } | null>(null);
+  const [error, setError] = useState("");
+  const [retry, setRetry] = useState(0);
+  const before = cursors[cursors.length - 1];
+  useEffect(() => {
+    let active = true;
+    setResult(null);
+    setError("");
+    apiFetch<{ orders: OrderPayload[]; next_before: number | null }>(`/api/pay/membership/orders?before=${before}`, {timeoutMs: PAYMENT_TIMEOUT_MS})
+      .then(data => { if (active) setResult(data); })
+      .catch(err => { if (active) setError(err instanceof Error ? err.message : "读取订单失败"); });
+    return () => { active = false; };
+  }, [before, retry]);
+  return <section className="billing-packages billing-history" aria-label="我的会员订单">
+    <h2>我的会员订单</h2>
+    {error ? <p role="alert">{error} <button className="billing-secondary" onClick={() => setRetry(v => v+1)}>重试</button></p>
+      : !result ? <p role="status">正在读取订单…</p>
+      : !result.orders.length ? <p>还没有会员订单。</p> : result.orders.map(item =>
+        <article className="billing-inline-message" key={item.id}>
+          <strong>{item.plan_name} · ¥{(item.amount_cents / 100).toFixed(2)} · {orderStatusText(item.status)}</strong>
+          <span>{item.order_no} · {item.created_at?.slice(0, 16).replace("T", " ")}</span>
+          {OPEN_ORDER_STATUSES.has(item.status) && <>
+            <button className="billing-secondary" disabled={busy} onClick={() => onOpen(item.id)}>查看并处理</button>
+            <button className="billing-secondary" disabled={busy} onClick={() => onCancel(item)}>{item.status === "submitted" ? "我没有付款，取消订单" : "取消这笔订单"}</button>
+          </>}
+        </article>)}
+    {cursors.length > 1 && <button className="billing-secondary" disabled={busy} onClick={() => setCursors(v => v.slice(0,-1))}>上一页</button>}
+    {result?.next_before && <button className="billing-secondary" disabled={busy} onClick={() => setCursors([...cursors, result.next_before!])}>下一页</button>}
+  </section>;
+}
+
 export default function BillingPage({ initialCatalog }: { initialCatalog: CatalogPayload | null }) {
   return (
     <Suspense fallback={<main className="billing-page yh-billing" />}>
@@ -217,6 +251,9 @@ function BillingPageContent({ initialCatalog }: { initialCatalog: CatalogPayload
   const [selectedPlanId, setSelectedPlanId] = useState(initialPreferredPlan?.id || "");
   const [invalidRequestedPlan, setInvalidRequestedPlan] = useState(initialRequestInvalid);
   const [order, setOrder] = useState<OrderPayload | null>(null);
+  const [showHistory, setShowHistory] = useState(false);
+  const [historyRevision, setHistoryRevision] = useState(0);
+  const [openingOrder, setOpeningOrder] = useState(false);
   const [loading, setLoading] = useState(!initialCatalog?.plans?.length);
   const [creating, setCreating] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -384,11 +421,34 @@ function BillingPageContent({ initialCatalog }: { initialCatalog: CatalogPayload
   }
 
   function selectPlan(plan: MembershipPlan) {
-    if (checkoutOrder) return;
+    if (checkoutOrder) startAnother();
     setSelectedPlanId(plan.id);
     setInvalidRequestedPlan(false);
     setDraft((current) => ({ ...current, submitted_amount_yuan: (plan.amount_cents / 100).toFixed(2) }));
-    setMessage("");
+    if (!checkoutOrder) setMessage("");
+  }
+
+  function startAnother() {
+    setOrder(null);
+    setPaymentMessage("");
+    setSubmitFailure(null);
+    setMessage("原订单保留在「我的订单」。如已为原订单付款，请勿为同一笔交易重复付款。");
+  }
+
+  async function openFromHistory(id: number) {
+    setOpeningOrder(true);
+    try {
+      const payload = await apiFetch<{order: OrderPayload}>(`/api/orders/${id}`, { timeoutMs: PAYMENT_TIMEOUT_MS });
+      setOrder(payload.order);
+      if (payload.order.package_id) setSelectedPlanId(payload.order.package_id);
+      setShowHistory(false);
+      setInvalidRequestedPlan(false);
+      setPaymentMessage("");
+      setSubmitFailure(null);
+      setMessage(orderStatusText(payload.order.status));
+    } catch (error) {
+      if (!handleExpiredSession(error)) setMessage(error instanceof Error ? error.message : "读取订单失败");
+    } finally { setOpeningOrder(false); }
   }
 
   async function createMembershipOrder() {
@@ -501,26 +561,29 @@ function BillingPageContent({ initialCatalog }: { initialCatalog: CatalogPayload
     }
   }
 
-  async function cancelOrder() {
-    if (!checkoutOrder || !CANCELLABLE_STATUSES.has(checkoutOrder.status) || cancelling) return;
-    const confirmed = window.confirm("取消后可以重新选择套餐。如果你已经付款，请不要取消，直接提交付款信息。确认取消该订单？");
+  async function cancelOrder(target: OrderPayload | null) {
+    if (!target || !OPEN_ORDER_STATUSES.has(target.status) || cancelling) return;
+    const confirmed = window.confirm(`确认没有付款并取消订单 ${target.order_no}？取消不是退款；如果已经转账，请保留订单等待核款。`);
     if (!confirmed) return;
     setCancelling(true);
     try {
-      await apiFetch<{ order: OrderPayload }>(`/api/pay/membership/orders/${checkoutOrder.id}/cancel`, { method: "POST", timeoutMs: PAYMENT_TIMEOUT_MS });
-      clearDraft(checkoutOrder.id);
-      saveOpenOrderSnapshot(null);
-      draftOrderIdRef.current = null;
-      setOrder(null);
-      setPaymentMessage("");
-      setSubmitFailure(null);
-      setMessage("订单已取消，可以重新选择套餐。");
+      await apiFetch<{ order: OrderPayload }>(`/api/pay/membership/orders/${target.id}/cancel`, { method: "POST", timeoutMs: PAYMENT_TIMEOUT_MS });
+      clearDraft(target.id);
+      if (checkoutOrder?.id === target.id) {
+        saveOpenOrderSnapshot(null);
+        draftOrderIdRef.current = null;
+        setOrder(null);
+        setPaymentMessage("");
+        setSubmitFailure(null);
+      }
+      setMessage(`订单 ${target.order_no} 已取消。`);
     } catch (error) {
       if (!handleExpiredSession(error)) {
         setMessage(error instanceof Error ? error.message : "取消订单失败");
       }
     } finally {
       setCancelling(false);
+      setHistoryRevision(v => v + 1);
     }
   }
 
@@ -531,7 +594,8 @@ function BillingPageContent({ initialCatalog }: { initialCatalog: CatalogPayload
       // Never drop the checkout because of an empty/odd refresh response:
       // losing the order on screen is exactly what makes users pay twice.
       if (!payload.order?.id) return;
-      setOrder(payload.order);
+      const updated = payload.order;
+      setOrder(current => current?.id === orderId && isOpenOrder(current) ? updated : current);
       if (payload.user) rememberUser(payload.user);
       if (payload.order.status === "paid") {
         setMessage("会员已开通。");
@@ -577,6 +641,10 @@ function BillingPageContent({ initialCatalog }: { initialCatalog: CatalogPayload
           </div>
         </header>
 
+        {token && <button className="billing-secondary" type="button" aria-expanded={showHistory} onClick={() => setShowHistory(v => !v)}>我的订单</button>}
+        {token && showHistory && <MembershipHistory key={`${token}:${historyRevision}:${order?.id}:${order?.status}`} busy={openingOrder || cancelling || creating || submitting}
+          onOpen={openFromHistory} onCancel={cancelOrder} />}
+
         {message ? <div className="billing-message" role="status">{message}</div> : null}
         {loading ? <div className="billing-message">正在读取会员套餐...</div> : null}
         {loadFailed && !loading ? (
@@ -590,13 +658,13 @@ function BillingPageContent({ initialCatalog }: { initialCatalog: CatalogPayload
           <div className="billing-packages">
             <div className="billing-package-heading">
               <span><Crown />选择会员套餐</span>
-              <small>{checkoutOrder ? `你有一笔${checkoutOrder.plan_name}订单未完成，套餐已锁定` : "年度会员更划算，月度适合先体验"}</small>
+              <small>{checkoutOrder ? "原订单保留，可另选套餐创建新订单" : "年度会员更划算，月度适合先体验"}</small>
             </div>
-            {checkoutOrder && CANCELLABLE_STATUSES.has(checkoutOrder.status) ? (
+            {checkoutOrder ? (
               <div className="billing-inline-message billing-plan-locked">
-                <span>想改开{plans.find((plan) => plan.id !== checkoutOrder.package_id)?.plan_name || "其他套餐"}？未付款时先取消当前订单再重新选择；已付款请直接提交付款信息，不要重复付款。</span>
-                <button className="billing-secondary" type="button" onClick={cancelOrder} disabled={cancelling}>
-                  {cancelling ? "正在取消" : "取消当前订单，重新选择套餐"}
+                <span>想再买同一套餐，或改开{plans.find((plan) => plan.id !== checkoutOrder.package_id)?.plan_name || "其他套餐"}？无需取消旧订单。同一笔转账只提交一次。</span>
+                <button className="billing-secondary" type="button" onClick={startAnother} disabled={cancelling || creating || submitting || openingOrder}>
+                  再买一份
                 </button>
               </div>
             ) : null}
@@ -611,7 +679,7 @@ function BillingPageContent({ initialCatalog }: { initialCatalog: CatalogPayload
                     type="button"
                     role="radio"
                     aria-checked={active}
-                    disabled={Boolean(checkoutOrder)}
+                    disabled={cancelling || creating || submitting || openingOrder}
                     className={`${active ? "active" : ""}${annual ? " is-recommended" : ""}`.trim()}
                     onClick={() => selectPlan(plan)}
                   >
@@ -652,9 +720,9 @@ function BillingPageContent({ initialCatalog }: { initialCatalog: CatalogPayload
                   <li className={checkoutOrder.status === "pending" ? "" : checkoutOrder.status === "rejected" ? "current" : "done"}>提交付款信息</li>
                   <li className={checkoutOrder.status === "submitted" ? "current" : ""}>管理员核款开通</li>
                 </ol>
-                <div className="billing-qr-row">
+                {checkoutOrder.status !== "submitted" && <div className="billing-qr-row">
                   <QrBox title="微信" src={selectedPlan?.wechat_qr_url || ""} />
-                </div>
+                </div>}
                 <div className="billing-pay-hint" data-testid="billing-pay-hint">
                   <p>应付金额：¥{(checkoutOrder.amount_cents / 100).toFixed(2)}</p>
                   <p>{`付款备注请填写订单号：${checkoutOrder.order_no}`}</p>
@@ -757,10 +825,10 @@ function BillingPageContent({ initialCatalog }: { initialCatalog: CatalogPayload
                   <RefreshCw />
                   刷新订单状态
                 </button>
-                {CANCELLABLE_STATUSES.has(checkoutOrder.status) ? (
-                  <button className="billing-secondary" type="button" onClick={cancelOrder} disabled={cancelling}>
+                {OPEN_ORDER_STATUSES.has(checkoutOrder.status) ? (
+                  <button className="billing-secondary" type="button" onClick={() => cancelOrder(checkoutOrder)} disabled={cancelling || submitting || openingOrder}>
                     <XCircle />
-                    {cancelling ? "正在取消" : "取消此订单 / 更换套餐"}
+                    {cancelling ? "正在取消" : checkoutOrder.status === "submitted" ? "我没有付款，取消订单" : "取消此订单 / 更换套餐"}
                   </button>
                 ) : null}
               </>

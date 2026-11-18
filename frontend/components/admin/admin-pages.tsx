@@ -712,7 +712,7 @@ export function AdminUsersPage() {
 export function AdminOrdersPage() {
   const { params, replaceQuery } = useAdminQuery();
   const query = params.get("q") || "";
-  const status = params.get("status") || "all";
+  const status = params.get("status") || "submitted";
   const page = parsePage(params.get("page"));
   const orders = useAdminData<OrdersResponse>(`/api/admin/orders?${buildQuery({ q: query, status, page, page_size: 20 })}`);
   const [searchDraft, setSearchDraft] = useState(query);

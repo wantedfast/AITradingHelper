@@ -173,16 +173,54 @@ class MembershipOrderIdempotencyTest(_Fixture):
             create_membership_order(self.db_path, user_id=self.admin_id)
         self.assertEqual(error.exception.status, 403)
 
-    def test_user_can_cancel_only_unreported_order(self) -> None:
+    def test_user_can_withdraw_submitted_order_without_reopening_on_stale_retry(self) -> None:
         order = create_membership_order(self.db_path, user_id=self.user_id)
         cancelled = cancel_membership_order(self.db_path, order_id=int(order["id"]), user_id=self.user_id)
         self.assertEqual(cancelled["status"], "cancelled")
         self.assertIsNone(latest_open_membership_order(self.db_path, user_id=self.user_id))
         second = create_membership_order(self.db_path, user_id=self.user_id)
         self.submit(int(second["id"]))
+        cancelled = cancel_membership_order(self.db_path, order_id=second["id"], user_id=self.user_id)
+        self.assertEqual(cancelled["status"], "cancelled")
         with self.assertRaises(AuthError) as error:
-            cancel_membership_order(self.db_path, order_id=int(second["id"]), user_id=self.user_id)
+            self.submit(second["id"])
         self.assertEqual(error.exception.status, 409)
+        with self.assertRaises(AuthError):
+            confirm_membership_order(self.db_path, order_id=second["id"], admin_id=self.admin_id)
+
+    def test_cancel_and_confirm_race_delivers_only_if_confirm_wins(self) -> None:
+        order = create_membership_order(self.db_path, user_id=self.user_id)
+        self.submit(order["id"])
+        barrier = threading.Barrier(2)
+        def act(cancel):
+            barrier.wait(timeout=5)
+            try:
+                if cancel:
+                    return cancel_membership_order(self.db_path, order_id=order["id"], user_id=self.user_id)["status"]
+                return confirm_membership_order(self.db_path, order_id=order["id"], admin_id=self.admin_id)["status"]
+            except AuthError:
+                return "refused"
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            outcomes = list(pool.map(act, [True, False]))
+        status = self.query("SELECT status FROM orders WHERE id = ?", (order["id"],))[0]["status"]
+        self.assertCountEqual(outcomes, [status, "refused"])
+        self.assertEqual(len(self.query("SELECT id FROM membership_ledger")), int(status == "paid"))
+
+    def test_distinct_purchase_intents_stack_only_after_each_confirmation(self) -> None:
+        def create(key):
+            return create_membership_order(self.db_path, user_id=self.user_id, client_request_id=key)["id"]
+        first = create("purchase-0001")
+        self.submit(first)
+        second = create("purchase-0002")
+        self.assertNotEqual(first, second)
+        self.assertEqual(second, create("purchase-0002"))
+        self.submit(second)
+        self.assertEqual(len(self.query("SELECT id FROM membership_ledger")), 0)
+        for oid in (first, second, second):
+            confirm_membership_order(self.db_path, order_id=oid, admin_id=self.admin_id)
+        ledger = self.query("SELECT started_at, expires_at FROM membership_ledger ORDER BY id")
+        self.assertEqual(len(ledger), 2)
+        self.assertEqual(ledger[1]["started_at"], ledger[0]["expires_at"])
 
     def test_rejected_order_can_be_cancelled_to_switch_to_annual(self) -> None:
         monthly = create_membership_order(self.db_path, user_id=self.user_id, plan_id="monthly_membership")
@@ -556,6 +594,19 @@ class MembershipPaymentApiTest(_Fixture):
         status, again = self.request(f"/api/pay/membership/orders/{order_id}/submit", token="pay-user-token", payload=submit_body)
         self.assertEqual(status, 200, again)
         self.assertEqual(again["order"]["status"], "submitted")
+
+    def test_order_history_requires_auth_and_paginates_only_my_memberships(self) -> None:
+        path = "/api/pay/membership/orders"
+        self.assertEqual(self.request(path, method="GET")[0], 401)
+        ids = [create_membership_order(self.db_path, user_id=self.user_id, client_request_id=f"history-{i:04}")["id"] for i in range(22)]
+        create_membership_order(self.db_path, user_id=self.other_user_id)
+        cancel_membership_order(self.db_path, user_id=self.user_id, order_id=ids[0])
+        status, first = self.request(path, method="GET", token="pay-user-token")
+        self.assertEqual(status, 200)
+        _, second = self.request(f"{path}?before={first['next_before']}", method="GET", token="pay-user-token")
+        self.assertEqual([r["id"] for r in first["orders"]+second["orders"]], ids[::-1])
+        self.assertEqual(second["orders"][-1]["status"], "cancelled")
+        self.assertIsNone(second["next_before"])
 
     def test_latest_api_hides_paid_order_so_expired_member_can_renew(self) -> None:
         order = create_membership_order(self.db_path, user_id=self.user_id)

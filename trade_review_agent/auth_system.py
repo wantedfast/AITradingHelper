@@ -1593,8 +1593,8 @@ def create_membership_order(
 
     Idempotency rules, evaluated inside one write transaction:
     1. The same client_request_id for the same user returns the original order.
-    2. An unfinished (pending/submitted) order for the same plan and price is
-       reused, so double clicks, retries and refreshes never pile up orders.
+    2. A fresh key is a new purchase. Legacy clients without keys still
+       resume their unfinished order for the same plan and price.
     """
     plan = _membership_plan(plan_id)
     client_request_id = _normalize_client_request_id(client_request_id)
@@ -1610,7 +1610,7 @@ def create_membership_order(
                 if (existing["package_id"] or "") != plan["id"]:
                     raise AuthError("client_request_id 已用于其他套餐订单", 409)
                 return _order_payload(existing) | {"reused": True}
-        reusable = conn.execute(
+        reusable = None if client_request_id else conn.execute(
             """
             SELECT *
             FROM orders
@@ -1651,6 +1651,17 @@ def create_membership_order(
         order_id = int(cursor.lastrowid)
         _record_order_event(conn, order_id=order_id, event="created", from_status=None, to_status="pending", actor_id=user_id, actor_role="user")
         return _order_payload(conn.execute("SELECT * FROM orders WHERE id = ?", (order_id,)).fetchone()) | {"reused": False}
+
+
+def membership_order_history(db_path: Path, *, user_id: int, before: int = 0) -> dict[str, Any]:
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            """SELECT id, order_no, plan_name, package_id, amount_cents, status, created_at
+               FROM orders WHERE user_id = ? AND product_type = 'membership'
+               AND (? = 0 OR id < ?) ORDER BY id DESC LIMIT 21""",
+            (user_id, before, before),
+        ).fetchall()
+    return {"orders": [dict(row) for row in rows[:20]], "next_before": rows[19]["id"] if len(rows) > 20 else None}
 
 
 def latest_membership_order(db_path: Path, *, user_id: int) -> dict[str, Any] | None:
@@ -1826,6 +1837,8 @@ def submit_membership_payment(
         if int(order["amount_cents"]) != submitted_amount_cents:
             raise AuthError("实付金额与订单金额不一致，请核对后再提交", 400)
         previous_status = str(order["status"])
+        if previous_status == "cancelled" and order["submitted_at"]:
+            raise AuthError("这笔已提交的订单已撤销，不能再次提交；如实际已付款请联系管理员核对原订单号", 409)
         if previous_status in {"paid", "submitted"} and _payment_fields_match(order, **fields):
             order_payload = _order_payload(order)
             order_payload["admin_notification"] = {"sent": False, "skipped": True, "duplicate": True}
@@ -1885,9 +1898,7 @@ def submit_membership_payment(
 def cancel_membership_order(db_path: Path, *, order_id: int, user_id: int) -> dict[str, Any]:
     """Let a user abandon an unpaid order (e.g. to switch plans).
 
-    `pending` orders and admin-`rejected` orders can be cancelled (otherwise a
-    rejected order would block switching plans forever). A `submitted` order
-    awaits admin verification and can only be resolved by the admin.
+    A user can withdraw an unconfirmed order, never a delivered entitlement.
     """
     with _connect(db_path) as conn:
         conn.execute("BEGIN IMMEDIATE")
@@ -1895,10 +1906,10 @@ def cancel_membership_order(db_path: Path, *, order_id: int, user_id: int) -> di
         if order["status"] == "cancelled":
             return _order_payload(order)
         previous_status = str(order["status"])
-        if previous_status not in {"pending", "rejected"}:
-            raise AuthError("该订单已提交付款信息或已处理，不能取消；如需帮助请联系客服", 409)
+        if previous_status not in {"pending", "submitted", "rejected"}:
+            raise AuthError("该订单已处理，不能取消；如需帮助请联系客服", 409)
         conn.execute(
-            "UPDATE orders SET status = 'cancelled', cancelled_at = ? WHERE id = ? AND status IN ('pending', 'rejected')",
+            "UPDATE orders SET status = 'cancelled', cancelled_at = ? WHERE id = ? AND status IN ('pending', 'submitted', 'rejected')",
             (_now(), order_id),
         )
         _record_order_event(conn, order_id=order_id, event="cancelled_by_user", from_status=previous_status, to_status="cancelled", actor_id=user_id, actor_role="user")
@@ -1929,8 +1940,8 @@ def reject_membership_order(db_path: Path, *, order_id: int, admin_id: int, admi
     with _connect(db_path) as conn:
         conn.execute("BEGIN IMMEDIATE")
         order = _membership_order_row(conn, order_id)
-        if order["status"] == "paid":
-            raise AuthError("已开通订单不能驳回", 409)
+        if order["status"] in {"paid", "cancelled"}:
+            raise AuthError("已开通或已取消的订单不能驳回", 409)
         previous_status = str(order["status"])
         updated_count = conn.execute(
             """

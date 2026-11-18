@@ -324,6 +324,24 @@ html:has(.yh-billing) body {
   background: var(--now-soft);
 }
 
+.yh-billing .billing-history {
+  display: grid;
+  gap: 12px;
+}
+
+.yh-billing .billing-history article {
+  display: flex;
+  align-items: center;
+  gap: 8px 16px;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+  overflow-wrap: anywhere;
+}
+
+.yh-billing .billing-history article span {
+  flex: 1 1 200px;
+}
+
 .yh-billing .billing-paid {
   color: var(--down);
 }

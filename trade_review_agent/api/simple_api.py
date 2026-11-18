@@ -59,6 +59,7 @@ from trade_review_agent.auth_system import (
     latest_credit_order,
     latest_membership_order,
     latest_open_membership_order,
+    membership_order_history,
     manual_grant_membership,
     list_pending_update_notices,
     grant_credits_to_all_users,
@@ -416,6 +417,10 @@ class TradeReviewHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/pay/membership/orders/latest":
                 self._latest_membership_order()
+                return
+            if path == "/api/pay/membership/orders":
+                user = self._require_user()
+                self._json(membership_order_history(AUTH_DB, user_id=int(user["id"]), before=self._query_int("before", default=0)))
                 return
             if path.startswith("/api/orders/"):
                 self._get_order(path)

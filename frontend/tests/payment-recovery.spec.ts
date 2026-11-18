@@ -217,7 +217,7 @@ test.describe("membership checkout recovery", () => {
     });
     await page.goto("/billing", { waitUntil: "domcontentloaded" });
     const planCards = page.locator('.billing-plan-options button[role="radio"]');
-    await expect(planCards.nth(1)).toBeDisabled();
+    await expect(planCards.nth(1)).toBeEnabled();
     page.once("dialog", (dialog) => dialog.accept());
     await page.getByRole("button", { name: "取消此订单 / 更换套餐" }).click();
     await expect(planCards.nth(1)).toBeEnabled();
@@ -315,12 +315,35 @@ test.describe("membership checkout usability", () => {
 test.describe("membership checkout on a phone", () => {
   test.use({ viewport: { width: 390, height: 844 } });
 
+  test("create a second monthly order and withdraw only the earlier report from history", async ({ page }) => {
+    await seedSession(page, memberUser);
+    const original = {...pendingOrder, status: "submitted"};
+    const second = {...pendingOrder, id: 502, order_no: "YMSECOND502"};
+    await installBillingFixtures(page, {latest: () => ({order: original}), create: route => json(route, {order: second})});
+    await page.route("**/api/pay/membership/orders?before=0", route => json(route, {orders: [second, original], next_before: null}));
+    await page.route("**/api/pay/membership/orders/501/cancel", route => {
+      original.status = "cancelled";
+      return json(route, {order: original});
+    });
+    await page.goto("/billing", {waitUntil: "domcontentloaded"});
+    await page.getByRole("button", {name: "再买一份"}).click();
+    await page.getByRole("button", {name: "创建月度会员订单"}).click();
+    await expect(page.locator(".billing-order")).toContainText(second.order_no);
+    await page.getByRole("button", {name: "我的订单", exact: true}).click();
+    const history = page.getByRole("region", {name: "我的会员订单"});
+    page.once("dialog", dialog => dialog.accept());
+    await history.getByRole("button", {name: "我没有付款，取消订单"}).click();
+    await expect(history.locator("article").filter({hasText: original.order_no})).toContainText("已取消");
+    await expect(page.locator(".billing-order")).toContainText(second.order_no);
+    await expect(history.locator("article").filter({hasText: second.order_no})).toContainText("待付款");
+  });
+
   test("after scanning, the submit form is one tap away and plan switching is explained", async ({ page }) => {
     await seedSession(page, memberUser);
     await installBillingFixtures(page, { latest: () => ({ order: pendingOrder }) });
     await page.goto("/billing", { waitUntil: "domcontentloaded" });
     await expect(page.locator(".billing-plan-locked")).toContainText("年度会员");
-    await expect(page.getByRole("button", { name: "取消当前订单，重新选择套餐" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "再买一份" })).toBeVisible();
     const jump = page.getByRole("button", { name: "已付款？点这里提交付款信息" });
     await jump.scrollIntoViewIfNeeded();
     await jump.click();
@@ -473,7 +496,8 @@ test.describe("admin payment reconciliation", () => {
     await page.locator(".admin-order-events summary").first().click();
     await expect(page.locator(".admin-order-events")).toContainText("用户提交付款信息");
 
-    await page.goto("/admin/orders?status=submitted", { waitUntil: "domcontentloaded" });
+    await page.goto("/admin/orders", { waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("tab", {name: /待核款/})).toHaveAttribute("aria-selected", "true");
     await page.getByRole("button", { name: "确认到账并开通会员" }).click();
     const confirmDialog = page.getByRole("dialog");
     await expect(confirmDialog).toContainText("付款人：微信小王");
