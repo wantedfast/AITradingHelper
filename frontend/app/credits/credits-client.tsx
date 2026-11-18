@@ -1,5 +1,7 @@
 "use client";
 
+import "../yh-tokens.css";
+import "../billing-theme.css";
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -68,7 +70,7 @@ function buildAuthRedirect(credits: string) {
 
 export default function CreditsPage({ initialCatalog }: { initialCatalog: CreditCatalogPayload | null }) {
   return (
-    <Suspense fallback={<main className="billing-page" />}>
+    <Suspense fallback={<main className="billing-page yh-billing" />}>
       <CreditsPageContent initialCatalog={initialCatalog} />
     </Suspense>
   );
@@ -254,7 +256,7 @@ function CreditsPageContent({ initialCatalog }: { initialCatalog: CreditCatalogP
   }
 
   return (
-    <main className="billing-page credits-page">
+    <main className="billing-page credits-page yh-billing">
       <section className="billing-shell">
         <header className="billing-topbar">
           <Link href="/">

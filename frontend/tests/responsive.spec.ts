@@ -536,11 +536,11 @@ for (const viewport of viewports) {
         await expect(page.locator("details.mobile-report-disclosure").first()).not.toHaveAttribute("open", "");
 
         await page.goto("/ai-research", { waitUntil: "domcontentloaded" });
-        const disclosureWithTable = page.locator("details.mobile-report-disclosure").filter({ has: page.locator(".report-pipe-table-scroll") }).first();
+        const disclosureWithTable = page.locator("details.mobile-report-disclosure").filter({ has: page.locator(".ai-markdown-table-scroll") }).first();
         await expect(disclosureWithTable).toBeAttached();
         await expect(disclosureWithTable).not.toHaveAttribute("open", "");
         await disclosureWithTable.locator("summary").click();
-        const researchTable = disclosureWithTable.locator(".report-pipe-table-scroll").first();
+        const researchTable = disclosureWithTable.locator(".ai-markdown-table-scroll").first();
         await expect(researchTable).toBeVisible();
         await expect.poll(() => researchTable.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(true);
         await expectNoGlobalHorizontalOverflow(page, "ai-research wide table fixture");
@@ -612,7 +612,7 @@ test.describe("AI research beginner decision layer", () => {
     await installStableApiFixtures(page, { beginnerV2: true });
     await page.goto("/ai-research", { waitUntil: "domcontentloaded" });
 
-    const dashboard = page.locator(".ai-beginner-dashboard");
+    const dashboard = page.locator(".ai-beginner-prototype");
     await expect(dashboard).toBeVisible();
     await expect(dashboard.getByText("谨慎观察")).toBeVisible();
     await expect(dashboard.getByText("AI 硬件", { exact: true })).toBeVisible();
@@ -621,8 +621,8 @@ test.describe("AI research beginner decision layer", () => {
     await expect(dashboard.getByRole("heading", { name: "我该怎么做" })).toBeVisible();
     await expect(dashboard.getByText("开盘直接追着热度行动。")).toBeVisible();
 
-    const research = page.locator("details.mobile-report-disclosure").filter({ hasText: "研究依据与术语解释" }).first();
-    await expect(research).not.toHaveAttribute("open", "");
+    const researchToggle = dashboard.getByRole("button", { name: /研究依据与术语解释/ });
+    await expect(researchToggle).toHaveAttribute("aria-expanded", "false");
     await expectNoGlobalHorizontalOverflow(page, "AI research beginner decision layer");
   });
 });
@@ -633,7 +633,6 @@ test.describe("Market Day v2 beginner decision layer", () => {
   test("shows what changed first, keeps professional content collapsed, and avoids mobile overflow", async ({ page }) => {
     await installStableApiFixtures(page, { marketDayBeginnerV2: true });
     await page.goto("/market-day", { waitUntil: "domcontentloaded" });
-    await page.locator('input[type="date"]').fill("2026-07-15");
 
     const dashboard = page.locator(".ai-beginner-dashboard");
     await expect(dashboard).toBeVisible();
@@ -696,13 +695,13 @@ test.describe("homepage guest acquisition", () => {
 
     await page.goto("/", { waitUntil: "domcontentloaded" });
 
-    const heroActions = page.locator(".hero .actions");
+    const heroActions = page.locator(".yh-hero .yh-hero-actions");
     const startLink = heroActions.getByRole("link", { name: "现在开始" });
     await expect(startLink).toBeVisible();
     await expect(startLink).toHaveAttribute("href", "/auth");
-    await page.locator(".home-mobile-menu-button").click();
-    await expect(page.locator(".home-mobile-account-login")).toBeVisible();
-    await page.locator(".home-mobile-menu-head button").click();
+    await page.locator(".yh-mobile-menu-button").click();
+    await expect(page.locator(".yh-mobile-account-login")).toBeVisible();
+    await page.locator(".yh-sheet-head button").click();
     await expect(page.locator("audio, .music-toggle")).toHaveCount(0);
 
     await startLink.click();
@@ -725,7 +724,7 @@ test.describe("homepage guest acquisition", () => {
     });
 
     await page.goto("/", { waitUntil: "domcontentloaded" });
-    const startLink = page.locator(".hero .actions").getByRole("link", { name: "现在开始" });
+    const startLink = page.locator(".yh-hero .yh-hero-actions").getByRole("link", { name: "现在开始" });
     await expect(startLink).toBeVisible();
     await expect(startLink).toHaveAttribute("href", "/auction-strength");
   });
@@ -747,9 +746,9 @@ test.describe("homepage guest acquisition", () => {
     });
 
     await page.goto("/", { waitUntil: "domcontentloaded" });
-    await expect(page.locator(".home-user-pill")).toContainText("账号已保留 · responsive-test");
+    await expect(page.locator(".yh-user-pill")).toContainText("账号已保留 · responsive-test");
     await expect.poll(() => page.evaluate(() => window.localStorage.getItem("ai_trade_token"))).toBe("still-valid-token");
-    await expect(page.locator(".nav-links").getByRole("link", { name: "登录" })).toHaveCount(0);
+    await expect(page.locator(".yh-bar").getByRole("link", { name: "登录" })).toHaveCount(0);
   });
 
   test("homepage navigation exposes the value investing feature", async ({ page }) => {
@@ -762,7 +761,7 @@ test.describe("homepage guest acquisition", () => {
       return json(route, {});
     });
     await page.goto("/", { waitUntil: "domcontentloaded" });
-    await expect(page.locator(".nav-links").getByRole("link", { name: "价值投资" })).toHaveAttribute("href", "/stock-research");
+    await expect(page.locator(".yh-nav-links").getByRole("link", { name: "价值投资" })).toHaveAttribute("href", "/stock-research");
   });
 
   test("feedback form sends an optional screenshot as multipart data", async ({ page }) => {
@@ -805,16 +804,16 @@ test.describe("homepage guest acquisition", () => {
 
     await page.goto("/", { waitUntil: "domcontentloaded" });
 
-    const membership = page.locator(".home-mobile-actions .home-mobile-membership");
-    const register = page.locator(".home-mobile-actions .home-mobile-register");
-    const menu = page.locator(".home-mobile-actions .home-mobile-menu-button");
+    const membership = page.locator(".yh-mobile-actions .yh-mobile-membership");
+    const register = page.locator(".yh-mobile-actions .yh-mobile-register");
+    const menu = page.locator(".yh-mobile-actions .yh-mobile-menu-button");
     await expect(membership).toBeVisible();
     await expect(register).toBeVisible();
     await expect(menu).toBeVisible();
     const [membershipBox, registerBox, menuBox] = await Promise.all([membership.boundingBox(), register.boundingBox(), menu.boundingBox()]);
     expect(membershipBox!.x + membershipBox!.width).toBeLessThanOrEqual(registerBox!.x);
     expect(registerBox!.x + registerBox!.width).toBeLessThanOrEqual(menuBox!.x);
-    await expect(page.locator(".home-mobile-actions .home-mobile-login")).toHaveCount(0);
+    await expect(page.locator(".yh-mobile-actions .yh-mobile-login")).toHaveCount(0);
     await expectNoGlobalHorizontalOverflow(page, "360px guest acquisition topbar");
   });
 
@@ -845,7 +844,7 @@ test.describe("homepage guest acquisition", () => {
     });
 
     await page.goto("/", { waitUntil: "domcontentloaded" });
-    const membershipAction = page.locator(".home-mobile-actions .home-mobile-membership");
+    const membershipAction = page.locator(".yh-mobile-actions .yh-mobile-membership");
     await expect(membershipAction).toHaveText(/开通会员/);
     await expect(membershipAction).not.toHaveClass(/is-active/);
 

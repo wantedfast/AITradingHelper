@@ -1,0 +1,392 @@
+/*
+ * Membership + credits checkout in the Apple-style system (tokens in
+ * yh-tokens.css). Overrides only; structure and behaviour stay in
+ * billing-client / credits-client.
+ */
+
+html:has(.yh-billing),
+html:has(.yh-billing) body {
+  background: #f5f5f7;
+}
+
+@media (prefers-color-scheme: dark) {
+  html:has(.yh-billing),
+  html:has(.yh-billing) body {
+    background: #000000;
+  }
+}
+
+.yh-billing {
+  color: var(--text) !important;
+  background: var(--bg-alt) !important;
+  background-image: none !important;
+  font-family: var(--sans);
+  letter-spacing: -0.01em;
+  -webkit-font-smoothing: antialiased;
+}
+
+.yh-billing .billing-topbar {
+  margin-bottom: 32px;
+}
+
+.yh-billing .billing-topbar a {
+  color: var(--accent-link);
+  font-weight: 500;
+}
+
+.yh-billing .billing-topbar a:hover {
+  text-decoration: underline;
+}
+
+.yh-billing .billing-topbar span {
+  color: var(--now);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.yh-billing .billing-topbar h1 {
+  max-width: none;
+  margin: 8px 0;
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: clamp(36px, 5.4vw, 64px);
+  font-weight: 700;
+  line-height: 1.05;
+  letter-spacing: -0.04em;
+}
+
+.yh-billing .billing-topbar p {
+  color: var(--text-2);
+  font-size: clamp(17px, 1.6vw, 21px);
+}
+
+.yh-billing .billing-message {
+  border: 0;
+  border-radius: 14px;
+  color: var(--text);
+  background: var(--accent-soft);
+}
+
+.yh-billing .billing-packages,
+.yh-billing .billing-checkout {
+  border: 0;
+  border-radius: var(--radius-lg);
+  padding: 24px;
+  color: var(--text);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.yh-billing .billing-package-heading span,
+.yh-billing .billing-card-head b {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.yh-billing .billing-package-heading small,
+.yh-billing .billing-card-head small {
+  color: var(--text-3);
+  font-weight: 400;
+  letter-spacing: 0;
+}
+
+.yh-billing .billing-package-heading svg,
+.yh-billing .billing-card-head svg {
+  color: var(--text-3);
+}
+
+/* Plan cards */
+.yh-billing .billing-packages .billing-plan-options button {
+  min-height: 0;
+  border: 0;
+  border-radius: var(--radius);
+  padding: 20px;
+  color: var(--text);
+  background: var(--bg-alt);
+  box-shadow: none;
+  transition: background 0.25s var(--ease), box-shadow 0.25s var(--ease);
+}
+
+.yh-billing .billing-packages .billing-plan-options button:not(:disabled):hover {
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+}
+
+.yh-billing .billing-packages .billing-plan-options button.active {
+  background: var(--surface);
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+.yh-billing .billing-plan-icon {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.yh-billing .billing-plan-name-row b {
+  font-size: 19px;
+  font-weight: 700;
+}
+
+.yh-billing .billing-plan-name-row em {
+  padding: 0;
+  color: var(--now);
+  background: transparent;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.yh-billing .billing-plan-copy small {
+  color: var(--text-2);
+}
+
+.yh-billing .billing-plan-copy i {
+  color: var(--text-3);
+}
+
+.yh-billing .billing-packages .billing-plan-options strong {
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 36px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.04em;
+}
+
+/* Explanatory boxes were sized like QR placeholders (290px tall). */
+.yh-billing .billing-empty-qr {
+  min-height: 0;
+  place-items: start;
+  grid-template-columns: auto 1fr;
+  align-items: start;
+  gap: 4px 12px;
+  margin-top: 16px;
+  border: 0;
+  border-radius: var(--radius);
+  padding: 16px 18px;
+  color: var(--text-2);
+  background: var(--bg-alt);
+  text-align: left;
+}
+
+.yh-billing .billing-empty-qr > svg {
+  grid-row: span 6;
+  width: 18px;
+  height: 18px;
+  margin-top: 3px;
+  color: var(--text-3);
+}
+
+.yh-billing .billing-empty-qr p {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.yh-billing .billing-empty-qr small {
+  grid-column: 2;
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+/* Buttons */
+.yh-billing .billing-primary {
+  min-height: 50px;
+  border: 0;
+  border-radius: 999px;
+  color: var(--on-accent);
+  background: var(--accent);
+  font-weight: 500;
+  font-size: 17px;
+  transition: background 0.2s var(--ease), transform 0.2s var(--ease);
+}
+
+.yh-billing .billing-primary:not(:disabled):hover {
+  background: var(--accent-hover);
+}
+
+.yh-billing .billing-primary:not(:disabled):active {
+  transform: scale(0.98);
+}
+
+.yh-billing .billing-primary:disabled {
+  opacity: 0.4;
+}
+
+.yh-billing .billing-secondary {
+  border: 0;
+  border-radius: 999px;
+  color: var(--accent-link);
+  background: var(--accent-soft);
+  font-weight: 500;
+}
+
+.yh-billing .billing-secondary:hover {
+  color: var(--on-accent);
+  background: var(--accent);
+}
+
+.yh-billing .billing-primary:focus-visible,
+.yh-billing .billing-secondary:focus-visible,
+.yh-billing .billing-plan-options button:focus-visible,
+.yh-billing input:focus-visible,
+.yh-billing a:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 3px;
+}
+
+/* Checkout */
+.yh-billing .billing-qr {
+  border-radius: var(--radius);
+  background: var(--bg-alt);
+}
+
+.yh-billing .billing-qr code {
+  color: var(--text-3);
+}
+
+.yh-billing .billing-pay-hint {
+  border: 0;
+  border-radius: var(--radius);
+  color: var(--text);
+  background: var(--now-soft);
+}
+
+.yh-billing .billing-pay-hint p {
+  font-variant-numeric: tabular-nums;
+}
+
+.yh-billing .billing-pay-hint small {
+  color: var(--text-2);
+}
+
+.yh-billing .billing-steps li {
+  border: 0;
+  border-radius: 12px;
+  color: var(--text-3);
+  background: var(--bg-alt);
+}
+
+.yh-billing .billing-steps li.done {
+  color: var(--down);
+}
+
+.yh-billing .billing-steps li.current {
+  color: var(--on-now);
+  background: var(--now);
+}
+
+.yh-billing .billing-order {
+  color: var(--text-3);
+}
+
+.yh-billing .billing-order b {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.yh-billing .billing-payment-form label span {
+  color: var(--text-3);
+}
+
+.yh-billing .billing-payment-form input,
+.yh-billing .billing-payment-form select {
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  color: var(--text);
+  background: var(--surface);
+}
+
+.yh-billing .billing-payment-form input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 4px var(--accent-soft);
+}
+
+.yh-billing .billing-payment-form input[readonly] {
+  color: var(--text-2);
+  background: var(--bg-alt);
+}
+
+.yh-billing .billing-payment-form input[aria-invalid="true"] {
+  border-color: var(--up);
+  box-shadow: 0 0 0 4px rgba(215, 0, 21, 0.12);
+}
+
+.yh-billing .billing-inline-message {
+  border: 0;
+  border-radius: 14px;
+  color: var(--text);
+  background: var(--accent-soft);
+}
+
+.yh-billing .billing-inline-message[role="alert"] {
+  background: var(--now-soft);
+}
+
+.yh-billing .billing-paid {
+  color: var(--down);
+}
+
+/* Credits page: legacy rules hard-code near-white text (invisible on light). */
+.yh-billing .credits-quantity-row > span,
+.yh-billing .credits-summary span {
+  color: var(--text-3);
+}
+
+.yh-billing .credits-quantity-row input {
+  border: 1px solid var(--line-strong);
+  color: var(--text);
+  background: var(--surface);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.yh-billing .credits-quantity-row input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 4px var(--accent-soft);
+  outline: none;
+}
+
+.yh-billing .credits-summary article {
+  border: 0;
+  background: var(--bg-alt);
+}
+
+.yh-billing .credits-summary b {
+  color: var(--text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+
+.yh-billing .credits-rule-list p {
+  color: var(--text-2);
+}
+
+.yh-billing .billing-package-heading > small {
+  color: var(--text-3);
+}
+
+@media (max-width: 640px) {
+  /* Keep the legacy 15px phone padding: the WeChat QR must stay >= 300px wide
+     on a 390px screen to remain scannable from a screenshot. */
+  .yh-billing .billing-packages,
+  .yh-billing .billing-checkout {
+    padding: 15px;
+  }
+
+  .yh-billing .billing-qr {
+    padding: 4px;
+  }
+
+  .yh-billing .billing-packages .billing-plan-options strong {
+    font-size: 30px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .yh-billing * {
+    transition: none !important;
+  }
+}

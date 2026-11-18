@@ -5,6 +5,8 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, CheckCircle2, Clock3, Crown, CreditCard, Loader2, QrCode, RefreshCw, Send, ShieldCheck, Sparkles, XCircle } from "lucide-react";
+import "../yh-tokens.css";
+import "../billing-theme.css";
 import { ApiError, apiFetch, getAuthToken, storeUser, type UserProfile } from "@/lib/auth-client";
 
 export type CheckoutInfo = {
@@ -186,7 +188,7 @@ function buildAuthRedirect(planId: string, source: string, feature: string) {
 
 export default function BillingPage({ initialCatalog }: { initialCatalog: CatalogPayload | null }) {
   return (
-    <Suspense fallback={<main className="billing-page" />}>
+    <Suspense fallback={<main className="billing-page yh-billing" />}>
       <BillingPageContent initialCatalog={initialCatalog} />
     </Suspense>
   );
@@ -561,7 +563,7 @@ function BillingPageContent({ initialCatalog }: { initialCatalog: CatalogPayload
         : "我已付款，通知管理员";
 
   return (
-    <main className="billing-page">
+    <main className="billing-page yh-billing">
       <section className="billing-shell">
         <header className="billing-topbar">
           <Link href="/">

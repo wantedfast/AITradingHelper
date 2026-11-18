@@ -324,6 +324,46 @@
   }
 }
 
+/* The desktop admin rail leaves too little room for dashboard cards on 768px
+   tablets. Switch only the admin shell to its compact navigator here; other
+   product pages keep their existing tablet layouts. */
+@media (min-width: 768px) and (max-width: 820px) {
+  .admin-page {
+    padding-inline: 16px;
+  }
+
+  .admin-layout {
+    width: 100%;
+    display: block;
+  }
+
+  .admin-sidebar {
+    display: none;
+  }
+
+  .admin-mobile-section-switcher {
+    position: sticky;
+    z-index: 85;
+    top: 0;
+    margin: 0 -16px 14px;
+    padding: 7px 16px;
+    display: block;
+    overflow-x: auto;
+    background: rgba(5, 8, 7, .94);
+    backdrop-filter: blur(16px);
+  }
+
+  .admin-mobile-section-switcher .admin-section-nav {
+    width: max-content;
+    display: flex;
+  }
+
+  .admin-mobile-section-switcher .admin-section-nav :is(a, button) {
+    min-height: 42px;
+    flex: 0 0 auto;
+  }
+}
+
 @media (max-width: 767px) {
   :root {
     --mobile-page-gutter: clamp(12px, 4vw, 16px);
