@@ -63,6 +63,7 @@ async function installBillingFixtures(page: Page, handlers: BillingHandlers) {
   await page.route("**/api/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
     const method = route.request().method();
+    if (path === "/api/auth/me") return json(route, { user: memberUser });
     if (path === "/api/public/membership/plans") return json(route, { plans: membershipPlans, checkout: {} });
     if (path === "/api/update-notices/pending") return json(route, { notices: [] });
     if (path === "/api/pay/membership/orders/latest") {
@@ -77,6 +78,36 @@ async function installBillingFixtures(page: Page, handlers: BillingHandlers) {
 
 test.describe("membership checkout recovery", () => {
   test.use({ viewport: { width: 1280, height: 900 } });
+
+  test("account dropdown opens order history without entering checkout", async ({ page }) => {
+    await seedSession(page, memberUser);
+    await installBillingFixtures(page, {});
+    await page.route("**/api/pay/membership/orders?before=0", route => json(route, { orders: [], next_before: null }));
+    await page.goto("/");
+    await page.getByRole("button", { name: /已登录.*renewing-member/ }).click();
+    await page.locator(".yh-popover").getByRole("link", { name: "我的订单" }).click();
+    await expect(page).toHaveURL(/\/account\/orders$/);
+    await expect(page.getByText("还没有会员订单。")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "开通盈航会员" })).toHaveCount(0);
+  });
+
+  test("guest order history does not request any private orders", async ({ page }) => {
+    let requests = 0;
+    await page.route("**/api/pay/membership/orders**", route => { requests++; return json(route, {}, 401); });
+    await page.goto("/account/orders");
+    await expect(page.getByRole("link", { name: "登录查看我的订单" })).toHaveAttribute("href", /redirect=%2Faccount%2Forders/);
+    expect(requests).toBe(0);
+  });
+
+  test("an unavailable history order never falls back to another order's payment code", async ({ page }) => {
+    await seedSession(page, memberUser);
+    await installBillingFixtures(page, { latest: () => ({order: pendingOrder}) });
+    await page.route("**/api/orders/999", route => json(route, {error: "订单不存在"}, 404));
+    await page.goto("/billing?order_id=999");
+    await expect(page.getByRole("status")).toContainText("订单不存在");
+    await expect(page.getByAltText("微信收款二维码")).toHaveCount(0);
+    await expect(page.getByRole("button", {name: /创建.*会员订单/})).toBeDisabled();
+  });
 
   test("a failed order creation never shows a payment QR code", async ({ page }) => {
     await seedSession(page, memberUser);
@@ -319,7 +350,7 @@ test.describe("membership checkout on a phone", () => {
     await seedSession(page, memberUser);
     const original = {...pendingOrder, status: "submitted"};
     const second = {...pendingOrder, id: 502, order_no: "YMSECOND502"};
-    await installBillingFixtures(page, {latest: () => ({order: original}), create: route => json(route, {order: second})});
+    await installBillingFixtures(page, {latest: () => ({order: original}), create: route => json(route, {order: second}), order: () => ({...second, product_type: "membership", user_id: memberUser.id})});
     await page.route("**/api/pay/membership/orders?before=0", route => json(route, {orders: [second, original], next_before: null}));
     await page.route("**/api/pay/membership/orders/501/cancel", route => {
       original.status = "cancelled";
@@ -329,13 +360,18 @@ test.describe("membership checkout on a phone", () => {
     await page.getByRole("button", {name: "再买一份"}).click();
     await page.getByRole("button", {name: "创建月度会员订单"}).click();
     await expect(page.locator(".billing-order")).toContainText(second.order_no);
-    await page.getByRole("button", {name: "我的订单", exact: true}).click();
+    await expect(page.getByRole("button", {name: "我的订单", exact: true})).toHaveCount(0);
+    await page.getByRole("link", {name: "返回首页"}).click();
+    await page.getByRole("button", {name: "打开导航菜单"}).click();
+    await page.locator(".yh-sheet-account").getByRole("link", {name: "我的订单"}).click();
+    await expect(page).toHaveURL(/\/account\/orders$/);
     const history = page.getByRole("region", {name: "我的会员订单"});
     page.once("dialog", dialog => dialog.accept());
     await history.getByRole("button", {name: "我没有付款，取消订单"}).click();
     await expect(history.locator("article").filter({hasText: original.order_no})).toContainText("已取消");
-    await expect(page.locator(".billing-order")).toContainText(second.order_no);
     await expect(history.locator("article").filter({hasText: second.order_no})).toContainText("待付款");
+    await history.locator("article").filter({hasText: second.order_no}).getByRole("link", {name: "查看并处理"}).click();
+    await expect(page.locator(".billing-order")).toContainText(second.order_no);
   });
 
   test("after scanning, the submit form is one tap away and plan switching is explained", async ({ page }) => {

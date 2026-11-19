@@ -295,7 +295,7 @@ html:has(.yh) body {
   white-space: nowrap;
 }
 
-.yh-popover button {
+.yh-popover :is(button, a) {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -311,11 +311,11 @@ html:has(.yh) body {
   cursor: pointer;
 }
 
-.yh-popover button:hover {
+.yh-popover :is(button, a):hover {
   background: var(--bg-alt);
 }
 
-.yh-popover button svg {
+.yh-popover :is(button, a) svg {
   width: 16px;
   height: 16px;
   color: var(--text-3);

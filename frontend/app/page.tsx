@@ -3,7 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { FormEvent, useEffect, useRef, useState } from "react";
-import { ArrowRight, ArrowUpRight, BellRing, ChevronDown, Copy, CreditCard, Crown, ImagePlus, LogOut, Menu, MessageSquare, ShieldCheck, UserRound, X } from "lucide-react";
+import { ArrowRight, ArrowUpRight, BellRing, ChevronDown, Copy, CreditCard, Crown, ImagePlus, LogOut, Menu, MessageSquare, ReceiptText, ShieldCheck, UserRound, X } from "lucide-react";
 import { useAuctionStrengthPerformance } from "@/components/auction-strength-performance-ticker";
 import { FinancialDisclaimer } from "@/components/financial-disclaimer";
 import { TradingDayClock } from "@/components/home/trading-day-clock";
@@ -307,6 +307,9 @@ export default function Page() {
                     <div><dt>邀请码</dt><dd>{user.invite_code}</dd></div>
                   </dl>
                   {currentInviteUrl ? <code className="yh-popover__invite" title={currentInviteUrl}>{currentInviteUrl}</code> : null}
+                  <Link href="/account/orders" onClick={() => setShowUserMenu(false)}>
+                    <ReceiptText aria-hidden="true" />我的订单
+                  </Link>
                   <button type="button" onClick={copyInvite}>
                     <Copy aria-hidden="true" />
                     {inviteCopied ? "已复制邀请链接" : "复制邀请链接"}
@@ -412,6 +415,9 @@ export default function Page() {
                     管理台
                   </Link>
                 ) : null}
+                <Link href="/account/orders" onClick={() => setShowMobileMenu(false)}>
+                  <ReceiptText aria-hidden="true" />我的订单
+                </Link>
                 <button type="button" onClick={copyInvite}>
                   <Copy aria-hidden="true" />
                   {inviteCopied ? "已复制邀请链接" : "复制邀请链接"}

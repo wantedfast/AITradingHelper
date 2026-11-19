@@ -8,6 +8,10 @@ import { ArrowLeft, CheckCircle2, Clock3, Crown, CreditCard, Loader2, QrCode, Re
 import "../yh-tokens.css";
 import "../billing-theme.css";
 import { ApiError, apiFetch, getAuthToken, storeUser, type UserProfile } from "@/lib/auth-client";
+import {
+  type OrderPayload, OPEN_ORDER_STATUSES, orderStatusText, confirmCancellation, cancelMembershipOrder,
+  clearDraft, saveOpenOrderSnapshot, loadOpenOrderSnapshot, DRAFT_KEY_PREFIX, safeStorage,
+} from "@/lib/membership-orders";
 
 export type CheckoutInfo = {
   business_hours: string;
@@ -23,28 +27,6 @@ export type MembershipPlan = {
   duration_days: number;
   wechat_qr_url?: string;
   manual_checkout?: CheckoutInfo;
-};
-
-type OrderPayload = {
-  id: number;
-  order_no: string;
-  plan_name: string;
-  amount_cents: number;
-  package_id?: string;
-  duration_days?: number;
-  status: "pending" | "submitted" | "paid" | "rejected" | "cancelled" | string;
-  payment_method?: string;
-  payer_name?: string;
-  payer_note?: string;
-  payer_paid_at?: string;
-  submitted_amount_cents?: number | null;
-  submitted_at?: string;
-  admin_note?: string;
-  paid_at?: string | null;
-  created_at?: string;
-  reused?: boolean;
-  duplicate_submission?: boolean;
-  admin_notification?: { sent?: boolean; error?: string; skipped?: boolean; duplicate?: boolean };
 };
 
 export type CatalogPayload = {
@@ -63,27 +45,14 @@ type PaymentDraft = {
 
 type SubmitFailure = { retryable: boolean; message: string } | null;
 
-// Orders the checkout can still act on. A paid or cancelled order closes the
-// checkout so a renewing member is offered a fresh order (showing last
-// month's paid order with a QR code but no submit form caused real losses).
-const OPEN_ORDER_STATUSES = new Set(["pending", "submitted", "rejected"]);
 // Payment calls must fail fast and visibly during an outage so the user is
 // told not to pay twice, instead of watching a spinner indefinitely.
 const PAYMENT_TIMEOUT_MS = 20_000;
 const PAYMENT_SUBMIT_TIMEOUT_MS = 35_000;
 const CREATE_KEY_PREFIX = "membership_checkout_request:";
-const DRAFT_KEY_PREFIX = "membership_payment_draft:";
 
 function isOpenOrder(order: OrderPayload | null | undefined): order is OrderPayload {
   return Boolean(order && OPEN_ORDER_STATUSES.has(order.status));
-}
-
-function safeStorage(kind: "local" | "session"): Storage | null {
-  try {
-    return kind === "local" ? window.localStorage : window.sessionStorage;
-  } catch {
-    return null;
-  }
 }
 
 function newRequestId() {
@@ -128,39 +97,6 @@ function saveDraft(orderId: number, draft: PaymentDraft) {
   }
 }
 
-// Last open order, kept locally so that if the API is unreachable the page can
-// still tell a user who already paid which order to resume - and not to pay
-// again - instead of showing an empty checkout.
-const OPEN_ORDER_KEY = "membership_open_order";
-type OpenOrderSnapshot = { id: number; order_no: string; plan_name: string; amount_cents: number; status: string };
-
-function saveOpenOrderSnapshot(order: OrderPayload | null) {
-  const storage = safeStorage("local");
-  if (!storage) return;
-  try {
-    if (order && OPEN_ORDER_STATUSES.has(order.status)) {
-      const snapshot: OpenOrderSnapshot = { id: order.id, order_no: order.order_no, plan_name: order.plan_name, amount_cents: order.amount_cents, status: order.status };
-      storage.setItem(OPEN_ORDER_KEY, JSON.stringify(snapshot));
-    } else {
-      storage.removeItem(OPEN_ORDER_KEY);
-    }
-  } catch {
-    // ignore storage failures
-  }
-}
-
-function loadOpenOrderSnapshot(): OpenOrderSnapshot | null {
-  try {
-    const raw = safeStorage("local")?.getItem(OPEN_ORDER_KEY);
-    return raw ? (JSON.parse(raw) as OpenOrderSnapshot) : null;
-  } catch {
-    return null;
-  }
-}
-
-function clearDraft(orderId: number) {
-  safeStorage("local")?.removeItem(`${DRAFT_KEY_PREFIX}${orderId}`);
-}
 
 function localDateTimeValue(date: Date) {
   const pad = (value: number) => String(value).padStart(2, "0");
@@ -183,42 +119,6 @@ function buildAuthRedirect(planId: string, source: string, feature: string) {
   return `/auth?mode=register&redirect=${encodeURIComponent(redirect)}&plan_id=${encodeURIComponent(planId)}&source=${encodeURIComponent(source)}&feature=${encodeURIComponent(feature)}`;
 }
 
-function MembershipHistory({ busy, onOpen, onCancel }: {
-  busy: boolean;
-  onOpen: (id: number) => void;
-  onCancel: (order: OrderPayload) => void;
-}) {
-  const [cursors, setCursors] = useState([0]);
-  const [result, setResult] = useState<{ orders: OrderPayload[]; next_before: number | null } | null>(null);
-  const [error, setError] = useState("");
-  const [retry, setRetry] = useState(0);
-  const before = cursors[cursors.length - 1];
-  useEffect(() => {
-    let active = true;
-    setResult(null);
-    setError("");
-    apiFetch<{ orders: OrderPayload[]; next_before: number | null }>(`/api/pay/membership/orders?before=${before}`, {timeoutMs: PAYMENT_TIMEOUT_MS})
-      .then(data => { if (active) setResult(data); })
-      .catch(err => { if (active) setError(err instanceof Error ? err.message : "读取订单失败"); });
-    return () => { active = false; };
-  }, [before, retry]);
-  return <section className="billing-packages billing-history" aria-label="我的会员订单">
-    <h2>我的会员订单</h2>
-    {error ? <p role="alert">{error} <button className="billing-secondary" onClick={() => setRetry(v => v+1)}>重试</button></p>
-      : !result ? <p role="status">正在读取订单…</p>
-      : !result.orders.length ? <p>还没有会员订单。</p> : result.orders.map(item =>
-        <article className="billing-inline-message" key={item.id}>
-          <strong>{item.plan_name} · ¥{(item.amount_cents / 100).toFixed(2)} · {orderStatusText(item.status)}</strong>
-          <span>{item.order_no} · {item.created_at?.slice(0, 16).replace("T", " ")}</span>
-          {OPEN_ORDER_STATUSES.has(item.status) && <>
-            <button className="billing-secondary" disabled={busy} onClick={() => onOpen(item.id)}>查看并处理</button>
-            <button className="billing-secondary" disabled={busy} onClick={() => onCancel(item)}>{item.status === "submitted" ? "我没有付款，取消订单" : "取消这笔订单"}</button>
-          </>}
-        </article>)}
-    {cursors.length > 1 && <button className="billing-secondary" disabled={busy} onClick={() => setCursors(v => v.slice(0,-1))}>上一页</button>}
-    {result?.next_before && <button className="billing-secondary" disabled={busy} onClick={() => setCursors([...cursors, result.next_before!])}>下一页</button>}
-  </section>;
-}
 
 export default function BillingPage({ initialCatalog }: { initialCatalog: CatalogPayload | null }) {
   return (
@@ -232,6 +132,7 @@ function BillingPageContent({ initialCatalog }: { initialCatalog: CatalogPayload
   const router = useRouter();
   const params = useSearchParams();
   const requestedPlanId = params.get("plan_id") || "";
+  const requestedOrderId = params.get("order_id");
   const initialRequestedPlan = initialCatalog?.plans.find((plan) => plan.id === requestedPlanId);
   const initialRequestInvalid = Boolean(requestedPlanId && !initialRequestedPlan);
   const initialPreferredPlan = initialRequestInvalid
@@ -251,9 +152,6 @@ function BillingPageContent({ initialCatalog }: { initialCatalog: CatalogPayload
   const [selectedPlanId, setSelectedPlanId] = useState(initialPreferredPlan?.id || "");
   const [invalidRequestedPlan, setInvalidRequestedPlan] = useState(initialRequestInvalid);
   const [order, setOrder] = useState<OrderPayload | null>(null);
-  const [showHistory, setShowHistory] = useState(false);
-  const [historyRevision, setHistoryRevision] = useState(0);
-  const [openingOrder, setOpeningOrder] = useState(false);
   const [loading, setLoading] = useState(!initialCatalog?.plans?.length);
   const [creating, setCreating] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -279,6 +177,7 @@ function BillingPageContent({ initialCatalog }: { initialCatalog: CatalogPayload
   // Synchronous guards: React state updates are async, so two fast clicks can
   // both observe `creating === false`.
   const creatingRef = useRef(false);
+  const catalogRevision = useRef(0);
   const submittingRef = useRef(false);
   const draftOrderIdRef = useRef<number | null>(null);
 
@@ -308,8 +207,9 @@ function BillingPageContent({ initialCatalog }: { initialCatalog: CatalogPayload
       return;
     }
     void loadCatalog();
+    return () => { catalogRevision.current += 1; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [requestedPlanId, sessionReady, token]);
+  }, [requestedPlanId, requestedOrderId, sessionReady, token]);
 
   useEffect(() => {
     function handleAuth() {
@@ -372,11 +272,14 @@ function BillingPageContent({ initialCatalog }: { initialCatalog: CatalogPayload
   }, [order]);
 
   async function loadCatalog() {
+    const revision = ++catalogRevision.current;
+    if (requestedOrderId !== null) setOrder(null);
     setLoadFailed(false);
-    if (!plans.length) setLoading(true);
+    if (!plans.length || requestedOrderId !== null) setLoading(true);
     setMessage("");
     try {
       const payload = await apiFetch<CatalogPayload>("/api/public/membership/plans");
+      if (revision !== catalogRevision.current) return;
       setPlans(payload.plans || []);
       setCheckout(payload.checkout || checkout);
       const requestedPlan = (payload.plans || []).find((plan) => plan.id === requestedPlanId);
@@ -390,9 +293,21 @@ function BillingPageContent({ initialCatalog }: { initialCatalog: CatalogPayload
       }
       if (token) {
         const latest = await apiFetch<CatalogPayload>("/api/pay/membership/orders/latest", { timeoutMs: PAYMENT_TIMEOUT_MS });
+        if (revision !== catalogRevision.current) return;
         if (latest.plans?.length) setPlans(latest.plans);
         if (latest.checkout) setCheckout(latest.checkout);
-        const resumable = isOpenOrder(latest.order) ? latest.order : null;
+        let target = latest.order;
+        if (requestedOrderId !== null) {
+          if (!/^[1-9]\d*$/.test(requestedOrderId)) throw new Error("无效的会员订单号");
+          const detail = await apiFetch<{order: OrderPayload}>(`/api/orders/${requestedOrderId}`, { timeoutMs: PAYMENT_TIMEOUT_MS });
+          if (revision !== catalogRevision.current) return;
+          if (String(detail.order?.id) !== requestedOrderId || detail.order.product_type !== "membership" || !latest.user || detail.order.user_id !== latest.user.id) {
+            throw new Error("找不到这个账号的会员订单");
+          }
+          target = detail.order;
+          if (!OPEN_ORDER_STATUSES.has(target.status)) setMessage(`订单 ${target.order_no}：${orderStatusText(target.status)}`);
+        }
+        const resumable = isOpenOrder(target) ? target : null;
         saveOpenOrderSnapshot(resumable);
         setOrder(resumable);
         if (resumable?.package_id && latest.plans?.some((plan) => plan.id === resumable.package_id)) {
@@ -405,10 +320,11 @@ function BillingPageContent({ initialCatalog }: { initialCatalog: CatalogPayload
         if (latest.user) rememberUser(latest.user);
       }
     } catch (error) {
+      if (revision !== catalogRevision.current) return;
       if (!handleExpiredSession(error)) {
         setLoadFailed(true);
         const reason = stripEndPunctuation(error instanceof Error ? error.message : "读取会员套餐失败");
-        const snapshot = token ? loadOpenOrderSnapshot() : null;
+        const snapshot = token && requestedOrderId === null ? loadOpenOrderSnapshot() : null;
         setMessage(
           snapshot
             ? `${reason}。你有一笔未完成的${snapshot.plan_name}订单 ${snapshot.order_no}（¥${(snapshot.amount_cents / 100).toFixed(2)}）。如果已经付款，请不要重复付款，服务恢复后点击“重新加载”继续提交付款信息。`
@@ -416,7 +332,7 @@ function BillingPageContent({ initialCatalog }: { initialCatalog: CatalogPayload
         );
       }
     } finally {
-      setLoading(false);
+      if (revision === catalogRevision.current) setLoading(false);
     }
   }
 
@@ -432,24 +348,9 @@ function BillingPageContent({ initialCatalog }: { initialCatalog: CatalogPayload
     setOrder(null);
     setPaymentMessage("");
     setSubmitFailure(null);
-    setMessage("原订单保留在「我的订单」。如已为原订单付款，请勿为同一笔交易重复付款。");
+    setMessage("原订单保留在首页账号菜单的「我的订单」。如已为原订单付款，请勿重复付款。");
   }
 
-  async function openFromHistory(id: number) {
-    setOpeningOrder(true);
-    try {
-      const payload = await apiFetch<{order: OrderPayload}>(`/api/orders/${id}`, { timeoutMs: PAYMENT_TIMEOUT_MS });
-      setOrder(payload.order);
-      if (payload.order.package_id) setSelectedPlanId(payload.order.package_id);
-      setShowHistory(false);
-      setInvalidRequestedPlan(false);
-      setPaymentMessage("");
-      setSubmitFailure(null);
-      setMessage(orderStatusText(payload.order.status));
-    } catch (error) {
-      if (!handleExpiredSession(error)) setMessage(error instanceof Error ? error.message : "读取订单失败");
-    } finally { setOpeningOrder(false); }
-  }
 
   async function createMembershipOrder() {
     if (!selectedPlan || creatingRef.current) return;
@@ -479,6 +380,9 @@ function BillingPageContent({ initialCatalog }: { initialCatalog: CatalogPayload
       }
       clearCheckoutRequestId(planId);
       setOrder(created);
+      if (requestedOrderId !== null && String(created.id) !== requestedOrderId) {
+        router.replace(`/billing?order_id=${created.id}`, { scroll: false });
+      }
       if (payload.user) rememberUser(payload.user);
       setDraft((current) => ({ ...current, submitted_amount_yuan: ((created.amount_cents || selectedPlan.amount_cents) / 100).toFixed(2) }));
       setMessage(
@@ -563,12 +467,10 @@ function BillingPageContent({ initialCatalog }: { initialCatalog: CatalogPayload
 
   async function cancelOrder(target: OrderPayload | null) {
     if (!target || !OPEN_ORDER_STATUSES.has(target.status) || cancelling) return;
-    const confirmed = window.confirm(`确认没有付款并取消订单 ${target.order_no}？取消不是退款；如果已经转账，请保留订单等待核款。`);
-    if (!confirmed) return;
+    if (!confirmCancellation(target)) return;
     setCancelling(true);
     try {
-      await apiFetch<{ order: OrderPayload }>(`/api/pay/membership/orders/${target.id}/cancel`, { method: "POST", timeoutMs: PAYMENT_TIMEOUT_MS });
-      clearDraft(target.id);
+      await cancelMembershipOrder(target.id);
       if (checkoutOrder?.id === target.id) {
         saveOpenOrderSnapshot(null);
         draftOrderIdRef.current = null;
@@ -583,7 +485,6 @@ function BillingPageContent({ initialCatalog }: { initialCatalog: CatalogPayload
       }
     } finally {
       setCancelling(false);
-      setHistoryRevision(v => v + 1);
     }
   }
 
@@ -641,9 +542,6 @@ function BillingPageContent({ initialCatalog }: { initialCatalog: CatalogPayload
           </div>
         </header>
 
-        {token && <button className="billing-secondary" type="button" aria-expanded={showHistory} onClick={() => setShowHistory(v => !v)}>我的订单</button>}
-        {token && showHistory && <MembershipHistory key={`${token}:${historyRevision}:${order?.id}:${order?.status}`} busy={openingOrder || cancelling || creating || submitting}
-          onOpen={openFromHistory} onCancel={cancelOrder} />}
 
         {message ? <div className="billing-message" role="status">{message}</div> : null}
         {loading ? <div className="billing-message">正在读取会员套餐...</div> : null}
@@ -663,7 +561,7 @@ function BillingPageContent({ initialCatalog }: { initialCatalog: CatalogPayload
             {checkoutOrder ? (
               <div className="billing-inline-message billing-plan-locked">
                 <span>想再买同一套餐，或改开{plans.find((plan) => plan.id !== checkoutOrder.package_id)?.plan_name || "其他套餐"}？无需取消旧订单。同一笔转账只提交一次。</span>
-                <button className="billing-secondary" type="button" onClick={startAnother} disabled={cancelling || creating || submitting || openingOrder}>
+                <button className="billing-secondary" type="button" onClick={startAnother} disabled={cancelling || creating || submitting}>
                   再买一份
                 </button>
               </div>
@@ -679,7 +577,7 @@ function BillingPageContent({ initialCatalog }: { initialCatalog: CatalogPayload
                     type="button"
                     role="radio"
                     aria-checked={active}
-                    disabled={cancelling || creating || submitting || openingOrder}
+                    disabled={cancelling || creating || submitting}
                     className={`${active ? "active" : ""}${annual ? " is-recommended" : ""}`.trim()}
                     onClick={() => selectPlan(plan)}
                   >
@@ -826,7 +724,7 @@ function BillingPageContent({ initialCatalog }: { initialCatalog: CatalogPayload
                   刷新订单状态
                 </button>
                 {OPEN_ORDER_STATUSES.has(checkoutOrder.status) ? (
-                  <button className="billing-secondary" type="button" onClick={() => cancelOrder(checkoutOrder)} disabled={cancelling || submitting || openingOrder}>
+                  <button className="billing-secondary" type="button" onClick={() => cancelOrder(checkoutOrder)} disabled={cancelling || submitting}>
                     <XCircle />
                     {cancelling ? "正在取消" : checkoutOrder.status === "submitted" ? "我没有付款，取消订单" : "取消此订单 / 更换套餐"}
                   </button>
@@ -840,7 +738,7 @@ function BillingPageContent({ initialCatalog }: { initialCatalog: CatalogPayload
                     {order.plan_name}已开通
                   </div>
                 ) : null}
-                <button className="billing-primary" type="button" onClick={createMembershipOrder} disabled={!sessionReady || !selectedPlan || invalidRequestedPlan || creating || loading}>
+                <button className="billing-primary" type="button" onClick={createMembershipOrder} disabled={!sessionReady || !selectedPlan || invalidRequestedPlan || creating || loading || (requestedOrderId !== null && loadFailed)}>
                   {creating ? <Loader2 className="spin-icon" /> : <CreditCard />}
                   {creating ? "正在创建订单" : token ? `创建${selectedPlan?.plan_name || "会员"}订单` : "登录后创建订单"}
                 </button>
@@ -886,13 +784,4 @@ function QrBox({ title, src }: { title: string; src: string }) {
       <code>{title}收款码</code>
     </div>
   );
-}
-
-function orderStatusText(status: string) {
-  if (status === "pending") return "待付款（尚未提交付款信息）";
-  if (status === "submitted") return "付款信息已提交，待管理员确认";
-  if (status === "paid") return "已开通";
-  if (status === "rejected") return "核款未通过，请更正后重新提交";
-  if (status === "cancelled") return "已取消";
-  return status;
 }
