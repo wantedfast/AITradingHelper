@@ -915,8 +915,11 @@ test.describe("membership plan selection", () => {
 
     await page.locator(".billing-checkout .billing-primary").click();
     await expect.poll(() => submittedPlanId).toBe("annual_membership");
-    await expect(planCards.nth(0)).toBeDisabled();
-    await expect(planCards.nth(1)).toBeDisabled();
+    // The current order keeps its own price and payment form, but no longer
+    // locks the member out of starting a separate purchase.
+    await expect(planCards.nth(0)).toBeEnabled();
+    await expect(planCards.nth(1)).toBeEnabled();
+    await expect(page.getByRole("button", { name: "再买一份" })).toBeVisible();
     await expect(page.getByText("支付宝", { exact: false })).toHaveCount(0);
     await expect(page.getByAltText("微信收款二维码")).toBeVisible();
     await expect(page.getByLabel("付款方式")).toHaveValue("微信支付");
